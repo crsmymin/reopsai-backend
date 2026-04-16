@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: reopsai-postgres-local
+    environment:
+      POSTGRES_DB: smart_research
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d smart_research"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: reopsai-backend-local
+    env_file:
+      - ./.env.local
+    environment:
+      FLASK_ENV: development
+      PORT: 5001
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/smart_research
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "5001:5001"
+    command: >
+      sh -c "
+      alembic upgrade head &&
+      uvicorn asgi:application --host 0.0.0.0 --port 5001 --reload --reload-dir /app
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+      - backend_uploads_local:/app/uploads
+      - backend_chroma_local:/app/chroma_db
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/api/auth/test', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data_local:
+  backend_uploads_local:
+  backend_chroma_local:
