@@ -1,3 +1,5 @@
+name: reopsai-local
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -26,6 +28,7 @@ services:
       - ./.env.local
     environment:
       FLASK_ENV: development
+      FLASK_DEBUG: "1"
       PORT: 5001
       DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/smart_research
       PYTHONUNBUFFERED: "1"
@@ -34,7 +37,7 @@ services:
     command: >
       sh -c "
       alembic upgrade head &&
-      uvicorn asgi:application --host 0.0.0.0 --port 5001 --reload --reload-dir /app
+      python -m flask --app app:app run --host 0.0.0.0 --port 5001 --debug --reload
       "
     depends_on:
       postgres:

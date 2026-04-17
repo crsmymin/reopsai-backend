@@ -394,11 +394,6 @@ def parse_llm_json_response(raw_result):
             raise ValueError(f"LLM 응답 JSON 파싱 실패: {e}")
 
 # --- API 엔드포인트 ---
-
-@app.route('/')
-def hello():
-    return "백엔드 서버 작동 중! 🚀"
-
 # 간단한 헬스체크 엔드포인트 (Docker healthcheck 및 로드밸런서용)
 @app.route('/health')
 def health():
