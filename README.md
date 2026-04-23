@@ -134,8 +134,6 @@ reopsai-backend/
 ## 개발 환경 설정
 
 ### 사전 요건
-- Python 3.11+
-- PostgreSQL (또는 Docker)
 - OpenAI API Key
 - Google API Key (선택)
 
@@ -160,32 +158,16 @@ PORT=5001
 BACKEND_URL=http://127.0.0.1:5001
 FRONTEND_URL=http://localhost:3000
 ALLOWED_ORIGINS=http://localhost:3000" > .env.local
-
-# 3. Docker로 실행
-docker-compose up -d
-
-# 4. 확인
-curl http://localhost:5001/health
 ```
 
 ### 2. 로컬 개발 (직접 실행)
 
 ```bash
-# 1. 가상환경 생성
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+# 3. Docker로 실행
+docker-compose up -d --build
 
-# 2. 의존성 설치
-pip install -r requirements.txt
-
-# 3. PostgreSQL 실행 (또는 Docker)
-docker run -d --name postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=smart_research -p 5432:5432 postgres:16-alpine
-
-# 4. 마이그레이션
-alembic upgrade head
-
-# 5. Flask 앱 실행
-python -m flask --app app:app run --host 0.0.0.0 --port 5001 --debug --reload
+# 4. 확인
+curl http://localhost:5001/health
 ```
 
 ### 3. 환경변수 설정
@@ -218,42 +200,3 @@ alembic downgrade -1
 # 마이그레이션 스크립트 생성
 alembic revision --autogenerate -m "description"
 ```
-
-## 보안 설정
-
-- **JWT 인증:** 30일 만료, PyJWT 라이브러리 사용
-- **CORS:** 환경변수 기반 출처 제한
-- **보안 헤더:**
-  - HSTS (max-age=31536000)
-  - X-Frame-Options: DENY
-  - X-Content-Type-Options: nosniff
-  - X-XSS-Protection: 1; mode=block
-  - Referrer-Policy: strict-origin-when-cross-origin
-
-## 로깅 및 모니터링
-
-- `api_logger.py` - API 호출/에러 로깅
-- `debug_utils.py` - 요청 추적 및 성능 모니터링
-- `telemetry.py` - 메트릭 수집
-
-## 프로덕션 배포
-
-```bash
-# 환경 설정
-export FLASK_ENV=production
-
-# Docker Compose (Production)
-docker-compose -f docker-compose.prod.yml up -d
-
-# 또는 Gunicorn
-pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5001 app:app
-```
-
-## 라이선스
-
-Private - All rights reserved.
-
-## 지원
-
-문제 발생 시 개발팀에 문의해주세요.
