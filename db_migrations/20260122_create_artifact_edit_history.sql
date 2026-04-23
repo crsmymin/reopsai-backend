@@ -4,9 +4,7 @@
 -- - 프론트에서 히스토리 모달(비교 전용)로 조회 가능
 -- - Undo/Redo 같은 패치/머지 로직 없이도 안정적인 비교/복원이 가능
 --
--- 실행 위치:
--- - Supabase SQL Editor에서 실행
--- - (권장) pgcrypto extension이 필요할 수 있음 (gen_random_uuid)
+-- (권장) pgcrypto extension이 필요할 수 있음 (gen_random_uuid)
 
 -- Enable uuid generator (if not already enabled)
 create extension if not exists pgcrypto;

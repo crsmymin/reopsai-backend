@@ -58,3 +58,41 @@ def find_matching_column_name(normalized_name, available_columns):
 
     return None
 
+
+def compute_display_name(row: dict, name_column: str, has_name_column: bool) -> str:
+    """
+    참여자 표시 이름 계산 (Step 2 감지 결과를 우선 활용)
+    """
+    if name_column:
+        matched_name_col = find_matching_column_name(name_column, row)
+        if matched_name_col and matched_name_col in row:
+            raw_value = row.get(matched_name_col)
+            if raw_value is not None:
+                name_value = str(raw_value).strip()
+                if name_value:
+                    return name_value
+                if has_name_column:
+                    return ''
+    if has_name_column:
+        return ''
+    return str(row.get('participant_id', ''))
+
+
+def coerce_score(row: dict, group_name: str) -> float:
+    """
+    참여자 점수 추출 (여러 가능한 키 순서대로 시도)
+    """
+    potential_keys = [
+        '_group_score',
+        f'{group_name}_score',
+        '_score',
+        'score',
+    ]
+    for key in potential_keys:
+        if key in row and row[key] not in (None, ''):
+            try:
+                return float(row[key])
+            except (ValueError, TypeError):
+                continue
+    return 0.0
+
