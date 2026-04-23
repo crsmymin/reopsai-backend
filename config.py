@@ -39,16 +39,13 @@ class Config:
     GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
     
-    # Supabase 설정
-    SUPABASE_URL = os.getenv('SUPABASE_URL')
-    SUPABASE_ANON_KEY = os.getenv('SUPABASE_ANON_KEY')
-    SUPABASE_SERVICE_ROLE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+    # Database
+    DATABASE_URL = os.getenv('DATABASE_URL')
     
     # Server Settings
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
     PORT = int(os.getenv('PORT', 5001))
     JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY')
-    DATABASE_URL = os.getenv('DATABASE_URL')
     SQLALCHEMY_ECHO = os.getenv('SQLALCHEMY_ECHO', 'False').lower() == 'true'
     
     # JWT 설정 - 30일 만료

@@ -150,7 +150,7 @@ def _build_url_analysis_context(product_url: str) -> Optional[str]:
 def workspace_get_projects():
     """
     [GET] 현재 사용자의 모든 프로젝트 조회
-    - Supabase 'projects' 테이블에서 owner_id로 필터링
+    - SQLAlchemy 'projects' 테이블에서 owner_id로 필터링
     - 최신순 정렬 (created_at DESC)
     """
     try:
@@ -239,7 +239,7 @@ def workspace_get_projects_with_studies():
 def workspace_create_project():
     """
     [POST] 새 프로젝트 생성
-    - Supabase 'projects' 테이블에 저장
+    - SQLAlchemy 'projects' 테이블에 저장
     - 필수: name
     - 선택: product_url, keywords (배열)
     - description은 사용 안 함 (UI에서 제거됨)
@@ -289,7 +289,7 @@ def workspace_create_project():
 def workspace_delete_project(project_id):
     """
     [DELETE] 프로젝트 삭제
-    - Supabase에서 해당 프로젝트 삭제
+    - SQLAlchemy에서 해당 프로젝트 삭제
     - 관련된 studies도 CASCADE로 자동 삭제 (DB 설정 필요)
     """
     try:
@@ -313,7 +313,7 @@ def workspace_delete_project(project_id):
 def workspace_update_project(project_id):
     """
     [PUT] 프로젝트 정보 수정
-    - Supabase에서 프로젝트 정보 업데이트
+    - SQLAlchemy에서 프로젝트 정보 업데이트
     """
     try:
         if not (session_scope and WorkspaceRepository):
