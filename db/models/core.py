@@ -3,6 +3,7 @@ from typing import Optional, Union
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -27,6 +28,9 @@ class User(Base):
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     google_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True)
     tier: Mapped[str] = mapped_column(String(32), nullable=False, server_default="free", index=True)
+    account_type: Mapped[str] = mapped_column(String(32), nullable=False, server_default="individual", index=True)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    password_reset_required: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -86,6 +90,7 @@ class Team(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="active")
+    plan_code: Mapped[str] = mapped_column(String(64), nullable=False, server_default="starter", index=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -147,4 +152,20 @@ class ArtifactEditHistory(Base):
     after_markdown: Mapped[str] = mapped_column(Text, nullable=False)
     selection_from: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     selection_to: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class TeamUsageEvent(Base):
+    __tablename__ = "team_usage_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    team_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    feature_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    endpoint: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    occurred_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

@@ -8,6 +8,7 @@ import time
 
 from pii_utils import sanitize_prompt_for_llm
 from telemetry import log_duration, log_tokens
+from utils.usage_metering import track_llm_usage
 
 class GeminiService:
     """
@@ -212,6 +213,7 @@ class GeminiService:
                 log_tokens("gemini", usage, extra=f"model={model_display}")
                 
                 # 성공적인 응답을 딕셔너리 형태로 반환
+                track_llm_usage(usage)
                 return {'success': True, 'content': response.text, "usage": usage, **pii_meta}
             
             except Exception as e:

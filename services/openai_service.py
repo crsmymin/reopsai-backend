@@ -7,6 +7,7 @@ import time
 
 from pii_utils import sanitize_prompt_for_llm
 from telemetry import log_duration, log_tokens
+from utils.usage_metering import track_llm_usage
 
 class OpenAIService:
     """
@@ -236,6 +237,7 @@ class OpenAIService:
                 log_tokens("openai", usage, extra=f"model={model}")
                 
                 # Gemini와 동일한 형식으로 반환
+                track_llm_usage(usage)
                 return {'success': True, 'content': content, "usage": usage, **pii_meta}
             
             except Exception as e:

@@ -96,6 +96,7 @@ def b2b_get_my_team():
                         "email": user_info.email if user_info else None,
                         "name": user_info.name if user_info else None,
                         "tier": (user_info.tier if user_info and user_info.tier else "free"),
+                        "account_type": (user_info.account_type if user_info and user_info.account_type else "individual"),
                         "role": "owner" if is_owner else role,
                         "joined_at": _serialize_dt(row.joined_at),
                     }
@@ -110,6 +111,7 @@ def b2b_get_my_team():
                         "email": owner_info.email if owner_info else None,
                         "name": owner_info.name if owner_info else None,
                         "tier": (owner_info.tier if owner_info and owner_info.tier else "free"),
+                        "account_type": (owner_info.account_type if owner_info and owner_info.account_type else "individual"),
                         "role": "owner",
                         "joined_at": None,
                     },
@@ -123,6 +125,7 @@ def b2b_get_my_team():
                         "name": team.name,
                         "description": team.description,
                         "status": team.status,
+                        "plan_code": team.plan_code or "starter",
                         "owner_id": owner_id,
                         "created_at": _serialize_dt(team.created_at),
                     },
@@ -210,7 +213,7 @@ def b2b_add_team_member():
                 db_session.execute(
                     update(User)
                     .where(User.id == target_user.id)
-                    .values(tier="enterprise")
+                    .values(tier="enterprise", account_type="enterprise")
                 )
             except Exception as exc:
                 log_error(exc, "B2B - 팀원 enterprise 등급 업데이트 실패")
@@ -352,7 +355,7 @@ def b2b_change_team_member_role(member_user_id: int):
                 db_session.execute(
                     update(User)
                     .where(User.id == member_user_id)
-                    .values(tier="enterprise")
+                    .values(tier="enterprise", account_type="enterprise")
                 )
             except Exception as exc:
                 log_error(exc, "B2B - 소유자 enterprise 등급 업데이트 실패")

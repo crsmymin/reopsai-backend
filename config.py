@@ -13,6 +13,17 @@ production_env = BASE_DIR / '.env.production'
 local_env = BASE_DIR / '.env.local'
 default_env = BASE_DIR / '.env'
 
+
+def _parse_allowed_origins():
+    raw = os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000')
+    origins = [origin.strip() for origin in raw.split(',') if origin.strip()]
+    frontend_url = os.getenv('FRONTEND_URL')
+    if frontend_url:
+        origins.append(frontend_url.strip())
+    if os.getenv('FLASK_ENV', 'development') != 'production':
+        origins.extend(['http://localhost:3000', 'http://127.0.0.1:3000'])
+    return list(dict.fromkeys(origins))
+
 # 환경에 따라 적절한 파일 로드
 if flask_env == 'production':
     # 프로덕션: .env.production > .env
@@ -51,6 +62,13 @@ class Config:
     # JWT 설정 - 30일 만료
     from datetime import timedelta
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(days=30)
+    JWT_TOKEN_LOCATION = ['headers', 'cookies']
+    JWT_ACCESS_COOKIE_NAME = os.getenv('JWT_ACCESS_COOKIE_NAME', 'access_token_cookie')
+    JWT_ACCESS_COOKIE_PATH = '/'
+    JWT_COOKIE_SECURE = os.getenv('JWT_COOKIE_SECURE', 'False').lower() == 'true'
+    JWT_COOKIE_HTTPONLY = True
+    JWT_COOKIE_SAMESITE = os.getenv('JWT_COOKIE_SAMESITE', 'Lax')
+    JWT_COOKIE_CSRF_PROTECT = os.getenv('JWT_COOKIE_CSRF_PROTECT', 'False').lower() == 'true'
     
     # Environment
     ENVIRONMENT = os.getenv('ENVIRONMENT', 'development')
@@ -62,4 +80,4 @@ class Config:
     DOMAIN = os.getenv('DOMAIN', 'localhost')
     
     # CORS 허용 출처 설정
-    ALLOWED_ORIGINS = os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000').split(',')
+    ALLOWED_ORIGINS = _parse_allowed_origins()

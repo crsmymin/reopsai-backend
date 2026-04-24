@@ -14,11 +14,14 @@ from flask_jwt_extended import (
     get_jwt,
     get_jwt_identity,
     jwt_required,
+    set_access_cookies,
+    unset_jwt_cookies,
 )
 from google.auth.transport import requests
 from google.oauth2 import id_token
 from sqlalchemy import delete, func, select, update
 from werkzeug.exceptions import HTTPException
+from werkzeug.security import check_password_hash, generate_password_hash
 
 from config import Config
 from db.engine import session_scope
@@ -27,6 +30,13 @@ from pii_utils import sanitize_for_log, sanitize_prompt_for_llm
 
 
 auth_bp = Blueprint("auth", __name__)
+
+ENTERPRISE_ACCOUNT_TYPE = "enterprise"
+INDIVIDUAL_ACCOUNT_TYPE = "individual"
+PASSWORD_CHANGE_ALLOWED_PATHS = {
+    "/api/auth/enterprise/change-password",
+    "/api/profile",
+}
 
 
 def log_api_call(endpoint, method, data=None):
@@ -57,36 +67,88 @@ def _db_ready():
     return session_scope is not None
 
 
-def _build_user_payload(user: User, team_id=None, name_override=None):
+def _normalize_tier(raw_tier: str) -> str:
+    tier = (raw_tier or "free").strip().lower()
+    if tier == "admin":
+        return "super"
+    return tier
+
+
+def _get_team_plan_code(db_session, team_id):
+    if not team_id:
+        return None
+    try:
+        return db_session.execute(
+            select(Team.plan_code).where(Team.id == int(team_id)).limit(1)
+        ).scalar_one_or_none()
+    except Exception as exc:
+        log_error(exc, "팀 plan_code 조회 실패")
+        return None
+
+
+def _build_auth_context(db_session, user: User):
+    tier = _normalize_tier(user.tier or "free")
+    account_type = user.account_type or (
+        ENTERPRISE_ACCOUNT_TYPE if tier == "enterprise" else INDIVIDUAL_ACCOUNT_TYPE
+    )
+    team_id = (
+        get_primary_team_id_for_user(db_session, user.id)
+        if account_type == ENTERPRISE_ACCOUNT_TYPE or tier == "enterprise"
+        else None
+    )
+    plan_code = _get_team_plan_code(db_session, team_id)
+    claims = {
+        "tier": tier,
+        "account_type": account_type,
+        "password_reset_required": bool(user.password_reset_required),
+    }
+    if team_id:
+        claims["team_id"] = int(team_id)
+    if plan_code:
+        claims["plan_code"] = plan_code
+    return claims, team_id, plan_code
+
+
+def _build_user_payload(user: User, team_id=None, name_override=None, plan_code=None):
     payload = {
         "id": user.id,
         "email": user.email,
         "name": name_override if name_override is not None else user.name,
         "google_id": user.google_id,
-        "tier": user.tier or "free",
+        "tier": _normalize_tier(user.tier or "free"),
+        "account_type": user.account_type or INDIVIDUAL_ACCOUNT_TYPE,
+        "password_reset_required": bool(user.password_reset_required),
         "created_at": _serialize_dt(user.created_at),
     }
     if team_id:
         payload["team_id"] = team_id
+    if plan_code:
+        payload["plan_code"] = plan_code
     return payload
+
+
+def _auth_response(payload: dict, access_token: str, status_code: int = 200):
+    response = jsonify(payload)
+    set_access_cookies(response, access_token)
+    return response, status_code
 
 
 def tier_required(allowed_tiers):
     """
     사용자 등급 기반 접근 제어 데코레이터
 
-    계층 구조: free < basic < premium == enterprise < admin
+    계층 구조: free < basic < premium == enterprise < super
     """
     if not isinstance(allowed_tiers, (list, tuple, set)):
         raise ValueError("allowed_tiers must be a list, tuple, or set")
 
-    allowed_set = set(allowed_tiers)
+    normalized_allowed_set = {_normalize_tier(t) for t in set(allowed_tiers)}
     tier_levels = {
         "free": 0,
         "basic": 1,
         "premium": 2,
         "enterprise": 2,
-        "admin": 3,
+        "super": 3,
     }
 
     def decorator(fn):
@@ -95,28 +157,31 @@ def tier_required(allowed_tiers):
         def wrapper(*args, **kwargs):
             try:
                 claims = get_jwt()
-                tier = claims.get("tier")
+                tier = _normalize_tier(claims.get("tier"))
+
+                if claims.get("password_reset_required") and request.path not in PASSWORD_CHANGE_ALLOWED_PATHS:
+                    return jsonify({"error": "Password change required"}), 403
 
                 user_tier_level = tier_levels.get(tier)
                 if user_tier_level is None:
                     return jsonify({"error": "Invalid tier", "your_tier": tier}), 403
 
-                if "admin" in allowed_set and tier != "admin":
+                if "super" in normalized_allowed_set and tier != "super":
                     return jsonify(
                         {
                             "error": "Insufficient permissions",
                             "your_tier": tier,
-                            "required": list(allowed_set),
+                            "required": list(normalized_allowed_set),
                         }
                     ), 403
 
-                if tier == "admin":
+                if tier == "super":
                     return fn(*args, **kwargs)
 
-                if tier in allowed_set:
+                if tier in normalized_allowed_set:
                     return fn(*args, **kwargs)
 
-                min_required_level = min(tier_levels.get(t, 999) for t in allowed_set)
+                min_required_level = min(tier_levels.get(t, 999) for t in normalized_allowed_set)
                 if user_tier_level >= min_required_level:
                     return fn(*args, **kwargs)
 
@@ -124,7 +189,7 @@ def tier_required(allowed_tiers):
                     {
                         "error": "Insufficient permissions",
                         "your_tier": tier,
-                        "required": list(allowed_set),
+                        "required": list(normalized_allowed_set),
                     }
                 ), 403
             except Exception as e:
@@ -185,24 +250,18 @@ def login_with_password():
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        tier = user.tier or "free"
-        team_id = get_primary_team_id_for_user(db_session, user.id) if tier == "enterprise" else None
-        claims = {"tier": tier}
-        if team_id:
-            claims["team_id"] = team_id
-
+        claims, team_id, plan_code = _build_auth_context(db_session, user)
         access_token = create_access_token(identity=str(user.id), additional_claims=claims)
-        user_payload = {"id": user.id, "tier": tier}
-        if team_id:
-            user_payload["team_id"] = team_id
+        user_payload = _build_user_payload(user, team_id=team_id, plan_code=plan_code)
 
-    return jsonify(
+    return _auth_response(
         {
             "access_token": access_token,
             "token_type": "bearer",
             "user": user_payload,
-        }
-    ), 200
+        },
+        access_token,
+    )
 
 
 @auth_bp.route("/api/profile", methods=["GET"])
@@ -210,8 +269,41 @@ def login_with_password():
 def protected_profile():
     user_id = get_jwt_identity()
     claims = get_jwt()
-    tier = claims.get("tier")
-    return jsonify({"user_id": user_id, "tier": tier}), 200
+    user_payload = {
+        "id": int(user_id) if str(user_id).isdigit() else user_id,
+        "tier": _normalize_tier(claims.get("tier")),
+        "account_type": claims.get("account_type", INDIVIDUAL_ACCOUNT_TYPE),
+        "team_id": claims.get("team_id"),
+        "plan_code": claims.get("plan_code"),
+        "password_reset_required": bool(claims.get("password_reset_required")),
+    }
+
+    if _db_ready():
+        try:
+            with session_scope() as db_session:
+                user = db_session.execute(
+                    select(User).where(User.id == int(user_id)).limit(1)
+                ).scalar_one_or_none()
+                if user:
+                    claims_context, team_id, plan_code = _build_auth_context(db_session, user)
+                    user_payload = _build_user_payload(user, team_id=team_id, plan_code=plan_code)
+                    user_payload["tier"] = _normalize_tier(claims_context.get("tier"))
+        except Exception as exc:
+            log_error(exc, "프로필 사용자 조회 실패")
+
+    return jsonify(
+        {
+            "success": True,
+            "user": user_payload,
+        }
+    ), 200
+
+
+@auth_bp.route("/api/auth/logout", methods=["POST"])
+def logout():
+    response = jsonify({"success": True, "message": "로그아웃되었습니다."})
+    unset_jwt_cookies(response)
+    return response, 200
 
 
 @auth_bp.route("/api/premium-feature", methods=["GET"])
@@ -279,6 +371,7 @@ def check_user():
 
 
 @auth_bp.route("/api/auth/register", methods=["POST"])
+@tier_required(["super"])
 def register_user():
     try:
         data = request.json or {}
@@ -298,7 +391,14 @@ def register_user():
             if exists:
                 return jsonify({"success": False, "error": "이미 존재하는 사용자입니다."}), 409
 
-            user = User(email=email, name=name, google_id=google_id, tier="free")
+            user = User(
+                email=email,
+                name=name,
+                google_id=google_id,
+                tier="free",
+                account_type=INDIVIDUAL_ACCOUNT_TYPE,
+                password_reset_required=False,
+            )
             db_session.add(user)
             db_session.flush()
             db_session.refresh(user)
@@ -341,6 +441,8 @@ def login_user():
 
         if not user:
             return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
+        if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) == ENTERPRISE_ACCOUNT_TYPE:
+            return jsonify({"success": False, "error": "기업 계정은 enterprise 로그인만 사용할 수 있습니다."}), 403
 
         return jsonify(
             {
@@ -407,32 +509,43 @@ def verify_google_token():
                 user = db_session.execute(select(User).where(User.email == email).limit(1)).scalar_one_or_none()
                 is_new_user = False
                 if user:
+                    if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) == ENTERPRISE_ACCOUNT_TYPE:
+                        return jsonify(
+                            {
+                                "success": False,
+                                "error": "기업 계정은 Google OAuth 로그인을 사용할 수 없습니다.",
+                            }
+                        ), 403
                     if not user.google_id:
                         db_session.execute(update(User).where(User.id == user.id).values(google_id=google_id))
                         user.google_id = google_id
                 else:
-                    user = User(email=email, name=name, google_id=google_id, tier="free")
+                    user = User(
+                        email=email,
+                        name=name,
+                        google_id=google_id,
+                        tier="free",
+                        account_type=INDIVIDUAL_ACCOUNT_TYPE,
+                        password_reset_required=False,
+                    )
                     db_session.add(user)
                     db_session.flush()
                     db_session.refresh(user)
                     is_new_user = True
 
-                tier = user.tier or "free"
-                team_id = get_primary_team_id_for_user(db_session, user.id) if tier == "enterprise" else None
-                claims = {"tier": tier}
-                if team_id:
-                    claims["team_id"] = team_id
+                claims, team_id, plan_code = _build_auth_context(db_session, user)
                 access_token = create_access_token(identity=str(user.id), additional_claims=claims)
 
-            return jsonify(
+            return _auth_response(
                 {
                     "success": True,
                     "message": "구글 계정으로 가입 완료!" if is_new_user else "로그인 성공!",
-                    "user": _build_user_payload(user, team_id=team_id, name_override=name),
+                    "user": _build_user_payload(user, team_id=team_id, name_override=name, plan_code=plan_code),
                     "access_token": access_token,
                     "token_type": "bearer",
                     "is_new_user": is_new_user,
-                }
+                },
+                access_token,
             )
         except ValueError as e:
             log_error(e, "구글 토큰 검증 실패")
@@ -459,6 +572,101 @@ def get_google_config():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@auth_bp.route("/api/auth/enterprise/login", methods=["POST"])
+def enterprise_login():
+    try:
+        data = request.get_json() or {}
+        email = (data.get("email") or "").strip().lower()
+        password = data.get("password") or ""
+        if not email or not password:
+            return jsonify({"success": False, "error": "이메일과 비밀번호가 필요합니다."}), 400
+
+        if not _db_ready():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        with session_scope() as db_session:
+            user = db_session.execute(
+                select(User).where(func.lower(User.email) == email).limit(1)
+            ).scalar_one_or_none()
+            if not user:
+                return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
+
+            if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) != ENTERPRISE_ACCOUNT_TYPE:
+                return jsonify({"success": False, "error": "일반 계정은 Google OAuth로 로그인해야 합니다."}), 403
+
+            if not user.password_hash or not check_password_hash(user.password_hash, password):
+                return jsonify({"success": False, "error": "이메일 또는 비밀번호가 올바르지 않습니다."}), 401
+
+            claims, team_id, plan_code = _build_auth_context(db_session, user)
+            access_token = create_access_token(identity=str(user.id), additional_claims=claims)
+
+        return _auth_response(
+            {
+                "success": True,
+                "message": "기업 계정 로그인 성공",
+                "access_token": access_token,
+                "token_type": "bearer",
+                "user": _build_user_payload(user, team_id=team_id, plan_code=plan_code),
+            },
+            access_token,
+        )
+    except Exception as e:
+        log_error(e, "기업 로그인 실패")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@auth_bp.route("/api/auth/enterprise/change-password", methods=["POST"])
+@jwt_required()
+def enterprise_change_password():
+    try:
+        claims = get_jwt() or {}
+        if claims.get("account_type") != ENTERPRISE_ACCOUNT_TYPE:
+            return jsonify({"success": False, "error": "기업 계정만 비밀번호 변경이 가능합니다."}), 403
+
+        data = request.get_json() or {}
+        current_password = data.get("current_password") or ""
+        new_password = data.get("new_password") or ""
+        if not current_password or not new_password:
+            return jsonify({"success": False, "error": "현재 비밀번호와 새 비밀번호가 필요합니다."}), 400
+        if len(new_password) < 8:
+            return jsonify({"success": False, "error": "새 비밀번호는 8자 이상이어야 합니다."}), 400
+
+        user_id = get_jwt_identity()
+        if not user_id:
+            return jsonify({"success": False, "error": "인증 정보가 없습니다."}), 401
+
+        with session_scope() as db_session:
+            user = db_session.execute(
+                select(User).where(User.id == int(user_id)).limit(1)
+            ).scalar_one_or_none()
+            if not user:
+                return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
+            if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) != ENTERPRISE_ACCOUNT_TYPE:
+                return jsonify({"success": False, "error": "기업 계정만 비밀번호 변경이 가능합니다."}), 403
+            if not user.password_hash or not check_password_hash(user.password_hash, current_password):
+                return jsonify({"success": False, "error": "현재 비밀번호가 올바르지 않습니다."}), 401
+
+            user.password_hash = generate_password_hash(new_password)
+            user.password_reset_required = False
+
+            claims, team_id, plan_code = _build_auth_context(db_session, user)
+            access_token = create_access_token(identity=str(user.id), additional_claims=claims)
+
+        return _auth_response(
+            {
+                "success": True,
+                "message": "비밀번호가 변경되었습니다.",
+                "access_token": access_token,
+                "token_type": "bearer",
+                "user": _build_user_payload(user, team_id=team_id, plan_code=plan_code),
+            },
+            access_token,
+        )
+    except Exception as e:
+        log_error(e, "기업 계정 비밀번호 변경 실패")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @auth_bp.route("/api/auth/dev-login", methods=["POST"])
 def dev_login():
     """개발용 임시 로그인"""
@@ -473,7 +681,14 @@ def dev_login():
             user = db_session.execute(select(User).where(User.email == email).limit(1)).scalar_one_or_none()
             is_new_user = False
             if not user:
-                user = User(email=email, name=name, google_id=f"dev_{email}", tier="free")
+                user = User(
+                    email=email,
+                    name=name,
+                    google_id=f"dev_{email}",
+                    tier="free",
+                    account_type=INDIVIDUAL_ACCOUNT_TYPE,
+                    password_reset_required=False,
+                )
                 db_session.add(user)
                 db_session.flush()
                 db_session.refresh(user)

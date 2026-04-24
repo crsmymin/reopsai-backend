@@ -6,6 +6,7 @@ from db.models.core import (
     StudySchedule,
     Team,
     TeamMember,
+    TeamUsageEvent,
     User,
     UserFeedback,
 )
@@ -17,8 +18,8 @@ __all__ = [
     "Artifact",
     "Team",
     "TeamMember",
+    "TeamUsageEvent",
     "StudySchedule",
     "UserFeedback",
     "ArtifactEditHistory",
 ]
-

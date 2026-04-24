@@ -247,15 +247,14 @@ def get_file(filename):
         owner = _get_owner(safe_filename)
         owner_id = owner.get("user_id")
         if owner_id:
-            if str(jwt_user_id) != str(owner_id) and tier != "admin":
+            if str(jwt_user_id) != str(owner_id) and tier not in ("super", "admin"):
                 return jsonify({'error': '권한이 없습니다.'}), 403
         else:
             # 소유권 정보가 없으면(이전 업로드 등) admin만 허용
-            if tier != "admin":
+            if tier not in ("super", "admin"):
                 return jsonify({'error': '권한이 없습니다.'}), 403
         
         return send_from_directory(UPLOAD_FOLDER, safe_filename)
     except Exception as e:
         print(f"파일 다운로드 오류: {e}")
         return jsonify({'error': '파일 다운로드 중 오류가 발생했습니다.'}), 500
-

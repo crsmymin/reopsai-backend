@@ -4,7 +4,7 @@ import uuid
 from typing import Dict, Iterable, List, Optional, Set
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, get_jwt
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, get_jwt, verify_jwt_in_request
 from services.gemini_service import gemini_service
 from services.openai_service import openai_service
 # [수정] 모든 프롬프트 클래스를 analysis_prompts.py에서 가져오도록 통일 (관리 편의성)
@@ -45,6 +45,10 @@ from sqlalchemy import func, select
 
 
 app = Flask(__name__)
+PASSWORD_CHANGE_ALLOWED_PATHS = {
+    "/api/auth/enterprise/change-password",
+    "/api/profile",
+}
 
 # CORS 설정을 환경변수 기반으로 적용
 from config import Config
@@ -73,6 +77,19 @@ def invalid_token_callback(error):
 @jwt.unauthorized_loader
 def unauthorized_callback(error):
     print(f"❌ Unauthorized (No JWT): {error}")
+    try:
+        print(
+            "JWT request debug:",
+            {
+                "path": request.path,
+                "host": request.host,
+                "origin": request.headers.get("Origin"),
+                "cookie_names": sorted(list(request.cookies.keys())),
+                "has_access_cookie": "access_token_cookie" in request.cookies,
+            },
+        )
+    except Exception:
+        pass
     return jsonify({'error': 'Missing Authorization Header', 'message': str(error)}), 401
 
 @jwt.expired_token_loader
@@ -91,7 +108,7 @@ CORS(app,
              "origins": Config.ALLOWED_ORIGINS,
              "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
              "allow_headers": ["Content-Type", "Authorization", "Accept", "X-User-ID", "x-user-id"],
-             "supports_credentials": False,
+             "supports_credentials": True,
              "max_age": 86400
          }
      },
@@ -99,6 +116,22 @@ CORS(app,
      intercept_exceptions=False)
 
 SQLA_ENABLED = False
+
+
+@app.before_request
+def enforce_enterprise_password_change():
+    try:
+        verify_jwt_in_request(optional=True)
+        claims = get_jwt() or {}
+        if (
+            request.method != "OPTIONS"
+            and claims.get("password_reset_required")
+            and (request.path or "") not in PASSWORD_CHANGE_ALLOWED_PATHS
+        ):
+            return jsonify({"error": "Password change required"}), 403
+    except Exception:
+        return None
+    return None
 
 # --- [신규] SQLAlchemy 엔진 초기화 ---
 try:
@@ -132,7 +165,33 @@ def set_security_headers(response):
     
     # Referrer-Policy
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
-    
+
+    # Enterprise team usage metering
+    try:
+        verify_jwt_in_request(optional=True)
+        claims = get_jwt() or {}
+        team_id = claims.get("team_id")
+        if claims.get("account_type") == "enterprise" and team_id:
+            feature_key = classify_feature_key(request.path or "")
+            if feature_key:
+                identity = get_jwt_identity()
+                try:
+                    user_id_int = int(identity) if identity is not None else None
+                except Exception:
+                    user_id_int = None
+                try:
+                    team_id_int = int(team_id)
+                except Exception:
+                    team_id_int = None
+                record_team_usage_event(
+                    endpoint=request.path or "",
+                    team_id=team_id_int,
+                    user_id=user_id_int,
+                    feature_key=feature_key,
+                )
+    except Exception:
+        pass
+
     return response
 
 
@@ -151,6 +210,7 @@ from utils.keyword_utils import (
 )
 from utils.request_utils import _extract_request_user_id, _resolve_owner_ids_sqlalchemy
 from utils.llm_utils import parse_llm_json_response
+from utils.usage_metering import classify_feature_key, record_team_usage_event
 
 
 
