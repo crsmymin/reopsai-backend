@@ -8,13 +8,31 @@ from flask_jwt_extended import get_jwt_identity, get_jwt
 
 
 def _extract_request_user_id():
+    """요청에서 사용자 ID를 추출합니다.
+    
+    우선순위:
+    1. X-User-ID 헤더 (프론트엔드에서 명시적으로 전달)
+    2. JWT 토큰의 identity (쿠키 인증 시 새로고침 후 헤더가 없는 경우)
+    """
     user_id_header = request.headers.get('X-User-ID')
-    if not user_id_header:
-        return None, jsonify({'success': False, 'error': '사용자 인증이 필요합니다.'}), 401
+    if user_id_header:
+        try:
+            return int(user_id_header), None, None
+        except Exception:
+            return user_id_header, None, None
+
+    # Fallback: JWT 토큰에서 사용자 ID 추출 (쿠키 인증 시 새로고침 후)
     try:
-        return int(user_id_header), None, None
+        identity = get_jwt_identity()
+        if identity is not None:
+            try:
+                return int(identity), None, None
+            except Exception:
+                return identity, None, None
     except Exception:
-        return user_id_header, None, None
+        pass
+
+    return None, jsonify({'success': False, 'error': '사용자 인증이 필요합니다.'}), 401
 
 
 def _resolve_owner_ids_sqlalchemy(user_id_int):

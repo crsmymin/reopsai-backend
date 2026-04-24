@@ -14,7 +14,8 @@ from datetime import datetime
 from typing import List, Optional, Set
 
 from flask import Blueprint, Response, current_app, jsonify, request
-from flask_jwt_extended import get_jwt
+from flask_jwt_extended import get_jwt, get_jwt_identity
+from utils.request_utils import _extract_request_user_id
 from sqlalchemy import func, select
 
 from api_logger import (
@@ -713,13 +714,9 @@ def generator_create_plan_oneshot():
         except (TypeError, ValueError):
             return jsonify({'success': False, 'error': '유효하지 않은 projectId 입니다.'}), 400
 
-        user_id_header = request.headers.get('X-User-ID') or request.headers.get('x-user-id')
-        if not user_id_header:
-            return jsonify({'success': False, 'error': '사용자 인증이 필요합니다.'}), 401
-        try:
-            user_id_int = int(user_id_header)
-        except Exception:
-            return jsonify({'success': False, 'error': '유효하지 않은 사용자 ID입니다.'}), 400
+        user_id_int, err_resp, err_code = _extract_request_user_id()
+        if err_resp:
+            return err_resp, err_code
 
         idempotency_key = f"{user_id_int}:{project_id_int}:{request_id}"
         idempotency_entry, is_new_request = _reserve_idempotency_entry(idempotency_key)
@@ -1260,13 +1257,9 @@ def conversation_maker_finalize_oneshot():
         if not isinstance(ledger_cards, list) or len(ledger_cards) == 0:
             return jsonify({"success": False, "error": "ledger_cards가 비어있습니다."}), 400
 
-        user_id_header = request.headers.get('X-User-ID') or request.headers.get('x-user-id')
-        if not user_id_header:
-            return jsonify({'success': False, 'error': '사용자 인증이 필요합니다.'}), 401
-        try:
-            user_id_int = int(user_id_header)
-        except Exception:
-            return jsonify({'success': False, 'error': '유효하지 않은 사용자 ID입니다.'}), 400
+        user_id_int, err_resp, err_code = _extract_request_user_id()
+        if err_resp:
+            return err_resp, err_code
 
         try:
             project_id_int = int(project_id)

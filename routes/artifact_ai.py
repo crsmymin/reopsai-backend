@@ -9,6 +9,7 @@ from services.openai_service import openai_service
 from services.gemini_service import gemini_service
 from routes.auth import tier_required
 from utils.b2b_access import get_owner_ids_for_request
+from utils.request_utils import _extract_request_user_id
 from rag_system.improved.improved_vector_db_service import VectorDBServiceWrapper
 from db.engine import session_scope
 from db.models.core import Artifact, ArtifactEditHistory
@@ -67,14 +68,9 @@ def list_artifact_edit_history(artifact_id):
         if session_scope is None:
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
-        user_id_header = request.headers.get('X-User-ID')
-        if not user_id_header:
-            return jsonify({'success': False, 'error': '사용자 인증이 필요합니다.'}), 401
-
-        try:
-            user_id_int = int(user_id_header)
-        except Exception:
-            user_id_int = user_id_header
+        user_id_int, err_resp, err_code = _extract_request_user_id()
+        if err_resp:
+            return err_resp, err_code
 
         owner_ids = _get_owner_ids_for_request(user_id_int)
         _, err_resp = _require_artifact_access(artifact_id, owner_ids)
@@ -135,14 +131,9 @@ def create_artifact_edit_history(artifact_id):
         if before_markdown == "" or after_markdown == "":
             return jsonify({'success': False, 'error': 'before_markdown / after_markdown가 필요합니다.'}), 400
 
-        user_id_header = request.headers.get('X-User-ID')
-        if not user_id_header:
-            return jsonify({'success': False, 'error': '사용자 인증이 필요합니다.'}), 401
-
-        try:
-            user_id_int = int(user_id_header)
-        except Exception:
-            user_id_int = user_id_header
+        user_id_int, err_resp, err_code = _extract_request_user_id()
+        if err_resp:
+            return err_resp, err_code
 
         owner_ids = _get_owner_ids_for_request(user_id_int)
         _, err_resp = _require_artifact_access(artifact_id, owner_ids)
@@ -236,18 +227,10 @@ def modify_artifact_text(artifact_id):
             }), 400
         
         # 사용자 인증 확인
-        user_id_header = request.headers.get('X-User-ID')
-        if not user_id_header:
-            return jsonify({
-                'success': False,
-                'error': '사용자 인증이 필요합니다.'
-            }), 401
-        
-        try:
-            user_id_int = int(user_id_header)
-        except Exception:
-            user_id_int = user_id_header
-        
+        user_id_int, err_resp, err_code = _extract_request_user_id()
+        if err_resp:
+            return err_resp, err_code
+
         # JWT에서 tier / team_id 정보 확인 (B2B 모드 지원)
         owner_ids = _get_owner_ids_for_request(user_id_int)
         

@@ -1,6 +1,7 @@
 """Study 및 Project 관련 Slug API 라우트"""
 
 from flask import Blueprint, jsonify, abort, request
+from flask_jwt_extended import get_jwt_identity
 from sqlalchemy import select
 
 from db.engine import session_scope
@@ -13,6 +14,27 @@ import traceback
 study_bp = Blueprint('study', __name__, url_prefix='/api')
 
 
+def _get_user_id_from_request():
+    """요청에서 사용자 ID를 추출 (X-User-ID 헤더 → JWT identity 폴백)"""
+    user_id_header = request.headers.get('X-User-ID')
+    if user_id_header:
+        try:
+            return int(user_id_header)
+        except Exception:
+            return user_id_header
+    # Fallback: JWT 쿠키 인증 시 새로고침 후 헤더가 없는 경우
+    try:
+        identity = get_jwt_identity()
+        if identity is not None:
+            try:
+                return int(identity)
+            except Exception:
+                return identity
+    except Exception:
+        pass
+    return None
+
+
 @study_bp.route('/studies/by-slug/<string:slug>', methods=['GET'])
 @tier_required(['free'])
 def get_study_by_slug(slug: str):
@@ -20,14 +42,9 @@ def get_study_by_slug(slug: str):
     if session_scope is None:
         abort(500, description='Database session is not initialized')
     
-    # 사용자 ID 확인 (header)
-    user_id_header = request.headers.get('X-User-ID')
-    if not user_id_header:
+    user_id_int = _get_user_id_from_request()
+    if user_id_int is None:
         return jsonify({'error': '사용자 인증이 필요합니다.'}), 401
-    try:
-        user_id_int = int(user_id_header)
-    except Exception:
-        user_id_int = user_id_header
 
     owner_ids, _team_id = get_owner_ids_for_request(user_id_int)
     allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
@@ -91,14 +108,9 @@ def get_project_by_slug(slug: str):
     if session_scope is None:
         abort(500, description='Database session is not initialized')
     
-    # 사용자 ID 확인 (header)
-    user_id_header = request.headers.get('X-User-ID')
-    if not user_id_header:
+    user_id_int = _get_user_id_from_request()
+    if user_id_int is None:
         return jsonify({'error': '사용자 인증이 필요합니다.'}), 401
-    try:
-        user_id_int = int(user_id_header)
-    except Exception:
-        user_id_int = user_id_header
 
     owner_ids, _team_id = get_owner_ids_for_request(user_id_int)
 

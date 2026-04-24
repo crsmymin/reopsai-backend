@@ -12,7 +12,7 @@ from typing import List, Optional, Set
 import requests
 from bs4 import BeautifulSoup
 from flask import Blueprint, Response, jsonify, request
-from flask_jwt_extended import get_jwt
+from flask_jwt_extended import get_jwt, get_jwt_identity
 from sqlalchemy import func, select
 from urllib.parse import urlparse
 
@@ -763,13 +763,9 @@ def stream_artifact_generation(artifact_id):
         return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
     # 사용자 ID 확인 (스트리밍 시작 전에)
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'error': '사용자 인증이 필요합니다.'}), 401
-    try:
-        user_id_int = int(user_id)
-    except Exception:
-        return jsonify({'error': '유효하지 않은 사용자 ID입니다.'}), 400
+    user_id_int, err_resp, err_code = _extract_request_user_id()
+    if err_resp:
+        return err_resp, err_code
 
     def generate():
         with session_scope() as db_session:
@@ -830,13 +826,9 @@ def delete_study(study_id):
         if not session_scope:
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
-        user_id = request.headers.get('X-User-ID')
-        if not user_id:
-            return jsonify({'error': '사용자 인증이 필요합니다.'}), 401
-        try:
-            user_id_int = int(user_id)
-        except Exception:
-            return jsonify({'error': '유효하지 않은 사용자 ID입니다.'}), 400
+        user_id_int, err_resp, err_code = _extract_request_user_id()
+        if err_resp:
+            return err_resp, err_code
 
         with session_scope() as db_session:
             study_obj = db_session.execute(
@@ -866,13 +858,9 @@ def delete_artifact(artifact_id):
         if not session_scope:
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
-        user_id = request.headers.get('X-User-ID')
-        if not user_id:
-            return jsonify({'success': False, 'error': '사용자 인증이 필요합니다.'}), 401
-        try:
-            user_id_int = int(user_id)
-        except Exception:
-            return jsonify({'success': False, 'error': '유효하지 않은 사용자 ID입니다.'}), 400
+        user_id_int, err_resp, err_code = _extract_request_user_id()
+        if err_resp:
+            return err_resp, err_code
 
         with session_scope() as db_session:
             artifact = db_session.execute(
@@ -898,13 +886,9 @@ def regenerate_study_plan(study_id):
 
         data = request.json or {}
         form_data = data.get('formData', {})
-        user_id = request.headers.get('X-User-ID')
-        if not user_id:
-            return jsonify({'error': '사용자 인증이 필요합니다.'}), 401
-        try:
-            user_id_int = int(user_id)
-        except Exception:
-            return jsonify({'error': '유효하지 않은 사용자 ID입니다.'}), 400
+        user_id_int, err_resp, err_code = _extract_request_user_id()
+        if err_resp:
+            return err_resp, err_code
 
         with session_scope() as db_session:
             study_obj = db_session.execute(
