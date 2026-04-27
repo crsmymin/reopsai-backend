@@ -114,6 +114,7 @@ def _build_user_payload(user: User, team_id=None, name_override=None, plan_code=
         "id": user.id,
         "email": user.email,
         "name": name_override if name_override is not None else user.name,
+        "company_name": user.company_name,
         "google_id": user.google_id,
         "tier": _normalize_tier(user.tier or "free"),
         "account_type": user.account_type or INDIVIDUAL_ACCOUNT_TYPE,

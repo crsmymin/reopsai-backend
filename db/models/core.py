@@ -26,6 +26,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
     name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    company_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     google_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True)
     tier: Mapped[str] = mapped_column(String(32), nullable=False, server_default="free", index=True)
     account_type: Mapped[str] = mapped_column(String(32), nullable=False, server_default="individual", index=True)

@@ -4,10 +4,11 @@ Admin 전용 API 라우트
 
 import traceback
 from datetime import datetime
+import math
 
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt, get_jwt_identity, jwt_required
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from werkzeug.security import generate_password_hash
 
 from db.engine import session_scope
@@ -17,6 +18,12 @@ from routes.auth import get_primary_team_id_for_user, tier_required
 
 admin_bp = Blueprint("admin", __name__)
 ALLOWED_PLAN_CODES = {"starter", "pro", "enterprise_plus"}
+ALLOWED_USER_PLAN_CODES = {"free", "basic", "premium"}
+USER_PLAN_CODE_ALIASES = {
+    "starter": "free",
+    "pro": "basic",
+    "enterprise_plus": "premium",
+}
 DEFAULT_ENTERPRISE_PASSWORD = "0000"
 
 
@@ -52,6 +59,439 @@ def _parse_iso_date(value: str):
         return datetime.fromisoformat(value)
     except Exception:
         return None
+
+
+def _pagination_params():
+    page = _to_int_or_none(request.args.get("page")) or 1
+    per_page = _to_int_or_none(request.args.get("per_page")) or 20
+    page = max(1, page)
+    per_page = max(1, min(100, per_page))
+    return page, per_page
+
+
+def _validate_plan_code(plan_code, *, required=False):
+    value = (plan_code or "").strip().lower()
+    if not value:
+        if required:
+            return None
+        return None
+    return value if value in ALLOWED_PLAN_CODES else None
+
+
+def _validate_user_plan_code(plan_code, *, required=False):
+    value = (plan_code or "").strip().lower()
+    if not value:
+        if required:
+            return None
+        return None
+    value = USER_PLAN_CODE_ALIASES.get(value, value)
+    return value if value in ALLOWED_USER_PLAN_CODES else None
+
+
+def _user_auth_type(user: User):
+    account_type = user.account_type or "individual"
+    if account_type == "enterprise":
+        return "enterprise"
+    if user.google_id:
+        return "google"
+    return "individual"
+
+
+def _account_list_payload(db_session, user: User):
+    owner_team = db_session.execute(
+        select(Team).where(Team.owner_id == user.id).order_by(Team.created_at.asc()).limit(1)
+    ).scalar_one_or_none()
+    member_row = None
+    member_team = None
+    if owner_team is None:
+        member_row = db_session.execute(
+            select(TeamMember)
+            .where(TeamMember.user_id == user.id)
+            .order_by(TeamMember.joined_at.asc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if member_row:
+            member_team = db_session.execute(
+                select(Team).where(Team.id == member_row.team_id).limit(1)
+            ).scalar_one_or_none()
+
+    team = owner_team or member_team
+    team_role = "owner" if owner_team else ("member" if member_row else None)
+    owner = None
+    if team and team.owner_id:
+        owner = db_session.execute(
+            select(User).where(User.id == team.owner_id).limit(1)
+        ).scalar_one_or_none()
+
+    account_type = user.account_type or "individual"
+    auth_type = _user_auth_type(user)
+    company_name = user.company_name or (owner.company_name if owner else None)
+    plan_code = team.plan_code if team else (user.tier or "free")
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "company_name": company_name,
+        "plan_code": plan_code,
+        "account_type": account_type,
+        "auth_type": auth_type,
+        "team_role": team_role,
+        "is_owner": team_role == "owner",
+        "team_id": team.id if team else None,
+        "team_name": team.name if team else None,
+        "created_at": _serialize_dt(user.created_at),
+    }
+
+
+def _team_payload(db_session, team: Team, owner: User = None):
+    if owner is None and team.owner_id is not None:
+        owner = db_session.execute(
+            select(User).where(User.id == team.owner_id).limit(1)
+        ).scalar_one_or_none()
+
+    member_count = (
+        db_session.execute(
+            select(func.count()).select_from(TeamMember).where(TeamMember.team_id == team.id)
+        ).scalar_one()
+        or 0
+    )
+    if team.owner_id:
+        owner_is_member = db_session.execute(
+            select(TeamMember.id)
+            .where(and_(TeamMember.team_id == team.id, TeamMember.user_id == team.owner_id))
+            .limit(1)
+        ).scalar_one_or_none()
+        if owner_is_member is None:
+            member_count += 1
+
+    company_name = owner.company_name if owner else None
+    return {
+        "id": team.id,
+        "team_name": team.name,
+        "description": team.description,
+        "plan_code": team.plan_code or "starter",
+        "enterprise_name": company_name,
+        "company_name": company_name,
+        "owner_email": owner.email if owner else None,
+        "enterprise_account_id": team.owner_id,
+        "owner_id": team.owner_id,
+        "member_count": int(member_count),
+        "created_at": _serialize_dt(team.created_at),
+    }
+
+
+@admin_bp.route("/api/admin/enterprise/accounts", methods=["GET"])
+@tier_required(["super"])
+def list_enterprise_accounts():
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        search = (request.args.get("search") or "").strip()
+        plan_code_raw = (request.args.get("plan_code") or "").strip().lower()
+        account_list_plan_codes = ALLOWED_PLAN_CODES | ALLOWED_USER_PLAN_CODES
+        plan_code = plan_code_raw if plan_code_raw in account_list_plan_codes else None
+        account_type = (request.args.get("account_type") or "").strip().lower()
+        team_role = (request.args.get("team_role") or "").strip().lower()
+        if request.args.get("plan_code") and not plan_code:
+            return jsonify({"success": False, "error": "유효하지 않은 plan_code입니다."}), 400
+        if account_type and account_type not in {"google", "enterprise", "individual"}:
+            return jsonify({"success": False, "error": "유효하지 않은 account_type입니다."}), 400
+        if team_role and team_role not in {"owner", "member"}:
+            return jsonify({"success": False, "error": "유효하지 않은 team_role입니다."}), 400
+        page, per_page = _pagination_params()
+
+        with session_scope() as db_session:
+            query = select(User).order_by(User.created_at.desc())
+            if search:
+                pattern = f"%{search.lower()}%"
+                query = query.where(
+                    or_(
+                        func.lower(User.email).like(pattern),
+                        func.lower(User.name).like(pattern),
+                        func.lower(User.company_name).like(pattern),
+                        User.id.in_(
+                            select(TeamMember.user_id)
+                            .join(Team, Team.id == TeamMember.team_id)
+                            .join(User, User.id == Team.owner_id)
+                            .where(func.lower(User.company_name).like(pattern))
+                        ),
+                    )
+                )
+            if account_type == "enterprise":
+                query = query.where(User.account_type == "enterprise")
+            elif account_type == "individual":
+                query = query.where(User.account_type != "enterprise")
+            elif account_type == "google":
+                query = query.where(User.account_type != "enterprise", User.google_id.is_not(None))
+
+            users = db_session.execute(query).scalars().all()
+            accounts = []
+            for user in users:
+                payload = _account_list_payload(db_session, user)
+                if plan_code and payload["plan_code"] != plan_code:
+                    continue
+                if team_role and payload["team_role"] != team_role:
+                    continue
+                accounts.append(payload)
+            total_count = len(accounts)
+            start = (page - 1) * per_page
+            end = start + per_page
+            payload = accounts[start:end]
+
+        return jsonify(
+            {
+                "accounts": payload,
+                "total_count": total_count,
+                "total_pages": math.ceil(total_count / per_page) if total_count else 0,
+                "current_page": page,
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, "Admin - 기업 계정 목록 조회")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/enterprise/accounts", methods=["POST"])
+@tier_required(["super"])
+def create_enterprise_account():
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        data = request.json or {}
+        email = (data.get("email") or "").strip().lower()
+        name = (data.get("name") or "").strip()
+        company_name = (data.get("company_name") or "").strip()
+        plan_code = _validate_plan_code(data.get("plan_code"), required=True)
+        team_name = (data.get("team_name") or "").strip()
+        team_description = (data.get("team_description") or data.get("description") or "").strip()
+
+        if not all([email, name, company_name, plan_code, team_name]):
+            return jsonify({"success": False, "error": "email, name, company_name, plan_code, team_name은 필수입니다."}), 400
+
+        with session_scope() as db_session:
+            exists = db_session.execute(
+                select(User.id).where(func.lower(User.email) == email).limit(1)
+            ).scalar_one_or_none()
+            if exists:
+                return jsonify({"success": False, "error": "이미 존재하는 이메일입니다."}), 409
+
+            user = User(
+                email=email,
+                name=name,
+                company_name=company_name,
+                tier="enterprise",
+                account_type="enterprise",
+                password_hash=generate_password_hash(DEFAULT_ENTERPRISE_PASSWORD),
+                password_reset_required=True,
+            )
+            db_session.add(user)
+            db_session.flush()
+            db_session.refresh(user)
+
+            team = Team(
+                owner_id=user.id,
+                name=team_name,
+                description=team_description or None,
+                status="active",
+                plan_code=plan_code,
+            )
+            db_session.add(team)
+            db_session.flush()
+            db_session.refresh(team)
+            db_session.add(TeamMember(team_id=team.id, user_id=user.id, role="owner"))
+
+            account_payload = {
+                "id": user.id,
+                "email": user.email,
+                "name": user.name,
+                "company_name": user.company_name,
+                "account_type": user.account_type,
+                "tier": user.tier,
+                "plan_code": team.plan_code,
+                "password_reset_required": bool(user.password_reset_required),
+            }
+            team_payload = {
+                "id": team.id,
+                "team_name": team.name,
+                "description": team.description,
+                "plan_code": team.plan_code,
+                "owner_id": team.owner_id,
+            }
+
+        return jsonify({"success": True, "account": account_payload, "team": team_payload}), 201
+    except Exception as e:
+        log_error(e, "Admin - 기업 계정 생성")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/enterprise/accounts/<int:account_id>", methods=["PUT"])
+@tier_required(["super"])
+def update_enterprise_account(account_id: int):
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        data = request.json or {}
+        has_name = "name" in data
+        has_company_name = "company_name" in data
+        has_plan_code = "plan_code" in data
+        if not has_name and not has_company_name and not has_plan_code:
+            return jsonify({"success": False, "error": "수정할 name, company_name 또는 plan_code가 필요합니다."}), 400
+
+        with session_scope() as db_session:
+            user = db_session.execute(
+                select(User).where(User.id == account_id).limit(1)
+            ).scalar_one_or_none()
+            if not user:
+                return jsonify({"success": False, "error": "계정을 찾을 수 없습니다."}), 404
+
+            auth_type = _user_auth_type(user)
+            plan_code = None
+            if has_plan_code:
+                if auth_type != "google":
+                    return jsonify({"success": False, "error": "Google SSO 계정만 이 API에서 플랜을 변경할 수 있습니다."}), 403
+                if (user.tier or "").strip().lower() not in ALLOWED_USER_PLAN_CODES:
+                    return jsonify({"success": False, "error": "free/basic/premium Google SSO 계정만 플랜을 변경할 수 있습니다."}), 403
+                plan_code = _validate_user_plan_code(data.get("plan_code"), required=True)
+                if not plan_code:
+                    allowed = sorted(ALLOWED_USER_PLAN_CODES | set(USER_PLAN_CODE_ALIASES.keys()))
+                    return jsonify({"success": False, "error": f"유효하지 않은 plan_code입니다: {allowed}"}), 400
+
+            if has_name:
+                user.name = (data.get("name") or "").strip() or None
+            if has_company_name:
+                user.company_name = (data.get("company_name") or "").strip() or None
+            if plan_code:
+                user.tier = plan_code
+            db_session.flush()
+
+            account_payload = _account_list_payload(db_session, user)
+
+        return jsonify({"success": True, "account": account_payload}), 200
+    except Exception as e:
+        log_error(e, f"Admin - 계정 수정 (account_id: {account_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/enterprise/accounts/<int:account_id>/reset-password", methods=["POST"])
+@tier_required(["super"])
+def reset_enterprise_account_password(account_id: int):
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        with session_scope() as db_session:
+            user = db_session.execute(
+                select(User).where(User.id == account_id).limit(1)
+            ).scalar_one_or_none()
+            if not user:
+                return jsonify({"success": False, "error": "계정을 찾을 수 없습니다."}), 404
+            user.password_hash = generate_password_hash(DEFAULT_ENTERPRISE_PASSWORD)
+            user.password_reset_required = True
+
+        return jsonify({"success": True, "message": "비밀번호가 0000으로 초기화되었습니다. 오너에게 알려주세요."}), 200
+    except Exception as e:
+        log_error(e, f"Admin - 기업 계정 비밀번호 초기화 (account_id: {account_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/teams", methods=["GET"])
+@tier_required(["super"])
+def list_admin_teams():
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        search = (request.args.get("search") or "").strip()
+        plan_code = _validate_plan_code(request.args.get("plan_code"))
+        enterprise_account_id = _to_int_or_none(request.args.get("enterprise_account_id"))
+        if request.args.get("plan_code") and not plan_code:
+            return jsonify({"success": False, "error": f"유효하지 않은 plan_code입니다: {sorted(ALLOWED_PLAN_CODES)}"}), 400
+        if request.args.get("enterprise_account_id") and enterprise_account_id is None:
+            return jsonify({"success": False, "error": "enterprise_account_id가 올바르지 않습니다."}), 400
+        page, per_page = _pagination_params()
+
+        with session_scope() as db_session:
+            query = select(Team).order_by(Team.created_at.desc())
+            if search:
+                query = query.where(func.lower(Team.name).like(f"%{search.lower()}%"))
+            if plan_code:
+                query = query.where(Team.plan_code == plan_code)
+            if enterprise_account_id is not None:
+                query = query.where(Team.owner_id == enterprise_account_id)
+
+            teams = db_session.execute(query).scalars().all()
+            total_count = len(teams)
+            start = (page - 1) * per_page
+            end = start + per_page
+            payload = [_team_payload(db_session, team) for team in teams[start:end]]
+
+        return jsonify(
+            {
+                "teams": payload,
+                "total_count": total_count,
+                "total_pages": math.ceil(total_count / per_page) if total_count else 0,
+                "current_page": page,
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, "Admin - 팀 목록 조회")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/teams", methods=["POST"])
+@tier_required(["super"])
+def create_admin_team():
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        data = request.json or {}
+        enterprise_account_id = _to_int_or_none(data.get("enterprise_account_id"))
+        team_name = (data.get("team_name") or "").strip()
+        description = (data.get("description") or "").strip()
+        requested_plan = _validate_plan_code(data.get("plan_code"))
+
+        if enterprise_account_id is None or not team_name:
+            return jsonify({"success": False, "error": "enterprise_account_id와 team_name은 필수입니다."}), 400
+        if data.get("plan_code") and not requested_plan:
+            return jsonify({"success": False, "error": f"유효하지 않은 plan_code입니다: {sorted(ALLOWED_PLAN_CODES)}"}), 400
+
+        with session_scope() as db_session:
+            owner = db_session.execute(
+                select(User).where(User.id == enterprise_account_id).limit(1)
+            ).scalar_one_or_none()
+            if not owner:
+                return jsonify({"success": False, "error": "기업 계정을 찾을 수 없습니다."}), 404
+            if owner.account_type != "enterprise":
+                return jsonify({"success": False, "error": "enterprise 계정만 팀 owner로 지정할 수 있습니다."}), 400
+
+            inherited_plan = db_session.execute(
+                select(Team.plan_code).where(Team.owner_id == enterprise_account_id).order_by(Team.created_at.asc()).limit(1)
+            ).scalar_one_or_none()
+            plan_code = requested_plan or inherited_plan or "starter"
+
+            team = Team(
+                owner_id=enterprise_account_id,
+                name=team_name,
+                description=description or None,
+                status="active",
+                plan_code=plan_code,
+            )
+            db_session.add(team)
+            db_session.flush()
+            db_session.refresh(team)
+            db_session.add(TeamMember(team_id=team.id, user_id=enterprise_account_id, role="owner"))
+            db_session.flush()
+
+            team_payload = _team_payload(db_session, team, owner)
+
+        return jsonify({"success": True, "team": team_payload}), 201
+    except Exception as e:
+        log_error(e, "Admin - 팀 생성")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @admin_bp.route("/api/admin/users", methods=["GET"])
