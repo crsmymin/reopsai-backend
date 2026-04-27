@@ -58,20 +58,25 @@ class WorkspaceRepository:
     @staticmethod
     def get_primary_team_id_for_user(session: Session, user_id: int) -> Optional[int]:
         owner_team = session.execute(
-            select(Team.id).where(Team.owner_id == user_id).limit(1)
+            select(Team.id).where(Team.owner_id == user_id, Team.status != "deleted").limit(1)
         ).scalar_one_or_none()
         if owner_team is not None:
             return int(owner_team)
 
         member_team = session.execute(
-            select(TeamMember.team_id).where(TeamMember.user_id == user_id).limit(1)
+            select(TeamMember.team_id)
+            .join(Team, Team.id == TeamMember.team_id)
+            .where(TeamMember.user_id == user_id, Team.status != "deleted")
+            .limit(1)
         ).scalar_one_or_none()
         return int(member_team) if member_team is not None else None
 
     @staticmethod
     def get_team_member_ids(session: Session, team_id: int) -> List[int]:
         rows = session.execute(
-            select(TeamMember.user_id).where(TeamMember.team_id == team_id)
+            select(TeamMember.user_id)
+            .join(Team, Team.id == TeamMember.team_id)
+            .where(TeamMember.team_id == team_id, Team.status != "deleted")
         ).scalars().all()
         return [int(row) for row in rows if row is not None]
 

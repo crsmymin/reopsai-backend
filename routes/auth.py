@@ -25,7 +25,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from config import Config
 from db.engine import session_scope
-from db.models.core import Artifact, Project, Study, Team, TeamMember, User
+from db.models.core import Artifact, Company, Project, Study, Team, TeamMember, User
 from pii_utils import sanitize_for_log, sanitize_prompt_for_llm
 
 
@@ -79,10 +79,38 @@ def _get_team_plan_code(db_session, team_id):
         return None
     try:
         return db_session.execute(
-            select(Team.plan_code).where(Team.id == int(team_id)).limit(1)
+            select(Team.plan_code)
+            .where(Team.id == int(team_id), Team.status != "deleted")
+            .limit(1)
         ).scalar_one_or_none()
     except Exception as exc:
         log_error(exc, "팀 plan_code 조회 실패")
+        return None
+
+
+def _get_company_name(db_session, company_id):
+    if not company_id:
+        return None
+    try:
+        return db_session.execute(
+            select(Company.name).where(Company.id == int(company_id)).limit(1)
+        ).scalar_one_or_none()
+    except Exception as exc:
+        log_error(exc, "회사명 조회 실패")
+        return None
+
+
+def _get_team_company_id(db_session, team_id):
+    if not team_id:
+        return None
+    try:
+        return db_session.execute(
+            select(Team.company_id)
+            .where(Team.id == int(team_id), Team.status != "deleted")
+            .limit(1)
+        ).scalar_one_or_none()
+    except Exception as exc:
+        log_error(exc, "팀 company_id 조회 실패")
         return None
 
 
@@ -97,11 +125,14 @@ def _build_auth_context(db_session, user: User):
         else None
     )
     plan_code = _get_team_plan_code(db_session, team_id)
+    company_id = user.company_id or _get_team_company_id(db_session, team_id)
     claims = {
         "tier": tier,
         "account_type": account_type,
         "password_reset_required": bool(user.password_reset_required),
     }
+    if company_id and account_type == ENTERPRISE_ACCOUNT_TYPE:
+        claims["company_id"] = int(company_id)
     if team_id:
         claims["team_id"] = int(team_id)
     if plan_code:
@@ -109,12 +140,13 @@ def _build_auth_context(db_session, user: User):
     return claims, team_id, plan_code
 
 
-def _build_user_payload(user: User, team_id=None, name_override=None, plan_code=None):
+def _build_user_payload(user: User, team_id=None, name_override=None, plan_code=None, company_id=None, company_name=None):
     payload = {
         "id": user.id,
         "email": user.email,
         "name": name_override if name_override is not None else user.name,
-        "company_name": user.company_name,
+        "company_id": company_id if company_id is not None else user.company_id,
+        "company_name": company_name if company_name is not None else user.company_name,
         "google_id": user.google_id,
         "tier": _normalize_tier(user.tier or "free"),
         "account_type": user.account_type or INDIVIDUAL_ACCOUNT_TYPE,
@@ -210,13 +242,18 @@ def get_primary_team_id_for_user(db_session, user_id):
     """
     try:
         owner_team_id = db_session.execute(
-            select(Team.id).where(Team.owner_id == int(user_id)).limit(1)
+            select(Team.id)
+            .where(Team.owner_id == int(user_id), Team.status != "deleted")
+            .limit(1)
         ).scalar_one_or_none()
         if owner_team_id is not None:
             return int(owner_team_id)
 
         member_team_id = db_session.execute(
-            select(TeamMember.team_id).where(TeamMember.user_id == int(user_id)).limit(1)
+            select(TeamMember.team_id)
+            .join(Team, Team.id == TeamMember.team_id)
+            .where(TeamMember.user_id == int(user_id), Team.status != "deleted")
+            .limit(1)
         ).scalar_one_or_none()
         return int(member_team_id) if member_team_id is not None else None
     except Exception as exc:
@@ -253,7 +290,13 @@ def login_with_password():
 
         claims, team_id, plan_code = _build_auth_context(db_session, user)
         access_token = create_access_token(identity=str(user.id), additional_claims=claims)
-        user_payload = _build_user_payload(user, team_id=team_id, plan_code=plan_code)
+        user_payload = _build_user_payload(
+            user,
+            team_id=team_id,
+            plan_code=plan_code,
+            company_name=_get_company_name(db_session, claims.get("company_id")),
+            company_id=claims.get("company_id"),
+        )
 
     return _auth_response(
         {
@@ -274,6 +317,7 @@ def protected_profile():
         "id": int(user_id) if str(user_id).isdigit() else user_id,
         "tier": _normalize_tier(claims.get("tier")),
         "account_type": claims.get("account_type", INDIVIDUAL_ACCOUNT_TYPE),
+        "company_id": claims.get("company_id"),
         "team_id": claims.get("team_id"),
         "plan_code": claims.get("plan_code"),
         "password_reset_required": bool(claims.get("password_reset_required")),
@@ -287,7 +331,14 @@ def protected_profile():
                 ).scalar_one_or_none()
                 if user:
                     claims_context, team_id, plan_code = _build_auth_context(db_session, user)
-                    user_payload = _build_user_payload(user, team_id=team_id, plan_code=plan_code)
+                    company_name = _get_company_name(db_session, claims_context.get("company_id"))
+                    user_payload = _build_user_payload(
+                        user,
+                        team_id=team_id,
+                        plan_code=plan_code,
+                        company_id=claims_context.get("company_id"),
+                        company_name=company_name,
+                    )
                     user_payload["tier"] = _normalize_tier(claims_context.get("tier"))
         except Exception as exc:
             log_error(exc, "프로필 사용자 조회 실패")
@@ -600,6 +651,7 @@ def enterprise_login():
 
             claims, team_id, plan_code = _build_auth_context(db_session, user)
             access_token = create_access_token(identity=str(user.id), additional_claims=claims)
+            company_name = _get_company_name(db_session, claims.get("company_id"))
 
         return _auth_response(
             {
@@ -607,7 +659,13 @@ def enterprise_login():
                 "message": "기업 계정 로그인 성공",
                 "access_token": access_token,
                 "token_type": "bearer",
-                "user": _build_user_payload(user, team_id=team_id, plan_code=plan_code),
+                "user": _build_user_payload(
+                    user,
+                    team_id=team_id,
+                    plan_code=plan_code,
+                    company_id=claims.get("company_id"),
+                    company_name=company_name,
+                ),
             },
             access_token,
         )
@@ -652,6 +710,7 @@ def enterprise_change_password():
 
             claims, team_id, plan_code = _build_auth_context(db_session, user)
             access_token = create_access_token(identity=str(user.id), additional_claims=claims)
+            company_name = _get_company_name(db_session, claims.get("company_id"))
 
         return _auth_response(
             {
@@ -659,7 +718,13 @@ def enterprise_change_password():
                 "message": "비밀번호가 변경되었습니다.",
                 "access_token": access_token,
                 "token_type": "bearer",
-                "user": _build_user_payload(user, team_id=team_id, plan_code=plan_code),
+                "user": _build_user_payload(
+                    user,
+                    team_id=team_id,
+                    plan_code=plan_code,
+                    company_id=claims.get("company_id"),
+                    company_name=company_name,
+                ),
             },
             access_token,
         )

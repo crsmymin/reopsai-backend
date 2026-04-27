@@ -9,7 +9,7 @@ from sqlalchemy import and_, func, select, update
 
 from api_logger import log_error
 from db.engine import session_scope
-from db.models.core import Team, TeamMember, User
+from db.models.core import Company, Team, TeamMember, User
 from routes.auth import get_primary_team_id_for_user, tier_required
 
 
@@ -30,7 +30,24 @@ def _get_identity_int():
 
 def _get_team_id_for_enterprise(db_session, user_id_int):
     claims = get_jwt()
-    return claims.get("team_id") or get_primary_team_id_for_user(db_session, user_id_int)
+    team_id = claims.get("team_id")
+    if team_id:
+        active_team_id = db_session.execute(
+            select(Team.id)
+            .where(Team.id == int(team_id), Team.status != "deleted")
+            .limit(1)
+        ).scalar_one_or_none()
+        if active_team_id:
+            return active_team_id
+    return get_primary_team_id_for_user(db_session, user_id_int)
+
+
+def _company_name_for(db_session, company_id):
+    if not company_id:
+        return None
+    return db_session.execute(
+        select(Company.name).where(Company.id == int(company_id)).limit(1)
+    ).scalar_one_or_none()
 
 
 @b2b_bp.route("/team", methods=["GET"])
@@ -59,12 +76,15 @@ def b2b_get_my_team():
                 ), 404
 
             team = db_session.execute(
-                select(Team).where(Team.id == int(team_id)).limit(1)
+                select(Team)
+                .where(Team.id == int(team_id), Team.status != "deleted")
+                .limit(1)
             ).scalar_one_or_none()
             if not team:
                 return jsonify({"success": False, "error": "팀 정보를 찾을 수 없습니다."}), 404
 
             owner_id = team.owner_id
+            company_name = _company_name_for(db_session, team.company_id)
             member_rows = db_session.execute(
                 select(TeamMember)
                 .where(TeamMember.team_id == int(team_id))
@@ -125,6 +145,8 @@ def b2b_get_my_team():
                         "name": team.name,
                         "description": team.description,
                         "status": team.status,
+                        "company_id": team.company_id,
+                        "company_name": company_name,
                         "plan_code": team.plan_code or "starter",
                         "owner_id": owner_id,
                         "created_at": _serialize_dt(team.created_at),
@@ -164,7 +186,9 @@ def b2b_add_team_member():
                 return jsonify({"success": False, "error": "이 계정에 연결된 팀이 없습니다."}), 404
 
             team = db_session.execute(
-                select(Team).where(Team.id == int(team_id)).limit(1)
+                select(Team)
+                .where(Team.id == int(team_id), Team.status != "deleted")
+                .limit(1)
             ).scalar_one_or_none()
             if not team:
                 return jsonify({"success": False, "error": "팀 정보를 찾을 수 없습니다."}), 404
@@ -213,7 +237,12 @@ def b2b_add_team_member():
                 db_session.execute(
                     update(User)
                     .where(User.id == target_user.id)
-                    .values(tier="enterprise", account_type="enterprise")
+                    .values(
+                        tier="enterprise",
+                        account_type="enterprise",
+                        company_id=team.company_id,
+                        company_name=_company_name_for(db_session, team.company_id),
+                    )
                 )
             except Exception as exc:
                 log_error(exc, "B2B - 팀원 enterprise 등급 업데이트 실패")
@@ -242,7 +271,9 @@ def b2b_remove_team_member(member_user_id: int):
                 return jsonify({"success": False, "error": "이 계정에 연결된 팀이 없습니다."}), 404
 
             team = db_session.execute(
-                select(Team).where(Team.id == int(team_id)).limit(1)
+                select(Team)
+                .where(Team.id == int(team_id), Team.status != "deleted")
+                .limit(1)
             ).scalar_one_or_none()
             if not team:
                 return jsonify({"success": False, "error": "팀 정보를 찾을 수 없습니다."}), 404
@@ -305,7 +336,9 @@ def b2b_change_team_member_role(member_user_id: int):
                 return jsonify({"success": False, "error": "이 계정에 연결된 팀이 없습니다."}), 404
 
             team = db_session.execute(
-                select(Team).where(Team.id == int(team_id)).limit(1)
+                select(Team)
+                .where(Team.id == int(team_id), Team.status != "deleted")
+                .limit(1)
             ).scalar_one_or_none()
             if not team:
                 return jsonify({"success": False, "error": "팀 정보를 찾을 수 없습니다."}), 404

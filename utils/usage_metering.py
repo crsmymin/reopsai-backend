@@ -71,11 +71,16 @@ def record_team_usage_event(
 
     try:
         with session_scope() as db_session:
-            team = db_session.execute(select(Team.id).where(Team.id == int(team_id)).limit(1)).scalar_one_or_none()
+            team = db_session.execute(
+                select(Team)
+                .where(Team.id == int(team_id), Team.status != "deleted")
+                .limit(1)
+            ).scalar_one_or_none()
             if not team:
                 return
             db_session.add(
                 TeamUsageEvent(
+                    company_id=team.company_id,
                     team_id=int(team_id),
                     user_id=int(user_id) if user_id is not None else None,
                     feature_key=feature_key,

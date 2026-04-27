@@ -59,6 +59,15 @@ def _resolve_owner_ids_sqlalchemy(user_id_int):
 
     if tier == 'enterprise' and session_scope and WorkspaceRepository:
         with session_scope() as db_session:
+            if team_id:
+                try:
+                    from db.models.core import Team
+                    from sqlalchemy import select
+                    team_id = db_session.execute(
+                        select(Team.id).where(Team.id == int(team_id), Team.status != 'deleted').limit(1)
+                    ).scalar_one_or_none()
+                except Exception:
+                    team_id = None
             if not team_id and token_user_id:
                 team_id = WorkspaceRepository.get_primary_team_id_for_user(db_session, int(token_user_id))
             if team_id:

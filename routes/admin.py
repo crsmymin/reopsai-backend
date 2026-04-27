@@ -12,7 +12,7 @@ from sqlalchemy import and_, func, or_, select, update
 from werkzeug.security import generate_password_hash
 
 from db.engine import session_scope
-from db.models.core import Artifact, Project, Study, Team, TeamMember, TeamUsageEvent, User, UserFeedback
+from db.models.core import Artifact, Company, Project, Study, Team, TeamMember, TeamUsageEvent, User, UserFeedback
 from routes.auth import get_primary_team_id_for_user, tier_required
 
 
@@ -25,6 +25,7 @@ USER_PLAN_CODE_ALIASES = {
     "enterprise_plus": "premium",
 }
 DEFAULT_ENTERPRISE_PASSWORD = "0000"
+DELETED_TEAM_STATUS = "deleted"
 
 
 def log_error(error, context=""):
@@ -97,16 +98,76 @@ def _user_auth_type(user: User):
     return "individual"
 
 
+def _get_company(db_session, company_id):
+    if not company_id:
+        return None
+    return db_session.execute(
+        select(Company).where(Company.id == int(company_id)).limit(1)
+    ).scalar_one_or_none()
+
+
+def _get_or_create_company(db_session, name):
+    company_name = (name or "").strip()
+    if not company_name:
+        return None
+    company = db_session.execute(
+        select(Company).where(func.lower(Company.name) == company_name.lower()).limit(1)
+    ).scalar_one_or_none()
+    if company:
+        return company
+    company = Company(name=company_name, status="active")
+    db_session.add(company)
+    db_session.flush()
+    db_session.refresh(company)
+    return company
+
+
+def _rename_or_create_company_for_user(db_session, user: User, name):
+    company_name = (name or "").strip()
+    if not company_name:
+        user.company_id = None
+        user.company_name = None
+        return None
+
+    existing = db_session.execute(
+        select(Company).where(func.lower(Company.name) == company_name.lower()).limit(1)
+    ).scalar_one_or_none()
+    if existing and existing.id != user.company_id:
+        company = existing
+    elif user.company_id:
+        company = _get_company(db_session, user.company_id)
+        if company:
+            company.name = company_name
+        else:
+            company = _get_or_create_company(db_session, company_name)
+    else:
+        company = _get_or_create_company(db_session, company_name)
+
+    user.company_id = company.id if company else None
+    user.company_name = company_name
+    return company
+
+
+def _company_name_for(db_session, company_id, fallback=None):
+    company = _get_company(db_session, company_id)
+    return company.name if company else fallback
+
+
 def _account_list_payload(db_session, user: User):
     owner_team = db_session.execute(
-        select(Team).where(Team.owner_id == user.id).order_by(Team.created_at.asc()).limit(1)
+        select(Team)
+        .where(Team.owner_id == user.id, Team.status != DELETED_TEAM_STATUS)
+        .order_by(Team.created_at.asc())
+        .limit(1)
     ).scalar_one_or_none()
     member_row = None
     member_team = None
     if owner_team is None:
         member_row = db_session.execute(
             select(TeamMember)
+            .join(Team, Team.id == TeamMember.team_id)
             .where(TeamMember.user_id == user.id)
+            .where(Team.status != DELETED_TEAM_STATUS)
             .order_by(TeamMember.joined_at.asc())
             .limit(1)
         ).scalar_one_or_none()
@@ -125,12 +186,18 @@ def _account_list_payload(db_session, user: User):
 
     account_type = user.account_type or "individual"
     auth_type = _user_auth_type(user)
-    company_name = user.company_name or (owner.company_name if owner else None)
+    company_id = user.company_id or (team.company_id if team else None) or (owner.company_id if owner else None)
+    company_name = _company_name_for(
+        db_session,
+        company_id,
+        user.company_name or (owner.company_name if owner else None),
+    )
     plan_code = team.plan_code if team else (user.tier or "free")
     return {
         "id": user.id,
         "email": user.email,
         "name": user.name,
+        "company_id": company_id,
         "company_name": company_name,
         "plan_code": plan_code,
         "account_type": account_type,
@@ -164,12 +231,15 @@ def _team_payload(db_session, team: Team, owner: User = None):
         if owner_is_member is None:
             member_count += 1
 
-    company_name = owner.company_name if owner else None
+    company_id = team.company_id or (owner.company_id if owner else None)
+    company_name = _company_name_for(db_session, company_id, owner.company_name if owner else None)
     return {
         "id": team.id,
         "team_name": team.name,
         "description": team.description,
+        "status": team.status,
         "plan_code": team.plan_code or "starter",
+        "company_id": company_id,
         "enterprise_name": company_name,
         "company_name": company_name,
         "owner_email": owner.email if owner else None,
@@ -202,7 +272,11 @@ def list_enterprise_accounts():
         page, per_page = _pagination_params()
 
         with session_scope() as db_session:
-            query = select(User).order_by(User.created_at.desc())
+            query = (
+                select(User)
+                .where(func.lower(User.tier).notin_(["super", "admin"]))
+                .order_by(User.created_at.desc())
+            )
             if search:
                 pattern = f"%{search.lower()}%"
                 query = query.where(
@@ -210,11 +284,14 @@ def list_enterprise_accounts():
                         func.lower(User.email).like(pattern),
                         func.lower(User.name).like(pattern),
                         func.lower(User.company_name).like(pattern),
+                        User.company_id.in_(
+                            select(Company.id).where(func.lower(Company.name).like(pattern))
+                        ),
                         User.id.in_(
                             select(TeamMember.user_id)
                             .join(Team, Team.id == TeamMember.team_id)
-                            .join(User, User.id == Team.owner_id)
-                            .where(func.lower(User.company_name).like(pattern))
+                            .join(Company, Company.id == Team.company_id)
+                            .where(func.lower(Company.name).like(pattern))
                         ),
                     )
                 )
@@ -277,9 +354,12 @@ def create_enterprise_account():
             if exists:
                 return jsonify({"success": False, "error": "이미 존재하는 이메일입니다."}), 409
 
+            company = _get_or_create_company(db_session, company_name)
+
             user = User(
                 email=email,
                 name=name,
+                company_id=company.id if company else None,
                 company_name=company_name,
                 tier="enterprise",
                 account_type="enterprise",
@@ -291,6 +371,7 @@ def create_enterprise_account():
             db_session.refresh(user)
 
             team = Team(
+                company_id=company.id if company else None,
                 owner_id=user.id,
                 name=team_name,
                 description=team_description or None,
@@ -306,6 +387,7 @@ def create_enterprise_account():
                 "id": user.id,
                 "email": user.email,
                 "name": user.name,
+                "company_id": user.company_id,
                 "company_name": user.company_name,
                 "account_type": user.account_type,
                 "tier": user.tier,
@@ -317,6 +399,7 @@ def create_enterprise_account():
                 "team_name": team.name,
                 "description": team.description,
                 "plan_code": team.plan_code,
+                "company_id": team.company_id,
                 "owner_id": team.owner_id,
             }
 
@@ -362,7 +445,14 @@ def update_enterprise_account(account_id: int):
             if has_name:
                 user.name = (data.get("name") or "").strip() or None
             if has_company_name:
-                user.company_name = (data.get("company_name") or "").strip() or None
+                company = _rename_or_create_company_for_user(db_session, user, data.get("company_name"))
+                db_session.execute(
+                    update(Team).where(Team.owner_id == user.id).values(company_id=company.id if company else None)
+                )
+                member_team_ids = select(TeamMember.team_id).where(TeamMember.user_id == user.id)
+                db_session.execute(
+                    update(Team).where(Team.id.in_(member_team_ids)).values(company_id=company.id if company else None)
+                )
             if plan_code:
                 user.tier = plan_code
             db_session.flush()
@@ -397,6 +487,108 @@ def reset_enterprise_account_password(account_id: int):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@admin_bp.route("/api/admin/users/<int:user_id>", methods=["DELETE"])
+@jwt_required()
+def delete_admin_user(user_id: int):
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        requester_id = _to_int_or_none(get_jwt_identity())
+        claims = get_jwt() or {}
+        requester_tier = (claims.get("tier") or "").strip().lower()
+        if requester_tier == "admin":
+            requester_tier = "super"
+
+        if claims.get("password_reset_required"):
+            return jsonify({"success": False, "error": "비밀번호 변경 후 이용할 수 있습니다."}), 403
+        if requester_id is None:
+            return jsonify({"success": False, "error": "인증 정보를 확인할 수 없습니다."}), 401
+        if requester_id == user_id:
+            return jsonify({"success": False, "error": "현재 로그인한 계정은 이 API로 삭제할 수 없습니다."}), 400
+
+        with session_scope() as db_session:
+            target = db_session.execute(
+                select(User).where(User.id == int(user_id)).limit(1)
+            ).scalar_one_or_none()
+            if not target:
+                return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
+
+            is_super = requester_tier == "super"
+            owned_team_ids = db_session.execute(
+                select(Team.id).where(Team.owner_id == int(requester_id), Team.status != DELETED_TEAM_STATUS)
+            ).scalars().all()
+            is_owned_team_member = False
+            if owned_team_ids:
+                is_owned_team_member = (
+                    db_session.execute(
+                        select(TeamMember.id)
+                        .where(
+                            and_(
+                                TeamMember.team_id.in_(owned_team_ids),
+                                TeamMember.user_id == int(user_id),
+                            )
+                        )
+                        .limit(1)
+                    ).scalar_one_or_none()
+                    is not None
+                )
+
+            if not (is_super or is_owned_team_member):
+                return jsonify({"success": False, "error": "권한이 없습니다. super 또는 해당 팀 owner만 삭제할 수 있습니다."}), 403
+
+            target_tier = (target.tier or "free").strip().lower()
+            if not is_super and target_tier == "super":
+                return jsonify({"success": False, "error": "팀 owner는 super 계정을 삭제할 수 없습니다."}), 403
+
+            target_owner_team_count = db_session.execute(
+                select(func.count())
+                .select_from(Team)
+                .where(Team.owner_id == int(user_id), Team.status != DELETED_TEAM_STATUS)
+            ).scalar_one() or 0
+            if not is_super and target_owner_team_count:
+                return jsonify({"success": False, "error": "팀 owner 계정은 super만 삭제할 수 있습니다."}), 403
+
+            membership_count = db_session.execute(
+                select(func.count()).select_from(TeamMember).where(TeamMember.user_id == int(user_id))
+            ).scalar_one() or 0
+            project_count = db_session.execute(
+                select(func.count()).select_from(Project).where(Project.owner_id == int(user_id))
+            ).scalar_one() or 0
+            usage_event_count = db_session.execute(
+                select(func.count()).select_from(TeamUsageEvent).where(TeamUsageEvent.user_id == int(user_id))
+            ).scalar_one() or 0
+
+            deleted_user_payload = {
+                "id": target.id,
+                "email": target.email,
+                "name": target.name,
+                "tier": target.tier,
+                "account_type": target.account_type,
+                "company_id": target.company_id,
+                "company_name": _company_name_for(db_session, target.company_id, target.company_name),
+            }
+
+            db_session.delete(target)
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "사용자가 삭제되었습니다.",
+                "deleted_user": deleted_user_payload,
+                "affected": {
+                    "team_memberships": int(membership_count),
+                    "owned_teams_released": int(target_owner_team_count),
+                    "owned_projects": int(project_count),
+                    "usage_events_anonymized": int(usage_event_count),
+                },
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, f"Admin - 사용자 삭제 실패 (user_id: {user_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @admin_bp.route("/api/admin/teams", methods=["GET"])
 @tier_required(["super"])
 def list_admin_teams():
@@ -407,14 +599,19 @@ def list_admin_teams():
         search = (request.args.get("search") or "").strip()
         plan_code = _validate_plan_code(request.args.get("plan_code"))
         enterprise_account_id = _to_int_or_none(request.args.get("enterprise_account_id"))
+        status = (request.args.get("status") or "active").strip().lower()
         if request.args.get("plan_code") and not plan_code:
             return jsonify({"success": False, "error": f"유효하지 않은 plan_code입니다: {sorted(ALLOWED_PLAN_CODES)}"}), 400
         if request.args.get("enterprise_account_id") and enterprise_account_id is None:
             return jsonify({"success": False, "error": "enterprise_account_id가 올바르지 않습니다."}), 400
+        if status not in {"active", "deleted", "all"}:
+            return jsonify({"success": False, "error": "status는 active, deleted, all 중 하나여야 합니다."}), 400
         page, per_page = _pagination_params()
 
         with session_scope() as db_session:
             query = select(Team).order_by(Team.created_at.desc())
+            if status != "all":
+                query = query.where(Team.status == status)
             if search:
                 query = query.where(func.lower(Team.name).like(f"%{search.lower()}%"))
             if plan_code:
@@ -467,13 +664,20 @@ def create_admin_team():
                 return jsonify({"success": False, "error": "기업 계정을 찾을 수 없습니다."}), 404
             if owner.account_type != "enterprise":
                 return jsonify({"success": False, "error": "enterprise 계정만 팀 owner로 지정할 수 있습니다."}), 400
+            if not owner.company_id and owner.company_name:
+                company = _get_or_create_company(db_session, owner.company_name)
+                owner.company_id = company.id if company else None
 
             inherited_plan = db_session.execute(
-                select(Team.plan_code).where(Team.owner_id == enterprise_account_id).order_by(Team.created_at.asc()).limit(1)
+                select(Team.plan_code)
+                .where(Team.owner_id == enterprise_account_id, Team.status != DELETED_TEAM_STATUS)
+                .order_by(Team.created_at.asc())
+                .limit(1)
             ).scalar_one_or_none()
             plan_code = requested_plan or inherited_plan or "starter"
 
             team = Team(
+                company_id=owner.company_id,
                 owner_id=enterprise_account_id,
                 name=team_name,
                 description=description or None,
@@ -494,6 +698,51 @@ def create_admin_team():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@admin_bp.route("/api/admin/teams/<int:team_id>", methods=["DELETE"])
+@tier_required(["super"])
+def soft_delete_admin_team(team_id: int):
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        with session_scope() as db_session:
+            team = db_session.execute(
+                select(Team).where(Team.id == int(team_id)).limit(1)
+            ).scalar_one_or_none()
+            if not team:
+                return jsonify({"success": False, "error": "팀을 찾을 수 없습니다."}), 404
+
+            member_count = db_session.execute(
+                select(func.count()).select_from(TeamMember).where(TeamMember.team_id == int(team_id))
+            ).scalar_one() or 0
+            usage_event_count = db_session.execute(
+                select(func.count()).select_from(TeamUsageEvent).where(TeamUsageEvent.team_id == int(team_id))
+            ).scalar_one() or 0
+
+            was_deleted = team.status == DELETED_TEAM_STATUS
+            if not was_deleted:
+                team.status = DELETED_TEAM_STATUS
+                team.updated_at = datetime.now()
+                db_session.flush()
+
+            team_payload = _team_payload(db_session, team)
+
+        return jsonify(
+            {
+                "success": True,
+                "message": "팀이 삭제 처리되었습니다." if not was_deleted else "이미 삭제 처리된 팀입니다.",
+                "team": team_payload,
+                "affected": {
+                    "members_preserved": int(member_count),
+                    "usage_events_preserved": int(usage_event_count),
+                },
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, f"Admin - 팀 삭제 실패 (team_id: {team_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @admin_bp.route("/api/admin/users", methods=["GET"])
 @tier_required(["super"])
 def get_all_users_with_tier():
@@ -504,7 +753,9 @@ def get_all_users_with_tier():
 
         with session_scope() as db_session:
             users = db_session.execute(
-                select(User).order_by(User.created_at.desc())
+                select(User)
+                .where(func.lower(User.tier).notin_(["super", "admin"]))
+                .order_by(User.created_at.desc())
             ).scalars().all()
 
             payload_users = []
@@ -575,7 +826,9 @@ def get_all_users_with_tier():
                         team_id = get_primary_team_id_for_user(db_session, user.id)
                         if team_id:
                             team = db_session.execute(
-                                select(Team).where(Team.id == int(team_id)).limit(1)
+                                select(Team)
+                                .where(Team.id == int(team_id), Team.status != DELETED_TEAM_STATUS)
+                                .limit(1)
                             ).scalar_one_or_none()
                             if team:
                                 enterprise_team_id = team.id
@@ -587,6 +840,8 @@ def get_all_users_with_tier():
                     {
                         "id": user.id,
                         "email": user.email,
+                        "company_id": user.company_id,
+                        "company_name": _company_name_for(db_session, user.company_id, user.company_name),
                         "tier": tier,
                         "account_type": user.account_type or "individual",
                         "password_reset_required": bool(user.password_reset_required),
@@ -601,7 +856,9 @@ def get_all_users_with_tier():
                         "enterprise_team_name": enterprise_team_name,
                         "enterprise_plan_code": (
                             db_session.execute(
-                                select(Team.plan_code).where(Team.id == enterprise_team_id).limit(1)
+                                select(Team.plan_code)
+                                .where(Team.id == enterprise_team_id, Team.status != DELETED_TEAM_STATUS)
+                                .limit(1)
                             ).scalar_one_or_none()
                             if enterprise_team_id
                             else None
@@ -702,7 +959,7 @@ def get_user_enterprise_info(user_id):
                 log_error(exc, "Admin - 대표 팀 ID 조회 실패")
 
             owner_teams = db_session.execute(
-                select(Team).where(Team.owner_id == user_id_int)
+                select(Team).where(Team.owner_id == user_id_int, Team.status != DELETED_TEAM_STATUS)
             ).scalars().all()
             owner_teams_payload = [
                 {
@@ -725,7 +982,7 @@ def get_user_enterprise_info(user_id):
             teams_by_id = {}
             if member_team_ids:
                 member_teams = db_session.execute(
-                    select(Team).where(Team.id.in_(member_team_ids))
+                    select(Team).where(Team.id.in_(member_team_ids), Team.status != DELETED_TEAM_STATUS)
                 ).scalars().all()
                 teams_by_id = {t.id: t for t in member_teams}
 
@@ -751,6 +1008,8 @@ def get_user_enterprise_info(user_id):
             user_payload = {
                 "id": user.id,
                 "email": user.email,
+                "company_id": user.company_id,
+                "company_name": _company_name_for(db_session, user.company_id, user.company_name),
                 "tier": tier,
                 "account_type": user.account_type or "individual",
                 "password_reset_required": bool(user.password_reset_required),
@@ -792,6 +1051,7 @@ def init_enterprise_team_for_user(user_id):
         data = request.json or {}
         team_name = data.get("team_name")
         team_description = data.get("description") or ""
+        company_name = (data.get("company_name") or "").strip()
         requested_plan_code = (data.get("plan_code") or "starter").strip().lower()
         plan_code = requested_plan_code if requested_plan_code in ALLOWED_PLAN_CODES else "starter"
 
@@ -803,9 +1063,12 @@ def init_enterprise_team_for_user(user_id):
                 return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
 
             existing_owner_team = db_session.execute(
-                select(Team).where(Team.owner_id == user_id_int).limit(1)
+                select(Team)
+                .where(Team.owner_id == user_id_int, Team.status != DELETED_TEAM_STATUS)
+                .limit(1)
             ).scalar_one_or_none()
             if existing_owner_team:
+                company_name_payload = _company_name_for(db_session, existing_owner_team.company_id or user.company_id, user.company_name)
                 return jsonify(
                     {
                         "success": True,
@@ -813,6 +1076,8 @@ def init_enterprise_team_for_user(user_id):
                         "user": {
                             "id": user.id,
                             "email": user.email,
+                            "company_id": user.company_id,
+                            "company_name": company_name_payload,
                             "tier": user.tier or "free",
                             "account_type": user.account_type or "individual",
                             "password_reset_required": bool(user.password_reset_required),
@@ -821,6 +1086,7 @@ def init_enterprise_team_for_user(user_id):
                         "team": {
                             "id": existing_owner_team.id,
                             "name": existing_owner_team.name,
+                            "company_id": existing_owner_team.company_id,
                             "plan_code": existing_owner_team.plan_code or "starter",
                         },
                     }
@@ -839,10 +1105,15 @@ def init_enterprise_team_for_user(user_id):
                 user.account_type = "enterprise"
                 user.password_hash = generate_password_hash(DEFAULT_ENTERPRISE_PASSWORD)
                 user.password_reset_required = True
+                company = _get_or_create_company(db_session, company_name or user.company_name or team_name)
+                if company:
+                    user.company_id = company.id
+                    user.company_name = company.name
             except Exception as exc:
                 log_error(exc, "Admin - 사용자 tier enterprise 업데이트 실패")
 
             team = Team(
+                company_id=user.company_id,
                 name=team_name,
                 description=team_description,
                 owner_id=user_id_int,
@@ -869,6 +1140,8 @@ def init_enterprise_team_for_user(user_id):
             user_payload = {
                 "id": user.id,
                 "email": user.email,
+                "company_id": user.company_id,
+                "company_name": _company_name_for(db_session, user.company_id, user.company_name),
                 "tier": user.tier or "enterprise",
                 "account_type": user.account_type or "enterprise",
                 "password_reset_required": bool(user.password_reset_required),
@@ -878,6 +1151,7 @@ def init_enterprise_team_for_user(user_id):
                 "id": team.id,
                 "name": team.name,
                 "description": team.description,
+                "company_id": team.company_id,
                 "owner_id": team.owner_id,
                 "status": team.status,
                 "plan_code": team.plan_code,
@@ -921,7 +1195,11 @@ def create_enterprise_user():
         password_hash = generate_password_hash(DEFAULT_ENTERPRISE_PASSWORD)
 
         with session_scope() as db_session:
-            team = db_session.execute(select(Team).where(Team.id == int(team_id)).limit(1)).scalar_one_or_none()
+            team = db_session.execute(
+                select(Team)
+                .where(Team.id == int(team_id), Team.status != DELETED_TEAM_STATUS)
+                .limit(1)
+            ).scalar_one_or_none()
             if not team:
                 return jsonify({"success": False, "error": "팀을 찾을 수 없습니다."}), 404
 
@@ -942,6 +1220,8 @@ def create_enterprise_user():
             if existing:
                 user = existing
                 user.name = name or user.name
+                user.company_id = team.company_id
+                user.company_name = _company_name_for(db_session, team.company_id, user.company_name)
                 user.tier = "enterprise"
                 user.account_type = "enterprise"
                 user.password_hash = password_hash
@@ -950,6 +1230,8 @@ def create_enterprise_user():
                 user = User(
                     email=email,
                     name=name,
+                    company_id=team.company_id,
+                    company_name=_company_name_for(db_session, team.company_id),
                     tier="enterprise",
                     account_type="enterprise",
                     password_hash=password_hash,
@@ -970,6 +1252,8 @@ def create_enterprise_user():
 
             if role == "owner":
                 team.owner_id = user.id
+                if user.company_id and not team.company_id:
+                    team.company_id = user.company_id
 
             db_session.flush()
             db_session.refresh(user)
@@ -981,6 +1265,8 @@ def create_enterprise_user():
                         "id": user.id,
                         "email": user.email,
                         "name": user.name,
+                        "company_id": user.company_id,
+                        "company_name": _company_name_for(db_session, user.company_id, user.company_name),
                         "tier": user.tier,
                         "account_type": user.account_type,
                         "password_reset_required": bool(user.password_reset_required),
@@ -989,6 +1275,7 @@ def create_enterprise_user():
                     "team": {
                         "id": team.id,
                         "name": team.name,
+                        "company_id": team.company_id,
                         "plan_code": team.plan_code or "starter",
                         "role": role,
                     },
@@ -1012,7 +1299,11 @@ def update_team_plan_code(team_id: int):
             return jsonify({"success": False, "error": f"유효하지 않은 plan_code입니다: {sorted(ALLOWED_PLAN_CODES)}"}), 400
 
         with session_scope() as db_session:
-            team = db_session.execute(select(Team).where(Team.id == team_id).limit(1)).scalar_one_or_none()
+            team = db_session.execute(
+                select(Team)
+                .where(Team.id == team_id, Team.status != DELETED_TEAM_STATUS)
+                .limit(1)
+            ).scalar_one_or_none()
             if not team:
                 return jsonify({"success": False, "error": "팀을 찾을 수 없습니다."}), 404
             team.plan_code = plan_code
@@ -1041,6 +1332,7 @@ def get_team_usage(team_id: int):
             team = db_session.execute(select(Team).where(Team.id == team_id).limit(1)).scalar_one_or_none()
             if not team:
                 return jsonify({"success": False, "error": "팀을 찾을 수 없습니다."}), 404
+            team_company_name = _company_name_for(db_session, team.company_id)
 
             base = select(
                 func.sum(TeamUsageEvent.request_count),
@@ -1084,6 +1376,8 @@ def get_team_usage(team_id: int):
                 "team": {
                     "id": team.id,
                     "name": team.name,
+                    "company_id": team.company_id,
+                    "company_name": team_company_name,
                     "plan_code": team.plan_code or "starter",
                 },
                 "window": {
@@ -1116,6 +1410,124 @@ def get_team_usage(team_id: int):
         ), 200
     except Exception as e:
         log_error(e, f"Admin - 팀 사용량 조회 실패 (team_id: {team_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/companies/<int:company_id>/usage", methods=["GET"])
+@tier_required(["super"])
+def get_company_usage(company_id: int):
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        start_at = _parse_iso_date(request.args.get("start_at"))
+        end_at = _parse_iso_date(request.args.get("end_at"))
+        if request.args.get("start_at") and start_at is None:
+            return jsonify({"success": False, "error": "start_at은 ISO datetime 형식이어야 합니다."}), 400
+        if request.args.get("end_at") and end_at is None:
+            return jsonify({"success": False, "error": "end_at은 ISO datetime 형식이어야 합니다."}), 400
+
+        with session_scope() as db_session:
+            company = db_session.execute(
+                select(Company).where(Company.id == company_id).limit(1)
+            ).scalar_one_or_none()
+            if not company:
+                return jsonify({"success": False, "error": "회사를 찾을 수 없습니다."}), 404
+
+            base = select(
+                func.sum(TeamUsageEvent.request_count),
+                func.sum(TeamUsageEvent.prompt_tokens),
+                func.sum(TeamUsageEvent.completion_tokens),
+                func.sum(TeamUsageEvent.total_tokens),
+            ).where(TeamUsageEvent.company_id == company_id)
+            if start_at:
+                base = base.where(TeamUsageEvent.occurred_at >= start_at)
+            if end_at:
+                base = base.where(TeamUsageEvent.occurred_at <= end_at)
+            total_row = db_session.execute(base).one()
+
+            by_feature_q = select(
+                TeamUsageEvent.feature_key,
+                func.sum(TeamUsageEvent.request_count).label("request_count"),
+                func.sum(TeamUsageEvent.total_tokens).label("total_tokens"),
+            ).where(TeamUsageEvent.company_id == company_id)
+            if start_at:
+                by_feature_q = by_feature_q.where(TeamUsageEvent.occurred_at >= start_at)
+            if end_at:
+                by_feature_q = by_feature_q.where(TeamUsageEvent.occurred_at <= end_at)
+            by_feature_q = by_feature_q.group_by(TeamUsageEvent.feature_key).order_by(TeamUsageEvent.feature_key.asc())
+            feature_rows = db_session.execute(by_feature_q).all()
+
+            by_team_q = select(
+                TeamUsageEvent.team_id,
+                func.sum(TeamUsageEvent.request_count).label("request_count"),
+                func.sum(TeamUsageEvent.total_tokens).label("total_tokens"),
+            ).where(TeamUsageEvent.company_id == company_id)
+            if start_at:
+                by_team_q = by_team_q.where(TeamUsageEvent.occurred_at >= start_at)
+            if end_at:
+                by_team_q = by_team_q.where(TeamUsageEvent.occurred_at <= end_at)
+            by_team_q = by_team_q.group_by(TeamUsageEvent.team_id).order_by(TeamUsageEvent.team_id.asc())
+            team_rows = db_session.execute(by_team_q).all()
+
+            by_user_q = select(
+                TeamUsageEvent.user_id,
+                func.sum(TeamUsageEvent.request_count).label("request_count"),
+                func.sum(TeamUsageEvent.total_tokens).label("total_tokens"),
+            ).where(TeamUsageEvent.company_id == company_id)
+            if start_at:
+                by_user_q = by_user_q.where(TeamUsageEvent.occurred_at >= start_at)
+            if end_at:
+                by_user_q = by_user_q.where(TeamUsageEvent.occurred_at <= end_at)
+            by_user_q = by_user_q.group_by(TeamUsageEvent.user_id).order_by(TeamUsageEvent.user_id.asc())
+            user_rows = db_session.execute(by_user_q).all()
+
+        return jsonify(
+            {
+                "success": True,
+                "company": {
+                    "id": company.id,
+                    "name": company.name,
+                    "status": company.status,
+                },
+                "window": {
+                    "start_at": _serialize_dt(start_at),
+                    "end_at": _serialize_dt(end_at),
+                },
+                "totals": {
+                    "request_count": int(total_row[0] or 0),
+                    "prompt_tokens": int(total_row[1] or 0),
+                    "completion_tokens": int(total_row[2] or 0),
+                    "total_tokens": int(total_row[3] or 0),
+                },
+                "by_feature": [
+                    {
+                        "feature_key": row.feature_key,
+                        "request_count": int(row.request_count or 0),
+                        "total_tokens": int(row.total_tokens or 0),
+                    }
+                    for row in feature_rows
+                ],
+                "by_team": [
+                    {
+                        "team_id": row.team_id,
+                        "request_count": int(row.request_count or 0),
+                        "total_tokens": int(row.total_tokens or 0),
+                    }
+                    for row in team_rows
+                ],
+                "by_user": [
+                    {
+                        "user_id": row.user_id,
+                        "request_count": int(row.request_count or 0),
+                        "total_tokens": int(row.total_tokens or 0),
+                    }
+                    for row in user_rows
+                ],
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, f"Admin - 회사 사용량 조회 실패 (company_id: {company_id})")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

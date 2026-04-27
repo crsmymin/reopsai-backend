@@ -12,7 +12,7 @@ from flask_jwt_extended import get_jwt, get_jwt_identity
 from sqlalchemy import select
 
 from db.engine import session_scope
-from db.models.core import TeamMember
+from db.models.core import Team, TeamMember
 from routes.auth import get_primary_team_id_for_user
 
 
@@ -26,7 +26,11 @@ def _to_int_or_raw(value):
 def get_enterprise_team_id(db_session, claims: dict, token_identity) -> Optional[int]:
     team_id = claims.get("team_id")
     if team_id:
-        return team_id
+        active_team_id = db_session.execute(
+            select(Team.id).where(Team.id == int(team_id), Team.status != "deleted").limit(1)
+        ).scalar_one_or_none()
+        if active_team_id:
+            return active_team_id
     token_user_id = _to_int_or_raw(token_identity)
     if token_user_id:
         try:
