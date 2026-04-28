@@ -19,7 +19,7 @@ from flask_jwt_extended import (
 )
 from google.auth.transport import requests
 from google.oauth2 import id_token
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -37,6 +37,7 @@ PASSWORD_CHANGE_ALLOWED_PATHS = {
     "/api/auth/enterprise/change-password",
     "/api/profile",
 }
+ENTERPRISE_PROFILE_UPDATE_FIELDS = {"name", "team_id"}
 
 
 def log_api_call(endpoint, method, data=None):
@@ -730,6 +731,125 @@ def enterprise_change_password():
         )
     except Exception as e:
         log_error(e, "기업 계정 비밀번호 변경 실패")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@auth_bp.route("/api/auth/enterprise/profile", methods=["PUT"])
+@jwt_required()
+def enterprise_update_profile():
+    try:
+        claims = get_jwt() or {}
+        if claims.get("account_type") != ENTERPRISE_ACCOUNT_TYPE:
+            return jsonify({"success": False, "error": "기업 계정만 프로필 수정이 가능합니다."}), 403
+        if claims.get("password_reset_required"):
+            return jsonify({"success": False, "error": "비밀번호 변경 후 프로필을 수정할 수 있습니다."}), 403
+
+        user_id = get_jwt_identity()
+        user_id_int = int(user_id) if user_id is not None and str(user_id).isdigit() else None
+        if user_id_int is None:
+            return jsonify({"success": False, "error": "인증 정보가 없습니다."}), 401
+
+        data = request.get_json() or {}
+        unknown_fields = sorted(set(data.keys()) - ENTERPRISE_PROFILE_UPDATE_FIELDS)
+        if unknown_fields:
+            return jsonify({"success": False, "error": f"수정할 수 없는 필드입니다: {unknown_fields}"}), 400
+        if not any(field in data for field in ENTERPRISE_PROFILE_UPDATE_FIELDS):
+            return jsonify({"success": False, "error": "수정할 name 또는 team_id가 필요합니다."}), 400
+
+        with session_scope() as db_session:
+            user = db_session.execute(
+                select(User).where(User.id == user_id_int).limit(1)
+            ).scalar_one_or_none()
+            if not user:
+                return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
+            if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) != ENTERPRISE_ACCOUNT_TYPE:
+                return jsonify({"success": False, "error": "기업 계정만 프로필 수정이 가능합니다."}), 403
+
+            if "name" in data:
+                name = (data.get("name") or "").strip()
+                if not name:
+                    return jsonify({"success": False, "error": "name은 비워둘 수 없습니다."}), 400
+                user.name = name
+
+            if "team_id" in data:
+                try:
+                    target_team_id = int(data.get("team_id"))
+                except (TypeError, ValueError):
+                    return jsonify({"success": False, "error": "team_id가 올바르지 않습니다."}), 400
+
+                target_team = db_session.execute(
+                    select(Team)
+                    .where(Team.id == target_team_id, Team.status != "deleted")
+                    .limit(1)
+                ).scalar_one_or_none()
+                if not target_team:
+                    return jsonify({"success": False, "error": "변경할 팀을 찾을 수 없습니다."}), 404
+
+                company_id = user.company_id or target_team.company_id
+                if not company_id or target_team.company_id != company_id:
+                    return jsonify({"success": False, "error": "같은 회사의 팀으로만 소속을 변경할 수 있습니다."}), 403
+
+                owned_team_id = db_session.execute(
+                    select(Team.id)
+                    .where(Team.owner_id == user_id_int, Team.status != "deleted")
+                    .limit(1)
+                ).scalar_one_or_none()
+                if owned_team_id and int(owned_team_id) != int(target_team_id):
+                    return jsonify({"success": False, "error": "팀 owner는 본인 소속팀을 직접 변경할 수 없습니다."}), 400
+
+                same_company_team_ids = select(Team.id).where(
+                    Team.company_id == company_id,
+                    Team.status != "deleted",
+                )
+                db_session.execute(
+                    TeamMember.__table__.delete().where(
+                        and_(
+                            TeamMember.user_id == user_id_int,
+                            TeamMember.team_id.in_(same_company_team_ids),
+                            TeamMember.team_id != target_team_id,
+                        )
+                    )
+                )
+
+                current_membership = db_session.execute(
+                    select(TeamMember)
+                    .where(
+                        TeamMember.user_id == user_id_int,
+                        TeamMember.team_id == target_team_id,
+                    )
+                    .limit(1)
+                ).scalar_one_or_none()
+                if not current_membership:
+                    db_session.add(TeamMember(team_id=target_team_id, user_id=user_id_int, role="member"))
+
+                user.company_id = company_id
+                if not user.company_name:
+                    user.company_name = _get_company_name(db_session, company_id)
+
+            db_session.flush()
+            claims_context, team_id, plan_code = _build_auth_context(db_session, user)
+            access_token = create_access_token(identity=str(user.id), additional_claims=claims_context)
+            company_name = _get_company_name(db_session, claims_context.get("company_id"))
+            user_payload = _build_user_payload(
+                user,
+                team_id=team_id,
+                plan_code=plan_code,
+                company_id=claims_context.get("company_id"),
+                company_name=company_name,
+            )
+
+        return _auth_response(
+            {
+                "success": True,
+                "message": "프로필이 수정되었습니다.",
+                "access_token": access_token,
+                "token_type": "bearer",
+                "user": user_payload,
+            },
+            access_token,
+        )
+    except Exception as e:
+        log_error(e, "기업 계정 프로필 수정 실패")
         return jsonify({"success": False, "error": str(e)}), 500
 
 

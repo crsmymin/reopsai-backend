@@ -1251,9 +1251,17 @@ def create_enterprise_user():
                 db_session.add(TeamMember(team_id=int(team_id), user_id=user.id, role=role))
 
             if role == "owner":
+                db_session.execute(
+                    update(TeamMember)
+                    .where(and_(TeamMember.team_id == int(team_id), TeamMember.user_id != user.id))
+                    .values(role="member")
+                )
                 team.owner_id = user.id
                 if user.company_id and not team.company_id:
                     team.company_id = user.company_id
+            else:
+                if team.owner_id == user.id:
+                    return jsonify({"success": False, "error": "현재 팀 owner는 member로 생성/변경할 수 없습니다."}), 400
 
             db_session.flush()
             db_session.refresh(user)
