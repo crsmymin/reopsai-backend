@@ -48,33 +48,27 @@ def _resolve_owner_ids_sqlalchemy(user_id_int):
     except Exception:
         token_user_id = None
 
-    tier = claims.get('tier')
-    team_id = claims.get('team_id')
+    account_type = claims.get('account_type')
+    company_id = claims.get('company_id')
 
     try:
         from db.engine import session_scope
-        from db.repositories.workspace_repository import WorkspaceRepository
     except Exception:
         return owner_ids
 
-    if tier == 'enterprise' and session_scope and WorkspaceRepository:
+    if account_type == 'business' and company_id and session_scope:
         with session_scope() as db_session:
-            if team_id:
-                try:
-                    from db.models.core import Team
-                    from sqlalchemy import select
-                    team_id = db_session.execute(
-                        select(Team.id).where(Team.id == int(team_id), Team.status != 'deleted').limit(1)
-                    ).scalar_one_or_none()
-                except Exception:
-                    team_id = None
-            if not team_id and token_user_id:
-                team_id = WorkspaceRepository.get_primary_team_id_for_user(db_session, int(token_user_id))
-            if team_id:
-                member_ids = WorkspaceRepository.get_team_member_ids(db_session, int(team_id))
+            try:
+                from db.models.core import CompanyMember
+                from sqlalchemy import select
+                member_ids = db_session.execute(
+                    select(CompanyMember.user_id).where(CompanyMember.company_id == int(company_id))
+                ).scalars().all()
                 if token_user_id and token_user_id not in member_ids:
                     member_ids.append(int(token_user_id))
                 if member_ids:
                     owner_ids = member_ids
+            except Exception:
+                return owner_ids
 
     return owner_ids

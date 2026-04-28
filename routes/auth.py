@@ -31,13 +31,14 @@ from pii_utils import sanitize_for_log, sanitize_prompt_for_llm
 
 auth_bp = Blueprint("auth", __name__)
 
-ENTERPRISE_ACCOUNT_TYPE = "enterprise"
+BUSINESS_ACCOUNT_TYPE = "business"
 INDIVIDUAL_ACCOUNT_TYPE = "individual"
 PASSWORD_CHANGE_ALLOWED_PATHS = {
     "/api/auth/enterprise/change-password",
+    "/api/auth/business/change-password",
     "/api/profile",
 }
-ENTERPRISE_PROFILE_UPDATE_FIELDS = {"name", "team_id"}
+BUSINESS_PROFILE_UPDATE_FIELDS = {"name", "department"}
 
 
 def log_api_call(endpoint, method, data=None):
@@ -75,20 +76,6 @@ def _normalize_tier(raw_tier: str) -> str:
     return tier
 
 
-def _get_team_plan_code(db_session, team_id):
-    if not team_id:
-        return None
-    try:
-        return db_session.execute(
-            select(Team.plan_code)
-            .where(Team.id == int(team_id), Team.status != "deleted")
-            .limit(1)
-        ).scalar_one_or_none()
-    except Exception as exc:
-        log_error(exc, "팀 plan_code 조회 실패")
-        return None
-
-
 def _get_company_name(db_session, company_id):
     if not company_id:
         return None
@@ -101,63 +88,37 @@ def _get_company_name(db_session, company_id):
         return None
 
 
-def _get_team_company_id(db_session, team_id):
-    if not team_id:
-        return None
-    try:
-        return db_session.execute(
-            select(Team.company_id)
-            .where(Team.id == int(team_id), Team.status != "deleted")
-            .limit(1)
-        ).scalar_one_or_none()
-    except Exception as exc:
-        log_error(exc, "팀 company_id 조회 실패")
-        return None
-
-
 def _build_auth_context(db_session, user: User):
     tier = _normalize_tier(user.tier or "free")
     account_type = user.account_type or (
-        ENTERPRISE_ACCOUNT_TYPE if tier == "enterprise" else INDIVIDUAL_ACCOUNT_TYPE
+        BUSINESS_ACCOUNT_TYPE if tier == "enterprise" else INDIVIDUAL_ACCOUNT_TYPE
     )
-    team_id = (
-        get_primary_team_id_for_user(db_session, user.id)
-        if account_type == ENTERPRISE_ACCOUNT_TYPE or tier == "enterprise"
-        else None
-    )
-    plan_code = _get_team_plan_code(db_session, team_id)
-    company_id = user.company_id or _get_team_company_id(db_session, team_id)
     claims = {
         "tier": tier,
         "account_type": account_type,
         "password_reset_required": bool(user.password_reset_required),
     }
-    if company_id and account_type == ENTERPRISE_ACCOUNT_TYPE:
-        claims["company_id"] = int(company_id)
-    if team_id:
-        claims["team_id"] = int(team_id)
-    if plan_code:
-        claims["plan_code"] = plan_code
-    return claims, team_id, plan_code
+    if user.company_id and account_type == BUSINESS_ACCOUNT_TYPE:
+        claims["company_id"] = int(user.company_id)
+    if getattr(user, "department", None):
+        claims["department"] = user.department
+    return claims
 
 
-def _build_user_payload(user: User, team_id=None, name_override=None, plan_code=None, company_id=None, company_name=None):
+def _build_user_payload(user: User, name_override=None, company_id=None, company_name=None):
     payload = {
         "id": user.id,
         "email": user.email,
         "name": name_override if name_override is not None else user.name,
         "company_id": company_id if company_id is not None else user.company_id,
-        "company_name": company_name if company_name is not None else user.company_name,
+        "company_name": company_name,
+        "department": user.department,
         "google_id": user.google_id,
         "tier": _normalize_tier(user.tier or "free"),
         "account_type": user.account_type or INDIVIDUAL_ACCOUNT_TYPE,
         "password_reset_required": bool(user.password_reset_required),
         "created_at": _serialize_dt(user.created_at),
     }
-    if team_id:
-        payload["team_id"] = team_id
-    if plan_code:
-        payload["plan_code"] = plan_code
     return payload
 
 
@@ -289,12 +250,10 @@ def login_with_password():
         if not user:
             return jsonify({"error": "User not found"}), 404
 
-        claims, team_id, plan_code = _build_auth_context(db_session, user)
+        claims = _build_auth_context(db_session, user)
         access_token = create_access_token(identity=str(user.id), additional_claims=claims)
         user_payload = _build_user_payload(
             user,
-            team_id=team_id,
-            plan_code=plan_code,
             company_name=_get_company_name(db_session, claims.get("company_id")),
             company_id=claims.get("company_id"),
         )
@@ -319,8 +278,7 @@ def protected_profile():
         "tier": _normalize_tier(claims.get("tier")),
         "account_type": claims.get("account_type", INDIVIDUAL_ACCOUNT_TYPE),
         "company_id": claims.get("company_id"),
-        "team_id": claims.get("team_id"),
-        "plan_code": claims.get("plan_code"),
+        "department": claims.get("department"),
         "password_reset_required": bool(claims.get("password_reset_required")),
     }
 
@@ -331,12 +289,10 @@ def protected_profile():
                     select(User).where(User.id == int(user_id)).limit(1)
                 ).scalar_one_or_none()
                 if user:
-                    claims_context, team_id, plan_code = _build_auth_context(db_session, user)
+                    claims_context = _build_auth_context(db_session, user)
                     company_name = _get_company_name(db_session, claims_context.get("company_id"))
                     user_payload = _build_user_payload(
                         user,
-                        team_id=team_id,
-                        plan_code=plan_code,
                         company_id=claims_context.get("company_id"),
                         company_name=company_name,
                     )
@@ -494,8 +450,8 @@ def login_user():
 
         if not user:
             return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
-        if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) == ENTERPRISE_ACCOUNT_TYPE:
-            return jsonify({"success": False, "error": "기업 계정은 enterprise 로그인만 사용할 수 있습니다."}), 403
+        if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) == BUSINESS_ACCOUNT_TYPE:
+            return jsonify({"success": False, "error": "기업 계정은 business 로그인만 사용할 수 있습니다."}), 403
 
         return jsonify(
             {
@@ -562,7 +518,7 @@ def verify_google_token():
                 user = db_session.execute(select(User).where(User.email == email).limit(1)).scalar_one_or_none()
                 is_new_user = False
                 if user:
-                    if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) == ENTERPRISE_ACCOUNT_TYPE:
+                    if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) == BUSINESS_ACCOUNT_TYPE:
                         return jsonify(
                             {
                                 "success": False,
@@ -586,14 +542,14 @@ def verify_google_token():
                     db_session.refresh(user)
                     is_new_user = True
 
-                claims, team_id, plan_code = _build_auth_context(db_session, user)
+                claims = _build_auth_context(db_session, user)
                 access_token = create_access_token(identity=str(user.id), additional_claims=claims)
 
             return _auth_response(
                 {
                     "success": True,
                     "message": "구글 계정으로 가입 완료!" if is_new_user else "로그인 성공!",
-                    "user": _build_user_payload(user, team_id=team_id, name_override=name, plan_code=plan_code),
+                    "user": _build_user_payload(user, name_override=name, company_name=_get_company_name(db_session, claims.get("company_id"))),
                     "access_token": access_token,
                     "token_type": "bearer",
                     "is_new_user": is_new_user,
@@ -626,6 +582,7 @@ def get_google_config():
 
 
 @auth_bp.route("/api/auth/enterprise/login", methods=["POST"])
+@auth_bp.route("/api/auth/business/login", methods=["POST"])
 def enterprise_login():
     try:
         data = request.get_json() or {}
@@ -644,13 +601,13 @@ def enterprise_login():
             if not user:
                 return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
 
-            if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) != ENTERPRISE_ACCOUNT_TYPE:
+            if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) != BUSINESS_ACCOUNT_TYPE:
                 return jsonify({"success": False, "error": "일반 계정은 Google OAuth로 로그인해야 합니다."}), 403
 
             if not user.password_hash or not check_password_hash(user.password_hash, password):
                 return jsonify({"success": False, "error": "이메일 또는 비밀번호가 올바르지 않습니다."}), 401
 
-            claims, team_id, plan_code = _build_auth_context(db_session, user)
+            claims = _build_auth_context(db_session, user)
             access_token = create_access_token(identity=str(user.id), additional_claims=claims)
             company_name = _get_company_name(db_session, claims.get("company_id"))
 
@@ -662,8 +619,6 @@ def enterprise_login():
                 "token_type": "bearer",
                 "user": _build_user_payload(
                     user,
-                    team_id=team_id,
-                    plan_code=plan_code,
                     company_id=claims.get("company_id"),
                     company_name=company_name,
                 ),
@@ -676,11 +631,12 @@ def enterprise_login():
 
 
 @auth_bp.route("/api/auth/enterprise/change-password", methods=["POST"])
+@auth_bp.route("/api/auth/business/change-password", methods=["POST"])
 @jwt_required()
 def enterprise_change_password():
     try:
         claims = get_jwt() or {}
-        if claims.get("account_type") != ENTERPRISE_ACCOUNT_TYPE:
+        if claims.get("account_type") != BUSINESS_ACCOUNT_TYPE:
             return jsonify({"success": False, "error": "기업 계정만 비밀번호 변경이 가능합니다."}), 403
 
         data = request.get_json() or {}
@@ -701,7 +657,7 @@ def enterprise_change_password():
             ).scalar_one_or_none()
             if not user:
                 return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
-            if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) != ENTERPRISE_ACCOUNT_TYPE:
+            if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) != BUSINESS_ACCOUNT_TYPE:
                 return jsonify({"success": False, "error": "기업 계정만 비밀번호 변경이 가능합니다."}), 403
             if not user.password_hash or not check_password_hash(user.password_hash, current_password):
                 return jsonify({"success": False, "error": "현재 비밀번호가 올바르지 않습니다."}), 401
@@ -709,7 +665,7 @@ def enterprise_change_password():
             user.password_hash = generate_password_hash(new_password)
             user.password_reset_required = False
 
-            claims, team_id, plan_code = _build_auth_context(db_session, user)
+            claims = _build_auth_context(db_session, user)
             access_token = create_access_token(identity=str(user.id), additional_claims=claims)
             company_name = _get_company_name(db_session, claims.get("company_id"))
 
@@ -721,8 +677,6 @@ def enterprise_change_password():
                 "token_type": "bearer",
                 "user": _build_user_payload(
                     user,
-                    team_id=team_id,
-                    plan_code=plan_code,
                     company_id=claims.get("company_id"),
                     company_name=company_name,
                 ),
@@ -735,11 +689,12 @@ def enterprise_change_password():
 
 
 @auth_bp.route("/api/auth/enterprise/profile", methods=["PUT"])
+@auth_bp.route("/api/auth/business/profile", methods=["PUT"])
 @jwt_required()
 def enterprise_update_profile():
     try:
         claims = get_jwt() or {}
-        if claims.get("account_type") != ENTERPRISE_ACCOUNT_TYPE:
+        if claims.get("account_type") != BUSINESS_ACCOUNT_TYPE:
             return jsonify({"success": False, "error": "기업 계정만 프로필 수정이 가능합니다."}), 403
         if claims.get("password_reset_required"):
             return jsonify({"success": False, "error": "비밀번호 변경 후 프로필을 수정할 수 있습니다."}), 403
@@ -750,11 +705,11 @@ def enterprise_update_profile():
             return jsonify({"success": False, "error": "인증 정보가 없습니다."}), 401
 
         data = request.get_json() or {}
-        unknown_fields = sorted(set(data.keys()) - ENTERPRISE_PROFILE_UPDATE_FIELDS)
+        unknown_fields = sorted(set(data.keys()) - BUSINESS_PROFILE_UPDATE_FIELDS)
         if unknown_fields:
             return jsonify({"success": False, "error": f"수정할 수 없는 필드입니다: {unknown_fields}"}), 400
-        if not any(field in data for field in ENTERPRISE_PROFILE_UPDATE_FIELDS):
-            return jsonify({"success": False, "error": "수정할 name 또는 team_id가 필요합니다."}), 400
+        if not any(field in data for field in BUSINESS_PROFILE_UPDATE_FIELDS):
+            return jsonify({"success": False, "error": "수정할 name 또는 department가 필요합니다."}), 400
 
         with session_scope() as db_session:
             user = db_session.execute(
@@ -762,7 +717,7 @@ def enterprise_update_profile():
             ).scalar_one_or_none()
             if not user:
                 return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
-            if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) != ENTERPRISE_ACCOUNT_TYPE:
+            if (user.account_type or INDIVIDUAL_ACCOUNT_TYPE) != BUSINESS_ACCOUNT_TYPE:
                 return jsonify({"success": False, "error": "기업 계정만 프로필 수정이 가능합니다."}), 403
 
             if "name" in data:
@@ -771,69 +726,15 @@ def enterprise_update_profile():
                     return jsonify({"success": False, "error": "name은 비워둘 수 없습니다."}), 400
                 user.name = name
 
-            if "team_id" in data:
-                try:
-                    target_team_id = int(data.get("team_id"))
-                except (TypeError, ValueError):
-                    return jsonify({"success": False, "error": "team_id가 올바르지 않습니다."}), 400
-
-                target_team = db_session.execute(
-                    select(Team)
-                    .where(Team.id == target_team_id, Team.status != "deleted")
-                    .limit(1)
-                ).scalar_one_or_none()
-                if not target_team:
-                    return jsonify({"success": False, "error": "변경할 팀을 찾을 수 없습니다."}), 404
-
-                company_id = user.company_id or target_team.company_id
-                if not company_id or target_team.company_id != company_id:
-                    return jsonify({"success": False, "error": "같은 회사의 팀으로만 소속을 변경할 수 있습니다."}), 403
-
-                owned_team_id = db_session.execute(
-                    select(Team.id)
-                    .where(Team.owner_id == user_id_int, Team.status != "deleted")
-                    .limit(1)
-                ).scalar_one_or_none()
-                if owned_team_id and int(owned_team_id) != int(target_team_id):
-                    return jsonify({"success": False, "error": "팀 owner는 본인 소속팀을 직접 변경할 수 없습니다."}), 400
-
-                same_company_team_ids = select(Team.id).where(
-                    Team.company_id == company_id,
-                    Team.status != "deleted",
-                )
-                db_session.execute(
-                    TeamMember.__table__.delete().where(
-                        and_(
-                            TeamMember.user_id == user_id_int,
-                            TeamMember.team_id.in_(same_company_team_ids),
-                            TeamMember.team_id != target_team_id,
-                        )
-                    )
-                )
-
-                current_membership = db_session.execute(
-                    select(TeamMember)
-                    .where(
-                        TeamMember.user_id == user_id_int,
-                        TeamMember.team_id == target_team_id,
-                    )
-                    .limit(1)
-                ).scalar_one_or_none()
-                if not current_membership:
-                    db_session.add(TeamMember(team_id=target_team_id, user_id=user_id_int, role="member"))
-
-                user.company_id = company_id
-                if not user.company_name:
-                    user.company_name = _get_company_name(db_session, company_id)
+            if "department" in data:
+                user.department = (data.get("department") or "").strip() or None
 
             db_session.flush()
-            claims_context, team_id, plan_code = _build_auth_context(db_session, user)
+            claims_context = _build_auth_context(db_session, user)
             access_token = create_access_token(identity=str(user.id), additional_claims=claims_context)
             company_name = _get_company_name(db_session, claims_context.get("company_id"))
             user_payload = _build_user_payload(
                 user,
-                team_id=team_id,
-                plan_code=plan_code,
                 company_id=claims_context.get("company_id"),
                 company_name=company_name,
             )

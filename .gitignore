@@ -67,3 +67,4 @@ chroma_db/
 
 # Uploads (로컬 개발용)
 uploads/
+/docs

@@ -2,6 +2,8 @@ from db.models.core import (
     Artifact,
     ArtifactEditHistory,
     Company,
+    CompanyMember,
+    CompanyUsageEvent,
     Project,
     Study,
     StudySchedule,
@@ -14,6 +16,8 @@ from db.models.core import (
 
 __all__ = [
     "Company",
+    "CompanyMember",
+    "CompanyUsageEvent",
     "User",
     "Project",
     "Study",

@@ -1,4 +1,4 @@
-"""Usage metering utilities for team-level plan tracking."""
+"""Usage metering utilities for business company tracking."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from flask import g, has_request_context
 from sqlalchemy import select
 
 from db.engine import session_scope
-from db.models.core import Team, TeamUsageEvent
+from db.models.core import CompanyUsageEvent, Team, TeamUsageEvent
 
 
 FEATURE_PREFIXES = {
@@ -80,8 +80,42 @@ def record_team_usage_event(
                 return
             db_session.add(
                 TeamUsageEvent(
-                    company_id=team.company_id,
                     team_id=int(team_id),
+                    user_id=int(user_id) if user_id is not None else None,
+                    feature_key=feature_key,
+                    endpoint=(endpoint or "")[:255],
+                    request_count=1,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                )
+            )
+    except Exception:
+        return
+
+
+def record_company_usage_event(
+    *,
+    endpoint: str,
+    company_id: Optional[int],
+    user_id: Optional[int],
+    feature_key: Optional[str],
+) -> None:
+    if not company_id or not feature_key or session_scope is None:
+        return
+
+    usage = getattr(g, "llm_usage", None) or {}
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or 0)
+    if not total_tokens:
+        total_tokens = prompt_tokens + completion_tokens
+
+    try:
+        with session_scope() as db_session:
+            db_session.add(
+                CompanyUsageEvent(
+                    company_id=int(company_id),
                     user_id=int(user_id) if user_id is not None else None,
                     feature_key=feature_key,
                     endpoint=(endpoint or "")[:255],

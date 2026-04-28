@@ -6,15 +6,14 @@ import os
 
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import create_access_token
-from sqlalchemy import and_, func, select
+from sqlalchemy import func, select
 
 from db.engine import session_scope
-from db.models.core import Team, TeamMember, User
+from db.models.core import Company, CompanyMember, User
 from routes.auth import (
     _auth_response,
     _build_auth_context,
     _build_user_payload,
-    get_primary_team_id_for_user,
     log_api_call,
     log_error,
 )
@@ -59,38 +58,28 @@ def get_or_create_individual_demo_account(db_session):
         return None
 
 
-def _ensure_enterprise_team(db_session, user):
-    team_id = get_primary_team_id_for_user(db_session, user.id)
-    if team_id:
-        return int(team_id)
+def _ensure_business_company(db_session, user):
+    company = db_session.execute(
+        select(Company).where(func.lower(Company.name) == "demo business").limit(1)
+    ).scalar_one_or_none()
+    if not company:
+        company = Company(name="Demo Business", status="active")
+        db_session.add(company)
+        db_session.flush()
+        db_session.refresh(company)
+    user.company_id = company.id
 
-    team = Team(
-        owner_id=user.id,
-        name="Demo Enterprise Team",
-        description="Enterprise 데모 계정용 팀",
-        status="active",
-    )
-    db_session.add(team)
+    membership = db_session.execute(
+        select(CompanyMember)
+        .where(CompanyMember.company_id == company.id, CompanyMember.user_id == user.id)
+        .limit(1)
+    ).scalar_one_or_none()
+    if membership:
+        membership.role = "owner"
+    else:
+        db_session.add(CompanyMember(company_id=company.id, user_id=user.id, role="owner"))
     db_session.flush()
-    db_session.refresh(team)
-
-    try:
-        exists = db_session.execute(
-            select(TeamMember.id)
-            .where(
-                and_(
-                    TeamMember.team_id == team.id,
-                    TeamMember.user_id == user.id,
-                )
-            )
-            .limit(1)
-        ).scalar_one_or_none()
-        if not exists:
-            db_session.add(TeamMember(team_id=team.id, user_id=user.id, role="owner"))
-    except Exception as exc:
-        log_error(exc, "Enterprise 데모 계정 team_members 추가 실패 (무시 가능)")
-
-    return team.id
+    return company.id
 
 
 def get_or_create_enterprise_demo_account(db_session):
@@ -107,22 +96,22 @@ def get_or_create_enterprise_demo_account(db_session):
         if user:
             if user.tier != "enterprise":
                 user.tier = "enterprise"
-            user.account_type = "enterprise"
-            _ensure_enterprise_team(db_session, user)
+            user.account_type = "business"
+            _ensure_business_company(db_session, user)
             return user
 
         user = User(
             email=demo_email,
             google_id=f"dev_{demo_email}",
             tier="enterprise",
-            account_type="enterprise",
+            account_type="business",
         )
         db_session.add(user)
         db_session.flush()
         db_session.refresh(user)
 
         try:
-            _ensure_enterprise_team(db_session, user)
+            _ensure_business_company(db_session, user)
         except Exception as exc:
             log_error(exc, "Enterprise 데모 계정 팀 생성 실패")
 
@@ -173,8 +162,8 @@ def demo_login():
                 if not user:
                     return jsonify({"error": "Failed to get or create enterprise demo account"}), 500
                 user_id = user.id
-            claims, team_id, plan_code = _build_auth_context(db_session, user)
-            user_payload = _build_user_payload(user, team_id=team_id, plan_code=plan_code)
+            claims = _build_auth_context(db_session, user)
+            user_payload = _build_user_payload(user)
 
         access_token = create_access_token(identity=str(user_id), additional_claims=claims)
 

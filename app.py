@@ -47,6 +47,7 @@ from sqlalchemy import func, select
 app = Flask(__name__)
 PASSWORD_CHANGE_ALLOWED_PATHS = {
     "/api/auth/enterprise/change-password",
+    "/api/auth/business/change-password",
     "/api/profile",
 }
 
@@ -166,12 +167,12 @@ def set_security_headers(response):
     # Referrer-Policy
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
 
-    # Enterprise team usage metering
+    # Business company usage metering
     try:
         verify_jwt_in_request(optional=True)
         claims = get_jwt() or {}
-        team_id = claims.get("team_id")
-        if claims.get("account_type") == "enterprise" and team_id:
+        company_id = claims.get("company_id")
+        if claims.get("account_type") == "business" and company_id:
             feature_key = classify_feature_key(request.path or "")
             if feature_key:
                 identity = get_jwt_identity()
@@ -180,12 +181,12 @@ def set_security_headers(response):
                 except Exception:
                     user_id_int = None
                 try:
-                    team_id_int = int(team_id)
+                    company_id_int = int(company_id)
                 except Exception:
-                    team_id_int = None
-                record_team_usage_event(
+                    company_id_int = None
+                record_company_usage_event(
                     endpoint=request.path or "",
-                    team_id=team_id_int,
+                    company_id=company_id_int,
                     user_id=user_id_int,
                     feature_key=feature_key,
                 )
@@ -210,7 +211,7 @@ from utils.keyword_utils import (
 )
 from utils.request_utils import _extract_request_user_id, _resolve_owner_ids_sqlalchemy
 from utils.llm_utils import parse_llm_json_response
-from utils.usage_metering import classify_feature_key, record_team_usage_event
+from utils.usage_metering import classify_feature_key, record_company_usage_event
 
 
 
