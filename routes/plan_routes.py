@@ -24,7 +24,7 @@ from api_logger import (
     log_step_search_clean,
 )
 from db.engine import session_scope
-from db.models.core import Artifact, Project, Study
+from db.models.core import Artifact, Project, Study, Team, TeamMember, User
 from db.repositories.workspace_repository import WorkspaceRepository
 from debug_utils import analyze_error_patterns, get_stats, request_tracker
 from prompts.analysis_prompts import (
@@ -43,6 +43,7 @@ from utils.keyword_utils import (
     fetch_project_keywords,
 )
 from utils.llm_utils import _safe_parse_json_object, parse_llm_json_response
+from utils.usage_metering import classify_feature_key, get_llm_usage_context, set_llm_usage_context
 
 plan_bp = Blueprint('plan', __name__, url_prefix='/api')
 
@@ -50,6 +51,65 @@ plan_bp = Blueprint('plan', __name__, url_prefix='/api')
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
+
+def _build_llm_usage_context(user_id, request_id):
+    try:
+        claims = get_jwt() or {}
+    except Exception:
+        claims = {}
+
+    company_id = claims.get("company_id")
+    try:
+        company_id = int(company_id) if company_id is not None else None
+    except Exception:
+        company_id = None
+
+    if company_id is None and session_scope and user_id is not None:
+        try:
+            with session_scope() as db_session:
+                company_id = db_session.execute(
+                    select(User.company_id)
+                    .where(User.id == int(user_id))
+                    .limit(1)
+                ).scalar_one_or_none()
+        except Exception:
+            company_id = None
+    team_id = None
+    if session_scope and user_id is not None:
+        try:
+            with session_scope() as db_session:
+                team_id = db_session.execute(
+                    select(Team.id)
+                    .where(Team.owner_id == int(user_id), Team.status != "deleted")
+                    .order_by(Team.created_at.asc())
+                    .limit(1)
+                ).scalar_one_or_none()
+                if team_id is None:
+                    team_id = db_session.execute(
+                        select(TeamMember.team_id)
+                        .join(Team, Team.id == TeamMember.team_id)
+                        .where(TeamMember.user_id == int(user_id), Team.status != "deleted")
+                        .order_by(TeamMember.joined_at.asc())
+                        .limit(1)
+                    ).scalar_one_or_none()
+                team_id = int(team_id) if team_id is not None else None
+        except Exception:
+            team_id = None
+
+    return {
+        "company_id": company_id,
+        "team_id": team_id,
+        "user_id": int(user_id) if user_id is not None else None,
+        "account_type": claims.get("account_type"),
+        "endpoint": request.path or "",
+        "feature_key": classify_feature_key(request.path or "") or "plan_generation",
+        "request_id": request_id,
+    }
+
+
+def _run_with_llm_usage_context(context, func, *args, **kwargs):
+    set_llm_usage_context(context)
+    return func(*args, **kwargs)
 
 def _analyze_previous_step_selections(ledger_cards, step_int):
     """이전 단계에서 선택된 내용 분석"""
@@ -247,8 +307,12 @@ def handle_oneshot_parallel_experts(form_data, project_keywords: Optional[List[s
         log_expert_analysis("7개 전문가", "병렬 호출 시작 (방법론 결과 포함 + 일정 전문가)")
 
         expert_results = [methodology_expert_result]
+        executor_usage_context = get_llm_usage_context()
         with concurrent.futures.ThreadPoolExecutor(max_workers=7) as executor:
-            futures = [executor.submit(call_expert, name, func) for name, func in expert_configs]
+            futures = [
+                executor.submit(_run_with_llm_usage_context, executor_usage_context, call_expert, name, func)
+                for name, func in expert_configs
+            ]
             for future in concurrent.futures.as_completed(futures):
                 expert_results.append(future.result())
 
@@ -728,6 +792,7 @@ def generator_create_plan_oneshot():
         except Exception:
             claims = {}
         tier = claims.get('tier') or 'free'
+        llm_usage_context = _build_llm_usage_context(user_id_int, request_id)
 
         with session_scope() as db_session:
             owner_id = db_session.execute(
@@ -795,6 +860,7 @@ def generator_create_plan_oneshot():
             artifact_id = artifact.id
 
         def generate_plan_background():
+            set_llm_usage_context(llm_usage_context)
             try:
                 log_expert_analysis("백그라운드 계획서 생성", f"시작: artifact_id={artifact_id}")
                 response = handle_oneshot_parallel_experts(form_data, project_keywords)
@@ -1309,6 +1375,7 @@ def conversation_maker_finalize_oneshot():
         except Exception:
             claims = {}
         tier = (claims or {}).get('tier') or 'free'
+        llm_usage_context = _build_llm_usage_context(user_id_int, request_id)
         project_keywords = fetch_project_keywords(project_id_int)
         ledger_text = _ledger_cards_to_context_text(ledger_cards, max_chars=12000)
         selected_methods = _extract_selected_methodologies_from_ledger(ledger_cards)
@@ -1377,6 +1444,7 @@ def conversation_maker_finalize_oneshot():
             artifact_id = artifact.id
 
         def generate_plan_background():
+            set_llm_usage_context(llm_usage_context)
             try:
                 log_expert_analysis("ConversationStudyMaker 최종계획서", f"시작: artifact_id={artifact_id}")
 

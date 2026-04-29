@@ -3,7 +3,7 @@ Admin 전용 API 라우트
 """
 
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 import math
 
 from flask import Blueprint, jsonify, request
@@ -16,7 +16,11 @@ from db.models.core import (
     Artifact,
     Company,
     CompanyMember,
+    CompanyTokenLedger,
     CompanyUsageEvent,
+    LlmModelPrice,
+    LlmUsageDailyAggregate,
+    LlmUsageEvent,
     Project,
     Study,
     Team,
@@ -26,6 +30,7 @@ from db.models.core import (
     UserFeedback,
 )
 from routes.auth import get_primary_team_id_for_user, tier_required
+from utils.usage_metering import cleanup_old_llm_usage_events, ensure_company_initial_grant, get_company_token_balance
 
 
 admin_bp = Blueprint("admin", __name__)
@@ -73,6 +78,24 @@ def _parse_iso_date(value: str):
         return datetime.fromisoformat(value)
     except Exception:
         return None
+
+
+def _parse_usage_date(value: str):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).date()
+    except Exception:
+        return None
+
+
+def _usage_period():
+    period = (request.args.get("period") or "daily").strip().lower()
+    return period if period in {"daily", "monthly"} else None
+
+
+def _serialize_decimal(value):
+    return float(value or 0)
 
 
 def _pagination_params():
@@ -132,6 +155,7 @@ def _get_or_create_company(db_session, name):
     db_session.add(company)
     db_session.flush()
     db_session.refresh(company)
+    ensure_company_initial_grant(db_session, company.id)
     return company
 
 
@@ -1377,6 +1401,27 @@ def get_company_usage(company_id: int):
 
 
 def _company_usage_summary(db_session, company_id: int):
+    ensure_company_initial_grant(db_session, int(company_id))
+    totals = db_session.execute(
+        select(
+            func.coalesce(func.sum(LlmUsageDailyAggregate.request_count), 0),
+            func.coalesce(func.sum(LlmUsageDailyAggregate.total_tokens), 0),
+            func.coalesce(func.sum(LlmUsageDailyAggregate.billable_weighted_tokens), 0),
+            func.coalesce(func.sum(LlmUsageDailyAggregate.estimated_cost_usd), 0),
+        ).where(LlmUsageDailyAggregate.company_id == int(company_id))
+    ).one()
+    balance = get_company_token_balance(db_session, int(company_id))
+    return {
+        "request_count": int(totals[0] or 0),
+        "total_tokens": int(totals[1] or 0),
+        "billable_weighted_tokens": int(totals[2] or 0),
+        "estimated_cost_usd": _serialize_decimal(totals[3]),
+        "usage_limit": None,
+        "remaining_weighted_tokens": balance,
+    }
+
+
+def _legacy_company_usage_summary(db_session, company_id: int):
     row = db_session.execute(
         select(
             func.sum(CompanyUsageEvent.request_count),
@@ -1388,6 +1433,508 @@ def _company_usage_summary(db_session, company_id: int):
         "total_tokens": int(row[1] or 0),
         "usage_limit": 5000,
     }
+
+
+def _usage_period_column(period: str):
+    if period == "monthly":
+        return func.to_char(func.date_trunc("month", LlmUsageDailyAggregate.usage_date), "YYYY-MM")
+    return func.to_char(LlmUsageDailyAggregate.usage_date, "YYYY-MM-DD")
+
+
+def _usage_totals_payload(row):
+    return {
+        "request_count": int(row.request_count or 0),
+        "prompt_tokens": int(row.prompt_tokens or 0),
+        "completion_tokens": int(row.completion_tokens or 0),
+        "cached_input_tokens": int(row.cached_input_tokens or 0),
+        "reasoning_tokens": int(row.reasoning_tokens or 0),
+        "total_tokens": int(row.total_tokens or 0),
+        "billable_weighted_tokens": int(row.billable_weighted_tokens or 0),
+        "estimated_cost_usd": _serialize_decimal(row.estimated_cost_usd),
+    }
+
+
+def _empty_llm_usage_payload():
+    return {
+        "request_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_input_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+        "billable_weighted_tokens": 0,
+        "estimated_cost_usd": 0.0,
+        "last_used_at": None,
+    }
+
+
+def _usage_base_query(filters):
+    return select(
+        func.coalesce(func.sum(LlmUsageDailyAggregate.request_count), 0).label("request_count"),
+        func.coalesce(func.sum(LlmUsageDailyAggregate.prompt_tokens), 0).label("prompt_tokens"),
+        func.coalesce(func.sum(LlmUsageDailyAggregate.completion_tokens), 0).label("completion_tokens"),
+        func.coalesce(func.sum(LlmUsageDailyAggregate.cached_input_tokens), 0).label("cached_input_tokens"),
+        func.coalesce(func.sum(LlmUsageDailyAggregate.reasoning_tokens), 0).label("reasoning_tokens"),
+        func.coalesce(func.sum(LlmUsageDailyAggregate.total_tokens), 0).label("total_tokens"),
+        func.coalesce(func.sum(LlmUsageDailyAggregate.billable_weighted_tokens), 0).label("billable_weighted_tokens"),
+        func.coalesce(func.sum(LlmUsageDailyAggregate.estimated_cost_usd), 0).label("estimated_cost_usd"),
+    ).where(*filters)
+
+
+def _usage_date_filters(filters):
+    start_date = _parse_usage_date(request.args.get("start_date"))
+    end_date = _parse_usage_date(request.args.get("end_date"))
+    if request.args.get("start_date") and start_date is None:
+        return None, None, jsonify({"success": False, "error": "start_date는 YYYY-MM-DD 형식이어야 합니다."}), 400
+    if request.args.get("end_date") and end_date is None:
+        return None, None, jsonify({"success": False, "error": "end_date는 YYYY-MM-DD 형식이어야 합니다."}), 400
+    if start_date:
+        filters.append(LlmUsageDailyAggregate.usage_date >= start_date)
+    if end_date:
+        filters.append(LlmUsageDailyAggregate.usage_date <= end_date)
+    return start_date, end_date, None, None
+
+
+def _usage_event_date_filters(event_filters, start_date, end_date):
+    if start_date:
+        event_filters.append(LlmUsageEvent.occurred_at >= datetime.combine(start_date, datetime.min.time()))
+    if end_date:
+        event_filters.append(LlmUsageEvent.occurred_at <= datetime.combine(end_date, datetime.max.time()))
+
+
+def _usage_response(db_session, filters, period: str, event_filters=None):
+    period_col = _usage_period_column(period).label("period")
+    totals = db_session.execute(_usage_base_query(filters)).one()
+
+    by_period_rows = db_session.execute(
+        select(
+            period_col,
+            func.sum(LlmUsageDailyAggregate.request_count).label("request_count"),
+            func.sum(LlmUsageDailyAggregate.prompt_tokens).label("prompt_tokens"),
+            func.sum(LlmUsageDailyAggregate.completion_tokens).label("completion_tokens"),
+            func.sum(LlmUsageDailyAggregate.cached_input_tokens).label("cached_input_tokens"),
+            func.sum(LlmUsageDailyAggregate.reasoning_tokens).label("reasoning_tokens"),
+            func.sum(LlmUsageDailyAggregate.total_tokens).label("total_tokens"),
+            func.sum(LlmUsageDailyAggregate.billable_weighted_tokens).label("billable_weighted_tokens"),
+            func.sum(LlmUsageDailyAggregate.estimated_cost_usd).label("estimated_cost_usd"),
+        )
+        .where(*filters)
+        .group_by(period_col)
+        .order_by(period_col.asc())
+    ).all()
+
+    by_user_aggregate = (
+        select(
+            LlmUsageDailyAggregate.user_id.label("user_id"),
+            func.sum(LlmUsageDailyAggregate.request_count).label("request_count"),
+            func.sum(LlmUsageDailyAggregate.total_tokens).label("total_tokens"),
+            func.sum(LlmUsageDailyAggregate.billable_weighted_tokens).label("billable_weighted_tokens"),
+            func.sum(LlmUsageDailyAggregate.estimated_cost_usd).label("estimated_cost_usd"),
+        )
+        .where(*filters)
+        .group_by(LlmUsageDailyAggregate.user_id)
+        .subquery()
+    )
+    last_user_event = (
+        select(
+            LlmUsageEvent.user_id.label("user_id"),
+            func.max(LlmUsageEvent.occurred_at).label("last_used_at"),
+        )
+        .where(*(event_filters or []))
+        .group_by(LlmUsageEvent.user_id)
+        .subquery()
+    )
+    by_user_rows = db_session.execute(
+        select(
+            by_user_aggregate.c.user_id,
+            User.email,
+            User.name,
+            by_user_aggregate.c.request_count,
+            by_user_aggregate.c.total_tokens,
+            by_user_aggregate.c.billable_weighted_tokens,
+            by_user_aggregate.c.estimated_cost_usd,
+            last_user_event.c.last_used_at,
+        )
+        .select_from(by_user_aggregate)
+        .outerjoin(User, User.id == by_user_aggregate.c.user_id)
+        .outerjoin(last_user_event, last_user_event.c.user_id == by_user_aggregate.c.user_id)
+        .order_by(by_user_aggregate.c.user_id.asc())
+    ).all()
+
+    by_team_rows = db_session.execute(
+        select(
+            LlmUsageDailyAggregate.team_id,
+            func.sum(LlmUsageDailyAggregate.request_count).label("request_count"),
+            func.sum(LlmUsageDailyAggregate.total_tokens).label("total_tokens"),
+            func.sum(LlmUsageDailyAggregate.billable_weighted_tokens).label("billable_weighted_tokens"),
+            func.sum(LlmUsageDailyAggregate.estimated_cost_usd).label("estimated_cost_usd"),
+        )
+        .where(*filters)
+        .group_by(LlmUsageDailyAggregate.team_id)
+        .order_by(LlmUsageDailyAggregate.team_id.asc())
+    ).all()
+
+    by_model_rows = db_session.execute(
+        select(
+            LlmUsageDailyAggregate.provider,
+            LlmUsageDailyAggregate.model,
+            func.sum(LlmUsageDailyAggregate.request_count).label("request_count"),
+            func.sum(LlmUsageDailyAggregate.prompt_tokens).label("prompt_tokens"),
+            func.sum(LlmUsageDailyAggregate.completion_tokens).label("completion_tokens"),
+            func.sum(LlmUsageDailyAggregate.cached_input_tokens).label("cached_input_tokens"),
+            func.sum(LlmUsageDailyAggregate.reasoning_tokens).label("reasoning_tokens"),
+            func.sum(LlmUsageDailyAggregate.total_tokens).label("total_tokens"),
+            func.sum(LlmUsageDailyAggregate.billable_weighted_tokens).label("billable_weighted_tokens"),
+            func.sum(LlmUsageDailyAggregate.estimated_cost_usd).label("estimated_cost_usd"),
+        )
+        .where(*filters)
+        .group_by(LlmUsageDailyAggregate.provider, LlmUsageDailyAggregate.model)
+        .order_by(LlmUsageDailyAggregate.provider.asc(), LlmUsageDailyAggregate.model.asc())
+    ).all()
+
+    return {
+        "totals": _usage_totals_payload(totals),
+        "by_period": [
+            {"period": row.period, **_usage_totals_payload(row)}
+            for row in by_period_rows
+        ],
+        "by_user": [
+            {
+                "user_id": row.user_id,
+                "email": row.email,
+                "name": row.name,
+                "request_count": int(row.request_count or 0),
+                "total_tokens": int(row.total_tokens or 0),
+                "billable_weighted_tokens": int(row.billable_weighted_tokens or 0),
+                "estimated_cost_usd": _serialize_decimal(row.estimated_cost_usd),
+                "last_used_at": _serialize_dt(row.last_used_at),
+            }
+            for row in by_user_rows
+        ],
+        "by_team": [
+            {
+                "team_id": row.team_id,
+                "request_count": int(row.request_count or 0),
+                "total_tokens": int(row.total_tokens or 0),
+                "billable_weighted_tokens": int(row.billable_weighted_tokens or 0),
+                "estimated_cost_usd": _serialize_decimal(row.estimated_cost_usd),
+            }
+            for row in by_team_rows
+        ],
+        "by_model": [
+            {
+                "provider": row.provider,
+                "model": row.model,
+                "request_count": int(row.request_count or 0),
+                "prompt_tokens": int(row.prompt_tokens or 0),
+                "completion_tokens": int(row.completion_tokens or 0),
+                "cached_input_tokens": int(row.cached_input_tokens or 0),
+                "reasoning_tokens": int(row.reasoning_tokens or 0),
+                "total_tokens": int(row.total_tokens or 0),
+                "billable_weighted_tokens": int(row.billable_weighted_tokens or 0),
+                "estimated_cost_usd": _serialize_decimal(row.estimated_cost_usd),
+            }
+            for row in by_model_rows
+        ],
+    }
+
+
+@admin_bp.route("/api/admin/users/<int:user_id>/llm-usage", methods=["GET"])
+@tier_required(["super"])
+def get_user_llm_usage(user_id: int):
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+        period = _usage_period()
+        if not period:
+            return jsonify({"success": False, "error": "period는 daily 또는 monthly여야 합니다."}), 400
+
+        filters = [LlmUsageDailyAggregate.user_id == int(user_id)]
+        start_date, end_date, error_response, error_status = _usage_date_filters(filters)
+        if error_response is not None:
+            return error_response, error_status
+
+        with session_scope() as db_session:
+            user = db_session.execute(select(User).where(User.id == int(user_id)).limit(1)).scalar_one_or_none()
+            if not user:
+                return jsonify({"success": False, "error": "사용자를 찾을 수 없습니다."}), 404
+            event_filters = [LlmUsageEvent.user_id == int(user_id)]
+            _usage_event_date_filters(event_filters, start_date, end_date)
+            usage = _usage_response(db_session, filters, period, event_filters)
+
+        return jsonify(
+            {
+                "success": True,
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "company_id": user.company_id,
+                },
+                "period": period,
+                "window": {
+                    "start_date": start_date.isoformat() if start_date else None,
+                    "end_date": end_date.isoformat() if end_date else None,
+                },
+                **usage,
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, f"Admin - 사용자 LLM 사용량 조회 실패 (user_id: {user_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/companies/<int:company_id>/llm-usage", methods=["GET"])
+@tier_required(["super"])
+def get_company_llm_usage(company_id: int):
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+        period = _usage_period()
+        if not period:
+            return jsonify({"success": False, "error": "period는 daily 또는 monthly여야 합니다."}), 400
+
+        filters = [LlmUsageDailyAggregate.company_id == int(company_id)]
+        start_date, end_date, error_response, error_status = _usage_date_filters(filters)
+        if error_response is not None:
+            return error_response, error_status
+
+        with session_scope() as db_session:
+            company = db_session.execute(select(Company).where(Company.id == int(company_id)).limit(1)).scalar_one_or_none()
+            if not company:
+                return jsonify({"success": False, "error": "회사를 찾을 수 없습니다."}), 404
+            ensure_company_initial_grant(db_session, int(company_id))
+            balance = get_company_token_balance(db_session, int(company_id))
+            event_filters = [LlmUsageEvent.company_id == int(company_id)]
+            _usage_event_date_filters(event_filters, start_date, end_date)
+            usage = _usage_response(db_session, filters, period, event_filters)
+
+        return jsonify(
+            {
+                "success": True,
+                "company": {
+                    "id": company.id,
+                    "name": company.name,
+                    "status": company.status,
+                },
+                "period": period,
+                "window": {
+                    "start_date": start_date.isoformat() if start_date else None,
+                    "end_date": end_date.isoformat() if end_date else None,
+                },
+                "remaining_weighted_tokens": balance,
+                **usage,
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, f"Admin - 회사 LLM 사용량 조회 실패 (company_id: {company_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/teams/<int:team_id>/llm-usage", methods=["GET"])
+@tier_required(["super"])
+def get_team_llm_usage(team_id: int):
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+        period = _usage_period()
+        if not period:
+            return jsonify({"success": False, "error": "period는 daily 또는 monthly여야 합니다."}), 400
+
+        filters = [LlmUsageDailyAggregate.team_id == int(team_id)]
+        start_date, end_date, error_response, error_status = _usage_date_filters(filters)
+        if error_response is not None:
+            return error_response, error_status
+
+        with session_scope() as db_session:
+            team = db_session.execute(select(Team).where(Team.id == int(team_id)).limit(1)).scalar_one_or_none()
+            if not team:
+                return jsonify({"success": False, "error": "팀을 찾을 수 없습니다."}), 404
+            event_filters = [LlmUsageEvent.team_id == int(team_id)]
+            _usage_event_date_filters(event_filters, start_date, end_date)
+            usage = _usage_response(db_session, filters, period, event_filters)
+
+        return jsonify(
+            {
+                "success": True,
+                "team": {
+                    "id": team.id,
+                    "name": team.name,
+                    "status": team.status,
+                    "plan_code": team.plan_code,
+                    "owner_id": team.owner_id,
+                },
+                "period": period,
+                "window": {
+                    "start_date": start_date.isoformat() if start_date else None,
+                    "end_date": end_date.isoformat() if end_date else None,
+                },
+                **usage,
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, f"Admin - 팀 LLM 사용량 조회 실패 (team_id: {team_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/companies/<int:company_id>/token-balance", methods=["GET"])
+@tier_required(["super"])
+def get_company_token_balance_route(company_id: int):
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+        with session_scope() as db_session:
+            company = db_session.execute(select(Company).where(Company.id == int(company_id)).limit(1)).scalar_one_or_none()
+            if not company:
+                return jsonify({"success": False, "error": "회사를 찾을 수 없습니다."}), 404
+            ensure_company_initial_grant(db_session, int(company_id))
+            balance = get_company_token_balance(db_session, int(company_id))
+            granted = db_session.execute(
+                select(func.coalesce(func.sum(CompanyTokenLedger.delta_weighted_tokens), 0)).where(
+                    CompanyTokenLedger.company_id == int(company_id),
+                    CompanyTokenLedger.delta_weighted_tokens > 0,
+                )
+            ).scalar_one()
+            used = db_session.execute(
+                select(func.coalesce(func.sum(CompanyTokenLedger.delta_weighted_tokens), 0)).where(
+                    CompanyTokenLedger.company_id == int(company_id),
+                    CompanyTokenLedger.delta_weighted_tokens < 0,
+                )
+            ).scalar_one()
+
+        return jsonify(
+            {
+                "success": True,
+                "company": {"id": company.id, "name": company.name, "status": company.status},
+                "granted_weighted_tokens": int(granted or 0),
+                "used_weighted_tokens": abs(int(used or 0)),
+                "remaining_weighted_tokens": balance,
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, f"Admin - 회사 토큰 잔액 조회 실패 (company_id: {company_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/companies/<int:company_id>/token-topups", methods=["POST"])
+@tier_required(["super"])
+def create_company_token_topup(company_id: int):
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+        data = request.json or {}
+        weighted_tokens = _to_int_or_none(data.get("weighted_tokens"))
+        note = (data.get("note") or "").strip() or None
+        if not weighted_tokens or weighted_tokens <= 0:
+            return jsonify({"success": False, "error": "weighted_tokens는 1 이상의 정수여야 합니다."}), 400
+        created_by = _to_int_or_none(get_jwt_identity())
+
+        with session_scope() as db_session:
+            company = db_session.execute(select(Company).where(Company.id == int(company_id)).limit(1)).scalar_one_or_none()
+            if not company:
+                return jsonify({"success": False, "error": "회사를 찾을 수 없습니다."}), 404
+            ensure_company_initial_grant(db_session, int(company_id), created_by=created_by)
+            ledger = CompanyTokenLedger(
+                company_id=int(company_id),
+                delta_weighted_tokens=int(weighted_tokens),
+                reason="top_up",
+                created_by=created_by,
+                note=note,
+            )
+            db_session.add(ledger)
+            db_session.flush()
+            balance = get_company_token_balance(db_session, int(company_id))
+            ledger_payload = {
+                "id": ledger.id,
+                "company_id": ledger.company_id,
+                "delta_weighted_tokens": ledger.delta_weighted_tokens,
+                "reason": ledger.reason,
+                "created_by": ledger.created_by,
+                "note": ledger.note,
+                "created_at": _serialize_dt(ledger.created_at),
+            }
+
+        return jsonify(
+            {
+                "success": True,
+                "company": {"id": company.id, "name": company.name, "status": company.status},
+                "ledger": ledger_payload,
+                "remaining_weighted_tokens": balance,
+            }
+        ), 201
+    except Exception as e:
+        log_error(e, f"Admin - 회사 토큰 충전 실패 (company_id: {company_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/llm-model-prices", methods=["GET"])
+@tier_required(["super"])
+def list_llm_model_prices():
+    try:
+        if not _ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+        provider = (request.args.get("provider") or "").strip().lower()
+        active_only = (request.args.get("active_only") or "1").strip() != "0"
+        now = datetime.now(timezone.utc)
+
+        with session_scope() as db_session:
+            query = select(LlmModelPrice).order_by(
+                LlmModelPrice.provider.asc(),
+                LlmModelPrice.model.asc(),
+                LlmModelPrice.effective_from.desc(),
+            )
+            if provider:
+                query = query.where(LlmModelPrice.provider == provider)
+            if active_only:
+                query = query.where(
+                    LlmModelPrice.effective_from <= now,
+                    (LlmModelPrice.effective_to.is_(None) | (LlmModelPrice.effective_to > now)),
+                )
+            prices = db_session.execute(query).scalars().all()
+
+        return jsonify(
+            {
+                "success": True,
+                "prices": [
+                    {
+                        "id": price.id,
+                        "provider": price.provider,
+                        "model": price.model,
+                        "effective_from": _serialize_dt(price.effective_from),
+                        "effective_to": _serialize_dt(price.effective_to),
+                        "currency": price.currency,
+                        "input_per_1m": _serialize_decimal(price.input_per_1m),
+                        "cached_input_per_1m": _serialize_decimal(price.cached_input_per_1m),
+                        "output_per_1m": _serialize_decimal(price.output_per_1m),
+                        "reasoning_policy": price.reasoning_policy,
+                        "source_url": price.source_url,
+                    }
+                    for price in prices
+                ],
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, "Admin - LLM 모델 가격 조회 실패")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@admin_bp.route("/api/admin/llm-usage-events/expired", methods=["DELETE"])
+@tier_required(["super"])
+def delete_expired_llm_usage_events():
+    try:
+        retention_days = _to_int_or_none(request.args.get("retention_days")) or 90
+        if retention_days < 1:
+            return jsonify({"success": False, "error": "retention_days는 1 이상의 정수여야 합니다."}), 400
+        deleted_count = cleanup_old_llm_usage_events(retention_days=retention_days)
+        return jsonify(
+            {
+                "success": True,
+                "retention_days": int(retention_days),
+                "deleted_count": int(deleted_count),
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, "Admin - 만료된 LLM 원본 이벤트 삭제 실패")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @admin_bp.route("/api/admin/companies", methods=["GET"])
@@ -1486,6 +2033,7 @@ def get_admin_company_detail(company_id: int):
             user_ids = [row.user_id for row in memberships if row.user_id is not None]
             users_by_id = {}
             usage_by_user_id = {}
+            llm_usage_by_user_id = {}
             if user_ids:
                 users = db_session.execute(select(User).where(User.id.in_(user_ids))).scalars().all()
                 users_by_id = {user.id: user for user in users}
@@ -1508,6 +2056,53 @@ def get_admin_company_detail(company_id: int):
                     }
                     for row in usage_rows
                 }
+                llm_usage_rows = db_session.execute(
+                    select(
+                        LlmUsageDailyAggregate.user_id,
+                        func.coalesce(func.sum(LlmUsageDailyAggregate.request_count), 0).label("request_count"),
+                        func.coalesce(func.sum(LlmUsageDailyAggregate.prompt_tokens), 0).label("prompt_tokens"),
+                        func.coalesce(func.sum(LlmUsageDailyAggregate.completion_tokens), 0).label("completion_tokens"),
+                        func.coalesce(func.sum(LlmUsageDailyAggregate.cached_input_tokens), 0).label("cached_input_tokens"),
+                        func.coalesce(func.sum(LlmUsageDailyAggregate.reasoning_tokens), 0).label("reasoning_tokens"),
+                        func.coalesce(func.sum(LlmUsageDailyAggregate.total_tokens), 0).label("total_tokens"),
+                        func.coalesce(func.sum(LlmUsageDailyAggregate.billable_weighted_tokens), 0).label("billable_weighted_tokens"),
+                        func.coalesce(func.sum(LlmUsageDailyAggregate.estimated_cost_usd), 0).label("estimated_cost_usd"),
+                    )
+                    .where(
+                        LlmUsageDailyAggregate.company_id == int(company_id),
+                        LlmUsageDailyAggregate.user_id.in_(user_ids),
+                    )
+                    .group_by(LlmUsageDailyAggregate.user_id)
+                ).all()
+                last_llm_event_rows = db_session.execute(
+                    select(
+                        LlmUsageEvent.user_id,
+                        func.max(LlmUsageEvent.occurred_at).label("last_used_at"),
+                    )
+                    .where(
+                        LlmUsageEvent.company_id == int(company_id),
+                        LlmUsageEvent.user_id.in_(user_ids),
+                    )
+                    .group_by(LlmUsageEvent.user_id)
+                ).all()
+                last_llm_used_by_user_id = {
+                    row.user_id: _serialize_dt(row.last_used_at)
+                    for row in last_llm_event_rows
+                }
+                llm_usage_by_user_id = {
+                    row.user_id: {
+                        "request_count": int(row.request_count or 0),
+                        "prompt_tokens": int(row.prompt_tokens or 0),
+                        "completion_tokens": int(row.completion_tokens or 0),
+                        "cached_input_tokens": int(row.cached_input_tokens or 0),
+                        "reasoning_tokens": int(row.reasoning_tokens or 0),
+                        "total_tokens": int(row.total_tokens or 0),
+                        "billable_weighted_tokens": int(row.billable_weighted_tokens or 0),
+                        "estimated_cost_usd": _serialize_decimal(row.estimated_cost_usd),
+                        "last_used_at": last_llm_used_by_user_id.get(row.user_id),
+                    }
+                    for row in llm_usage_rows
+                }
 
             members = []
             for membership in memberships:
@@ -1522,6 +2117,7 @@ def get_admin_company_detail(company_id: int):
                     user.id,
                     {"total_tokens": None, "last_used_at": None},
                 )
+                payload["llm_usage"] = llm_usage_by_user_id.get(user.id, _empty_llm_usage_payload())
                 members.append(payload)
 
             usage = _company_usage_summary(db_session, company.id)

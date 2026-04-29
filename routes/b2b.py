@@ -2,6 +2,8 @@
 B2B(Business) company management routes.
 """
 
+from datetime import datetime
+
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt, get_jwt_identity
 from sqlalchemy import and_, func, select, update
@@ -9,8 +11,9 @@ from werkzeug.security import generate_password_hash
 
 from api_logger import log_error
 from db.engine import session_scope
-from db.models.core import Company, CompanyMember, User
+from db.models.core import Company, CompanyMember, CompanyTokenLedger, LlmUsageDailyAggregate, LlmUsageEvent, User
 from routes.auth import tier_required
+from utils.usage_metering import ensure_company_initial_grant, get_company_token_balance
 
 
 b2b_bp = Blueprint("b2b", __name__, url_prefix="/api/b2b")
@@ -20,6 +23,44 @@ BUSINESS_ACCOUNT_TYPE = "business"
 
 def _serialize_dt(value):
     return value.isoformat() if value is not None and hasattr(value, "isoformat") else value
+
+
+def _serialize_decimal(value):
+    return float(value or 0)
+
+
+def _parse_usage_date(value: str):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).date()
+    except Exception:
+        return None
+
+
+def _usage_period():
+    period = (request.args.get("period") or "daily").strip().lower()
+    return period if period in {"daily", "monthly"} else None
+
+
+def _usage_period_column(period: str):
+    if period == "monthly":
+        return func.to_char(func.date_trunc("month", LlmUsageDailyAggregate.usage_date), "YYYY-MM")
+    return func.to_char(LlmUsageDailyAggregate.usage_date, "YYYY-MM-DD")
+
+
+def _plan_payload_for_user(user: User):
+    code = (user.tier or "enterprise").strip().lower()
+    if code == "admin":
+        code = "super"
+    plan_names = {
+        "free": "Free Plan",
+        "basic": "Basic Plan",
+        "premium": "Premium Plan",
+        "enterprise": "Enterprise Plan",
+        "super": "Super Admin",
+    }
+    return {"code": code, "name": plan_names.get(code, f"{code.title()} Plan")}
 
 
 def _get_identity_int():
@@ -77,6 +118,176 @@ def _member_payload(user: User, membership: CompanyMember):
         "joined_at": _serialize_dt(membership.joined_at),
         "password_reset_required": bool(user.password_reset_required),
     }
+
+
+@b2b_bp.route("/membership/usage", methods=["GET"])
+@tier_required(["enterprise"])
+def b2b_get_membership_usage():
+    try:
+        if session_scope is None:
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+
+        user_id_int = _get_identity_int()
+        if not user_id_int:
+            return jsonify({"success": False, "error": "사용자 정보를 확인할 수 없습니다."}), 401
+
+        period = _usage_period()
+        if not period:
+            return jsonify({"success": False, "error": "period는 daily 또는 monthly여야 합니다."}), 400
+
+        start_date = _parse_usage_date(request.args.get("start_date"))
+        end_date = _parse_usage_date(request.args.get("end_date"))
+        if request.args.get("start_date") and start_date is None:
+            return jsonify({"success": False, "error": "start_date는 YYYY-MM-DD 형식이어야 합니다."}), 400
+        if request.args.get("end_date") and end_date is None:
+            return jsonify({"success": False, "error": "end_date는 YYYY-MM-DD 형식이어야 합니다."}), 400
+
+        with session_scope() as db_session:
+            company_id = _get_my_company_id(db_session, user_id_int)
+            if not company_id:
+                return jsonify({"success": False, "error": "이 계정에 연결된 회사가 없습니다."}), 404
+            owner_membership = _require_owner(db_session, company_id, user_id_int)
+            if not owner_membership:
+                return jsonify({"success": False, "error": "멤버십 사용량은 회사 owner만 조회할 수 있습니다."}), 403
+
+            company = db_session.execute(
+                select(Company).where(Company.id == int(company_id), Company.status != "deleted").limit(1)
+            ).scalar_one_or_none()
+            if not company:
+                return jsonify({"success": False, "error": "회사 정보를 찾을 수 없습니다."}), 404
+
+            owner = db_session.execute(select(User).where(User.id == int(user_id_int)).limit(1)).scalar_one_or_none()
+            ensure_company_initial_grant(db_session, int(company_id), created_by=int(user_id_int))
+
+            granted = db_session.execute(
+                select(func.coalesce(func.sum(CompanyTokenLedger.delta_weighted_tokens), 0)).where(
+                    CompanyTokenLedger.company_id == int(company_id),
+                    CompanyTokenLedger.delta_weighted_tokens > 0,
+                )
+            ).scalar_one()
+            used = db_session.execute(
+                select(func.coalesce(func.sum(CompanyTokenLedger.delta_weighted_tokens), 0)).where(
+                    CompanyTokenLedger.company_id == int(company_id),
+                    CompanyTokenLedger.delta_weighted_tokens < 0,
+                )
+            ).scalar_one()
+            balance = get_company_token_balance(db_session, int(company_id))
+
+            filters = [LlmUsageDailyAggregate.company_id == int(company_id)]
+            if start_date:
+                filters.append(LlmUsageDailyAggregate.usage_date >= start_date)
+            if end_date:
+                filters.append(LlmUsageDailyAggregate.usage_date <= end_date)
+
+            totals = db_session.execute(
+                select(
+                    func.coalesce(func.sum(LlmUsageDailyAggregate.request_count), 0).label("request_count"),
+                    func.coalesce(func.sum(LlmUsageDailyAggregate.billable_weighted_tokens), 0).label("billable_weighted_tokens"),
+                ).where(*filters)
+            ).one()
+
+            period_col = _usage_period_column(period).label("period")
+            by_period_rows = db_session.execute(
+                select(
+                    period_col,
+                    func.sum(LlmUsageDailyAggregate.request_count).label("request_count"),
+                    func.sum(LlmUsageDailyAggregate.billable_weighted_tokens).label("billable_weighted_tokens"),
+                )
+                .where(*filters)
+                .group_by(period_col)
+                .order_by(period_col.asc())
+            ).all()
+
+            by_user_aggregate = (
+                select(
+                    LlmUsageDailyAggregate.user_id.label("user_id"),
+                    func.sum(LlmUsageDailyAggregate.request_count).label("request_count"),
+                    func.sum(LlmUsageDailyAggregate.billable_weighted_tokens).label("billable_weighted_tokens"),
+                )
+                .where(*filters)
+                .group_by(LlmUsageDailyAggregate.user_id)
+                .subquery()
+            )
+
+            event_filters = [LlmUsageEvent.company_id == int(company_id)]
+            if start_date:
+                event_filters.append(LlmUsageEvent.occurred_at >= datetime.combine(start_date, datetime.min.time()))
+            if end_date:
+                event_filters.append(LlmUsageEvent.occurred_at <= datetime.combine(end_date, datetime.max.time()))
+            last_user_event = (
+                select(
+                    LlmUsageEvent.user_id.label("user_id"),
+                    func.max(LlmUsageEvent.occurred_at).label("last_used_at"),
+                )
+                .where(*event_filters)
+                .group_by(LlmUsageEvent.user_id)
+                .subquery()
+            )
+
+            by_user_rows = db_session.execute(
+                select(
+                    by_user_aggregate.c.user_id,
+                    User.email,
+                    User.name,
+                    User.department,
+                    by_user_aggregate.c.request_count,
+                    by_user_aggregate.c.billable_weighted_tokens,
+                    last_user_event.c.last_used_at,
+                )
+                .select_from(by_user_aggregate)
+                .outerjoin(User, User.id == by_user_aggregate.c.user_id)
+                .outerjoin(last_user_event, last_user_event.c.user_id == by_user_aggregate.c.user_id)
+                .order_by(by_user_aggregate.c.billable_weighted_tokens.desc(), by_user_aggregate.c.user_id.asc())
+            ).all()
+
+        return jsonify(
+            {
+                "success": True,
+                "company": {
+                    "id": company.id,
+                    "name": company.name,
+                    "status": company.status,
+                },
+                "plan": _plan_payload_for_user(owner) if owner else {"code": "enterprise", "name": "Enterprise Plan"},
+                "token_balance": {
+                    "granted_weighted_tokens": int(granted or 0),
+                    "used_weighted_tokens": abs(int(used or 0)),
+                    "remaining_weighted_tokens": int(balance or 0),
+                },
+                "period": period,
+                "window": {
+                    "start_date": start_date.isoformat() if start_date else None,
+                    "end_date": end_date.isoformat() if end_date else None,
+                },
+                "totals": {
+                    "request_count": int(totals.request_count or 0),
+                    "billable_weighted_tokens": int(totals.billable_weighted_tokens or 0),
+                },
+                "by_period": [
+                    {
+                        "period": row.period,
+                        "request_count": int(row.request_count or 0),
+                        "billable_weighted_tokens": int(row.billable_weighted_tokens or 0),
+                    }
+                    for row in by_period_rows
+                ],
+                "by_user": [
+                    {
+                        "user_id": row.user_id,
+                        "email": row.email,
+                        "name": row.name,
+                        "department": row.department,
+                        "request_count": int(row.request_count or 0),
+                        "billable_weighted_tokens": int(row.billable_weighted_tokens or 0),
+                        "last_used_at": _serialize_dt(row.last_used_at),
+                    }
+                    for row in by_user_rows
+                ],
+            }
+        ), 200
+    except Exception as e:
+        log_error(e, "B2B - 멤버십 사용량 조회 실패")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @b2b_bp.route("/team", methods=["GET"])

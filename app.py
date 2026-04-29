@@ -2,7 +2,7 @@ import os
 import threading
 import uuid
 from typing import Dict, Iterable, List, Optional, Set
-from flask import Flask, request, jsonify
+from flask import Flask, g, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, get_jwt, verify_jwt_in_request
 from services.gemini_service import gemini_service
@@ -121,6 +121,7 @@ SQLA_ENABLED = False
 
 @app.before_request
 def enforce_enterprise_password_change():
+    g.request_id = getattr(g, "request_id", None) or uuid.uuid4().hex
     try:
         verify_jwt_in_request(optional=True)
         claims = get_jwt() or {}
@@ -130,6 +131,37 @@ def enforce_enterprise_password_change():
             and (request.path or "") not in PASSWORD_CHANGE_ALLOWED_PATHS
         ):
             return jsonify({"error": "Password change required"}), 403
+    except Exception:
+        return None
+    return None
+
+
+@app.before_request
+def enforce_business_llm_quota():
+    try:
+        if request.method == "OPTIONS":
+            return None
+        verify_jwt_in_request(optional=True)
+        claims = get_jwt() or {}
+        company_id = claims.get("company_id")
+        if claims.get("account_type") != "business" or not company_id:
+            return None
+        feature_key = classify_feature_key(request.path or "")
+        if not feature_key:
+            return None
+        try:
+            company_id_int = int(company_id)
+        except Exception:
+            return None
+        if is_company_quota_exceeded(company_id_int):
+            return jsonify(
+                {
+                    "success": False,
+                    "error": "quota_exceeded",
+                    "message": "기업의 사용 가능한 weighted token 한도를 초과했습니다.",
+                    "remaining_weighted_tokens": 0,
+                }
+            ), 402
     except Exception:
         return None
     return None
@@ -167,32 +199,6 @@ def set_security_headers(response):
     # Referrer-Policy
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
 
-    # Business company usage metering
-    try:
-        verify_jwt_in_request(optional=True)
-        claims = get_jwt() or {}
-        company_id = claims.get("company_id")
-        if claims.get("account_type") == "business" and company_id:
-            feature_key = classify_feature_key(request.path or "")
-            if feature_key:
-                identity = get_jwt_identity()
-                try:
-                    user_id_int = int(identity) if identity is not None else None
-                except Exception:
-                    user_id_int = None
-                try:
-                    company_id_int = int(company_id)
-                except Exception:
-                    company_id_int = None
-                record_company_usage_event(
-                    endpoint=request.path or "",
-                    company_id=company_id_int,
-                    user_id=user_id_int,
-                    feature_key=feature_key,
-                )
-    except Exception:
-        pass
-
     return response
 
 
@@ -211,7 +217,7 @@ from utils.keyword_utils import (
 )
 from utils.request_utils import _extract_request_user_id, _resolve_owner_ids_sqlalchemy
 from utils.llm_utils import parse_llm_json_response
-from utils.usage_metering import classify_feature_key, record_company_usage_event
+from utils.usage_metering import classify_feature_key, is_company_quota_exceeded
 
 
 

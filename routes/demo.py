@@ -17,6 +17,7 @@ from routes.auth import (
     log_api_call,
     log_error,
 )
+from utils.usage_metering import ensure_company_initial_grant
 
 
 demo_bp = Blueprint("demo", __name__)
@@ -67,6 +68,7 @@ def _ensure_business_company(db_session, user):
         db_session.add(company)
         db_session.flush()
         db_session.refresh(company)
+    ensure_company_initial_grant(db_session, company.id)
     user.company_id = company.id
 
     membership = db_session.execute(

@@ -8,7 +8,7 @@ import time
 
 from pii_utils import sanitize_prompt_for_llm
 from telemetry import log_duration, log_tokens
-from utils.usage_metering import track_llm_usage
+from utils.usage_metering import extract_gemini_usage, record_llm_call
 
 class GeminiService:
     """
@@ -200,11 +200,7 @@ class GeminiService:
                 try:
                     um = getattr(response, "usage_metadata", None) or getattr(response, "usageMetadata", None)
                     if um is not None:
-                        usage = {
-                            "prompt_tokens": getattr(um, "prompt_token_count", None) or getattr(um, "promptTokenCount", None),
-                            "completion_tokens": getattr(um, "candidates_token_count", None) or getattr(um, "candidatesTokenCount", None),
-                            "total_tokens": getattr(um, "total_token_count", None) or getattr(um, "totalTokenCount", None),
-                        }
+                        usage = extract_gemini_usage(um)
                 except Exception:
                     usage = {}
 
@@ -213,7 +209,7 @@ class GeminiService:
                 log_tokens("gemini", usage, extra=f"model={model_display}")
                 
                 # 성공적인 응답을 딕셔너리 형태로 반환
-                track_llm_usage(usage)
+                record_llm_call(provider="gemini", model=model_display, usage=usage)
                 return {'success': True, 'content': response.text, "usage": usage, **pii_meta}
             
             except Exception as e:

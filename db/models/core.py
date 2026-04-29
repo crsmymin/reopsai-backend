@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -210,3 +211,82 @@ class CompanyUsageEvent(Base):
     total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     occurred_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class LlmModelPrice(Base):
+    __tablename__ = "llm_model_prices"
+    __table_args__ = (
+        UniqueConstraint("provider", "model", "effective_from", name="uq_llm_model_prices_provider_model_effective"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    effective_from: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    effective_to: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, server_default="USD")
+    input_per_1m: Mapped[float] = mapped_column(Numeric(12, 6), nullable=False, server_default="0")
+    cached_input_per_1m: Mapped[Optional[float]] = mapped_column(Numeric(12, 6), nullable=True)
+    output_per_1m: Mapped[float] = mapped_column(Numeric(12, 6), nullable=False, server_default="0")
+    reasoning_policy: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class LlmUsageEvent(Base):
+    __tablename__ = "llm_usage_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    company_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("companies.id", ondelete="SET NULL"), nullable=True, index=True)
+    team_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    feature_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    endpoint: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    request_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    cached_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    reasoning_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    billable_weighted_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    estimated_cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), nullable=False, server_default="0")
+    price_catalog_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("llm_model_prices.id", ondelete="SET NULL"), nullable=True, index=True)
+    occurred_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class CompanyTokenLedger(Base):
+    __tablename__ = "company_token_ledger"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    delta_weighted_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    reference_event_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("llm_usage_events.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_by: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+
+class LlmUsageDailyAggregate(Base):
+    __tablename__ = "llm_usage_daily_aggregates"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    usage_date: Mapped[Date] = mapped_column(Date, nullable=False, index=True)
+    company_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("companies.id", ondelete="SET NULL"), nullable=True, index=True)
+    team_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    feature_key: Mapped[str] = mapped_column(String(64), nullable=False, server_default="unknown", index=True)
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    cached_input_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    reasoning_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    billable_weighted_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    estimated_cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), nullable=False, server_default="0")
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
