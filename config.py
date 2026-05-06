@@ -14,12 +14,28 @@ local_env = BASE_DIR / '.env.local'
 default_env = BASE_DIR / '.env'
 
 
+DEFAULT_DEPLOYED_FRONTEND_ORIGINS = [
+    'https://main.d18rr0wdie06s6.amplifyapp.com',
+]
+
+
+def _normalize_origin(origin: str) -> str:
+    return (origin or '').strip().rstrip('/')
+
+
 def _parse_allowed_origins():
     raw = os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000,http://127.0.0.1:3000')
-    origins = [origin.strip() for origin in raw.split(',') if origin.strip()]
+    origins = []
+    for origin in raw.split(','):
+        normalized = _normalize_origin(origin)
+        if normalized and normalized != '*':
+            origins.append(normalized)
     frontend_url = os.getenv('FRONTEND_URL')
     if frontend_url:
-        origins.append(frontend_url.strip())
+        normalized_frontend_url = _normalize_origin(frontend_url)
+        if normalized_frontend_url and normalized_frontend_url != '*':
+            origins.append(normalized_frontend_url)
+    origins.extend(DEFAULT_DEPLOYED_FRONTEND_ORIGINS)
     if os.getenv('FLASK_ENV', 'development') != 'production':
         origins.extend(['http://localhost:3000', 'http://127.0.0.1:3000'])
     return list(dict.fromkeys(origins))
@@ -65,9 +81,15 @@ class Config:
     JWT_TOKEN_LOCATION = ['headers', 'cookies']
     JWT_ACCESS_COOKIE_NAME = os.getenv('JWT_ACCESS_COOKIE_NAME', 'access_token_cookie')
     JWT_ACCESS_COOKIE_PATH = '/'
-    JWT_COOKIE_SECURE = os.getenv('JWT_COOKIE_SECURE', 'False').lower() == 'true'
+    JWT_COOKIE_SECURE = os.getenv(
+        'JWT_COOKIE_SECURE',
+        'true' if flask_env == 'production' else 'False',
+    ).lower() == 'true'
     JWT_COOKIE_HTTPONLY = True
-    JWT_COOKIE_SAMESITE = os.getenv('JWT_COOKIE_SAMESITE', 'Lax')
+    JWT_COOKIE_SAMESITE = os.getenv(
+        'JWT_COOKIE_SAMESITE',
+        'None' if flask_env == 'production' else 'Lax',
+    )
     JWT_COOKIE_CSRF_PROTECT = os.getenv('JWT_COOKIE_CSRF_PROTECT', 'False').lower() == 'true'
     
     # Environment

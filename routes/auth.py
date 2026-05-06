@@ -41,6 +41,23 @@ PASSWORD_CHANGE_ALLOWED_PATHS = {
 BUSINESS_PROFILE_UPDATE_FIELDS = {"name", "department"}
 
 
+def _allowed_cors_origin():
+    origin = request.headers.get("Origin")
+    allowed_origins = set(Config.ALLOWED_ORIGINS or [])
+    if origin in allowed_origins:
+        return origin
+    return Config.FRONTEND_URL
+
+
+def _apply_account_delete_cors(response, *, methods="DELETE, OPTIONS"):
+    response.headers["Access-Control-Allow-Origin"] = _allowed_cors_origin()
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = methods
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-User-ID, x-user-id"
+    response.headers.add("Vary", "Origin")
+    return response
+
+
 def log_api_call(endpoint, method, data=None):
     """API 호출 로깅 (개발 환경에서만 상세 출력)"""
     if os.getenv("FLASK_ENV") != "development":
@@ -809,15 +826,11 @@ def delete_account():
     try:
         if request.method == "OPTIONS":
             response = make_response("", 200)
-            response.headers["Access-Control-Allow-Origin"] = Config.FRONTEND_URL
-            response.headers["Access-Control-Allow-Methods"] = "DELETE, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-User-ID"
-            return response
+            return _apply_account_delete_cors(response)
     except Exception as e:
         traceback.print_exc()
         response = make_response("", 500)
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        return response
+        return _apply_account_delete_cors(response)
 
     try:
         from flask_jwt_extended import verify_jwt_in_request
@@ -825,22 +838,19 @@ def delete_account():
         verify_jwt_in_request()
     except Exception:
         response = make_response(jsonify({"success": False, "error": "인증이 필요합니다."}), 401)
-        response.headers["Access-Control-Allow-Origin"] = Config.FRONTEND_URL
-        return response
+        return _apply_account_delete_cors(response)
 
     try:
         if not _db_ready():
             response = make_response(
                 jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
             )
-            response.headers["Access-Control-Allow-Origin"] = Config.FRONTEND_URL
-            return response
+            return _apply_account_delete_cors(response)
 
         user_id = get_jwt_identity()
         if not user_id:
             response = make_response(jsonify({"success": False, "error": "인증 정보가 없습니다."}), 401)
-            response.headers["Access-Control-Allow-Origin"] = Config.FRONTEND_URL
-            return response
+            return _apply_account_delete_cors(response)
 
         user_id_int = int(user_id)
         with session_scope() as db_session:
@@ -883,12 +893,10 @@ def delete_account():
             ),
             200,
         )
-        response.headers["Access-Control-Allow-Origin"] = Config.FRONTEND_URL
-        return response
+        return _apply_account_delete_cors(response)
     except Exception as e:
         log_error(e, "계정 삭제")
         response = make_response(
             jsonify({"success": False, "error": f"계정 삭제 중 오류가 발생했습니다: {str(e)}"}), 500
         )
-        response.headers["Access-Control-Allow-Origin"] = Config.FRONTEND_URL
-        return response
+        return _apply_account_delete_cors(response)

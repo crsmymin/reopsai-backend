@@ -691,7 +691,6 @@ def study_helper_chat():
             headers={
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*'
             }
         )
 
