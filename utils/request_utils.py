@@ -35,6 +35,17 @@ def _extract_request_user_id():
     return None, jsonify({'success': False, 'error': '사용자 인증이 필요합니다.'}), 401
 
 
+def _resolve_workspace_owner_ids(user_id_int):
+    """
+    기본 워크스페이스 권한 범위를 반환합니다.
+
+    현재 정책은 각 사용자가 직접 생성한 프로젝트/스터디/아티팩트만 접근하는
+    개인 소유 모델입니다. 추후 명시적 project/study 공유 기능이 생기면 이
+    헬퍼에서 공유 owner/resource 범위를 확장합니다.
+    """
+    return [user_id_int] if user_id_int is not None else []
+
+
 def _resolve_owner_ids_sqlalchemy(user_id_int):
     owner_ids = [user_id_int]
     try:

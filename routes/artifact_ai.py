@@ -8,8 +8,7 @@ from flask_jwt_extended import get_jwt_identity, get_jwt
 from services.openai_service import openai_service
 from services.gemini_service import gemini_service
 from routes.auth import tier_required
-from utils.b2b_access import get_owner_ids_for_request
-from utils.request_utils import _extract_request_user_id
+from utils.request_utils import _extract_request_user_id, _resolve_workspace_owner_ids
 from rag_system.improved.improved_vector_db_service import VectorDBServiceWrapper
 from db.engine import session_scope
 from db.models.core import Artifact, ArtifactEditHistory
@@ -32,8 +31,7 @@ except Exception as e:
 
 
 def _get_owner_ids_for_request(user_id_int):
-    owner_ids, _team_id = get_owner_ids_for_request(user_id_int)
-    return owner_ids
+    return [str(owner_id) for owner_id in _resolve_workspace_owner_ids(user_id_int)]
 
 
 def _require_artifact_access(artifact_id, owner_ids):

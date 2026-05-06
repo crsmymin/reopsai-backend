@@ -7,7 +7,7 @@ from sqlalchemy import select
 from db.engine import session_scope
 from db.models.core import Project, Study
 from routes.auth import tier_required
-from utils.b2b_access import get_owner_ids_for_request
+from utils.request_utils import _resolve_workspace_owner_ids
 import traceback
 
 
@@ -46,7 +46,7 @@ def get_study_by_slug(slug: str):
     if user_id_int is None:
         return jsonify({'error': '사용자 인증이 필요합니다.'}), 401
 
-    owner_ids, _team_id = get_owner_ids_for_request(user_id_int)
+    owner_ids = _resolve_workspace_owner_ids(user_id_int)
     allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
 
     try:
@@ -76,7 +76,7 @@ def get_study_by_slug(slug: str):
 
     study, owner_id = row
     if owner_id is not None and str(owner_id) not in allowed_owner_ids:
-        print(f"[WARN] 접근 권한 없음 - study by slug: slug={slug}, user_id={user_id_header}, owner_id={owner_id}")
+        print(f"[WARN] 접근 권한 없음 - study by slug: slug={slug}, user_id={user_id_int}, owner_id={owner_id}")
         return jsonify({'error': '접근 권한이 없습니다.'}), 403
 
     study_payload = {
@@ -112,7 +112,7 @@ def get_project_by_slug(slug: str):
     if user_id_int is None:
         return jsonify({'error': '사용자 인증이 필요합니다.'}), 401
 
-    owner_ids, _team_id = get_owner_ids_for_request(user_id_int)
+    owner_ids = _resolve_workspace_owner_ids(user_id_int)
 
     try:
         with session_scope() as db_session:

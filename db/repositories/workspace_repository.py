@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime
-import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
@@ -29,31 +28,14 @@ def model_to_dict(model) -> dict:
 
 class WorkspaceRepository:
     @staticmethod
-    def _slug_base_from_name(name: str, *, fallback_prefix: str) -> str:
-        raw = (name or "").strip().lower()
-        normalized = re.sub(r"[\s_]+", "-", raw)
-        normalized = re.sub(r"[^a-z0-9-]", "", normalized)
-        normalized = re.sub(r"-{2,}", "-", normalized).strip("-")
-        return normalized or fallback_prefix
-
-    @staticmethod
-    def _generate_unique_project_slug(
-        session: Session, name: str, *, exclude_project_id: Optional[int] = None
-    ) -> str:
-        base = WorkspaceRepository._slug_base_from_name(name, fallback_prefix="project")
-        candidate = base
-        suffix = 2
-
+    def _generate_unique_project_slug(session: Session) -> str:
         while True:
+            candidate = str(uuid4())
             existing_id = session.execute(
                 select(Project.id).where(Project.slug == candidate).limit(1)
             ).scalar_one_or_none()
-            if existing_id is None or (
-                exclude_project_id is not None and int(existing_id) == int(exclude_project_id)
-            ):
+            if existing_id is None:
                 return candidate
-            candidate = f"{base}-{suffix}"
-            suffix += 1
 
     @staticmethod
     def get_primary_team_id_for_user(session: Session, user_id: int) -> Optional[int]:
@@ -117,7 +99,7 @@ class WorkspaceRepository:
     def create_project(
         session: Session, *, owner_id: int, name: str, product_url: str, keywords: list
     ) -> dict:
-        slug = WorkspaceRepository._generate_unique_project_slug(session, name)
+        slug = WorkspaceRepository._generate_unique_project_slug(session)
         project = Project(
             owner_id=owner_id,
             name=name,
@@ -141,12 +123,6 @@ class WorkspaceRepository:
     def update_project_for_owner(session: Session, project_id: int, owner_id: int, update_data: dict) -> Optional[dict]:
         if not update_data:
             return None
-        if "name" in update_data:
-            update_data["slug"] = WorkspaceRepository._generate_unique_project_slug(
-                session,
-                update_data.get("name") or "",
-                exclude_project_id=project_id,
-            )
         session.execute(
             update(Project)
             .where(Project.id == project_id, Project.owner_id == owner_id)

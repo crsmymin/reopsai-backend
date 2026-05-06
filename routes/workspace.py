@@ -26,7 +26,7 @@ from utils.keyword_utils import (
     _clean_metadata_text, _refine_extracted_keywords, fetch_project_keywords,
     extract_contextual_keywords_from_input,
 )
-from utils.request_utils import _extract_request_user_id, _resolve_owner_ids_sqlalchemy
+from utils.request_utils import _extract_request_user_id, _resolve_workspace_owner_ids
 from api_logger import (
     log_analysis_complete, log_data_processing, log_error,
     log_expert_analysis,
@@ -161,7 +161,7 @@ def workspace_get_projects():
         if err_body:
             return err_body, err_status
 
-        owner_ids = _resolve_owner_ids_sqlalchemy(user_id_int)
+        owner_ids = _resolve_workspace_owner_ids(user_id_int)
         with session_scope() as db_session:
             projects = WorkspaceRepository.get_projects_by_owner_ids(db_session, owner_ids)
         return jsonify({'success': True, 'projects': projects})
@@ -186,7 +186,7 @@ def workspace_get_projects_with_studies():
         if err_body:
             return err_body, err_status
 
-        owner_ids = _resolve_owner_ids_sqlalchemy(user_id_int)
+        owner_ids = _resolve_workspace_owner_ids(user_id_int)
 
         with session_scope() as db_session:
             projects = WorkspaceRepository.get_projects_by_owner_ids(db_session, owner_ids)
@@ -596,7 +596,7 @@ def get_study(study_id):
         if err_body:
             return err_body, err_status
 
-        owner_ids = _resolve_owner_ids_sqlalchemy(user_id_int)
+        owner_ids = _resolve_workspace_owner_ids(user_id_int)
         allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
         with session_scope() as db_session:
             study_row = WorkspaceRepository.get_study_by_id_with_owner(db_session, study_id)
@@ -622,7 +622,7 @@ def get_project(project_id):
         if err_body:
             return err_body, err_status
 
-        owner_ids = _resolve_owner_ids_sqlalchemy(user_id_int)
+        owner_ids = _resolve_workspace_owner_ids(user_id_int)
         allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
         with session_scope() as db_session:
             project = WorkspaceRepository.get_project_by_id(db_session, project_id)
@@ -648,7 +648,7 @@ def get_project_studies(project_id):
         if err_body:
             return err_body, err_status
 
-        owner_ids = _resolve_owner_ids_sqlalchemy(user_id_int)
+        owner_ids = _resolve_workspace_owner_ids(user_id_int)
         allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
 
         with session_scope() as db_session:
@@ -675,7 +675,7 @@ def get_study_schedule(study_id):
         if err_body:
             return err_body, err_status
 
-        owner_ids = _resolve_owner_ids_sqlalchemy(user_id_int)
+        owner_ids = _resolve_workspace_owner_ids(user_id_int)
         allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
         with session_scope() as db_session:
             study_row = WorkspaceRepository.get_study_by_id_with_owner(db_session, study_id)
@@ -734,7 +734,7 @@ def get_study_artifacts(study_id):
         if err_body:
             return err_body, err_status
 
-        owner_ids = _resolve_owner_ids_sqlalchemy(user_id_int)
+        owner_ids = _resolve_workspace_owner_ids(user_id_int)
         allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
 
         with session_scope() as db_session:
@@ -748,6 +748,40 @@ def get_study_artifacts(study_id):
         return jsonify({'success': True, 'artifacts': artifacts})
     except Exception as e:
         print(f"[ERROR] get_study_artifacts 예외 발생: study_id={study_id}, error={str(e)}")
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@workspace_bp.route('/studies/<int:study_id>/survey/deployments', methods=['GET'])
+@tier_required(['free'])
+def get_study_survey_deployments(study_id):
+    """연구의 설문 배포 이력 조회.
+
+    현재 배포 이력 저장 모델이 없으므로, 접근 가능한 연구에 대해서는 빈 배열을
+    반환한다. 실제 배포 저장소가 추가되면 이 엔드포인트의 응답 배열을 채운다.
+    """
+    try:
+        if not (session_scope and WorkspaceRepository):
+            return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
+
+        user_id_int, err_body, err_status = _extract_request_user_id()
+        if err_body:
+            return err_body, err_status
+
+        owner_ids = _resolve_workspace_owner_ids(user_id_int)
+        allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
+
+        with session_scope() as db_session:
+            study_row = WorkspaceRepository.get_study_by_id_with_owner(db_session, study_id)
+            if not study_row:
+                return jsonify({'error': '연구를 찾을 수 없습니다.'}), 404
+            _study, owner_id = study_row
+            if owner_id is not None and str(owner_id) not in allowed_owner_ids:
+                return jsonify({'error': '접근 권한이 없습니다.'}), 403
+
+        return jsonify({'success': True, 'deployments': []}), 200
+    except Exception as e:
+        print(f"[ERROR] get_study_survey_deployments 예외 발생: study_id={study_id}, error={str(e)}")
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
