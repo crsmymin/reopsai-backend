@@ -4,6 +4,7 @@ Ensure the local Chroma RAG database exists before starting the app.
 """
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,7 +22,18 @@ MIN_DOCUMENTS = int(os.getenv("RAG_MIN_DOCUMENTS", "1"))
 FORCE_REBUILD = os.getenv("FORCE_RAG_REBUILD", "").lower() in {"1", "true", "yes"}
 
 
+def database_path_has_files() -> bool:
+    db_path = Path(DB_PATH)
+    return db_path.exists() and any(db_path.iterdir())
+
+
 def collection_has_documents() -> bool:
+    if not database_path_has_files():
+        print(f"ChromaDB path is missing or empty (path={DB_PATH}).")
+        return False
+
+    client = None
+    collection = None
     try:
         client = chromadb.PersistentClient(
             path=DB_PATH,
@@ -37,6 +49,9 @@ def collection_has_documents() -> bool:
     except Exception as exc:
         print(f"ChromaDB is not ready yet ({exc}).")
         return False
+    finally:
+        del collection
+        del client
 
 
 def main() -> int:
@@ -48,13 +63,13 @@ def main() -> int:
     else:
         print("ChromaDB is missing or empty. Building RAG database.")
 
-    from build_improved_database import build_improved_database
-
-    if build_improved_database():
-        return 0
-
-    print("Failed to build ChromaDB.")
-    return 1
+    result = subprocess.run(
+        [sys.executable, str(PROJECT_ROOT / "build_improved_database.py")],
+        cwd=str(PROJECT_ROOT),
+    )
+    if result.returncode != 0:
+        print("Failed to build ChromaDB.")
+    return result.returncode
 
 
 if __name__ == "__main__":
