@@ -14,6 +14,7 @@ from db.engine import session_scope
 from db.models.core import Artifact, ArtifactEditHistory
 from sqlalchemy import select
 import json
+import os
 import re
 import traceback
 
@@ -22,7 +23,7 @@ artifact_ai_bp = Blueprint('artifact_ai', __name__, url_prefix='/api')
 # VectorDB 서비스 초기화 (RAG 검색용)
 try:
     _vector_service = VectorDBServiceWrapper(
-        db_path="./chroma_db",
+        db_path=os.getenv("RAG_DB_PATH", "./chroma_db"),
         collection_name="ux_rag"
     )
 except Exception as e:

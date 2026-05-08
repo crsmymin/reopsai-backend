@@ -19,6 +19,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       SQLALCHEMY_ECHO: "false"
       PYTHONUNBUFFERED: "1"
+      RAG_DB_PATH: /tmp/chroma_db
     ports:
       - "127.0.0.1:5001:5001"
     command: >

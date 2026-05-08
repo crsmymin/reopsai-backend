@@ -75,15 +75,15 @@ def build_improved_database():
     print("=" * 60)
     print("개선된 RAG 데이터베이스 구축을 시작합니다...")
     print("=" * 60)
+    db_path = os.getenv("RAG_DB_PATH", "./chroma_db")
     
     # 1. 기존 백업 폴더들 정리
-    cleanup_old_backups()
+    cleanup_old_backups(db_path)
     
     # 2. 기존 데이터베이스 백업 (비활성화)
-    backup_path = backup_existing_database(enable_backup=False)
+    backup_path = backup_existing_database(db_path=db_path, enable_backup=False)
     
     # 3. 기존 데이터베이스 내용 삭제
-    db_path = "./chroma_db"
     clear_database_directory(db_path)
     
     # 4. 자동 매니페스트 생성
