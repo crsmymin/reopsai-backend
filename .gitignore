@@ -64,6 +64,7 @@ Dockerfile.dev
 
 # ChromaDB 데이터 (로컬 개발용)
 chroma_db/
+auto_generated_manifest.json
 
 # Uploads (로컬 개발용)
 uploads/

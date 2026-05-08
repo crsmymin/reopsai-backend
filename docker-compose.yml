@@ -37,6 +37,7 @@ services:
     command: >
       sh -c "
       alembic upgrade head &&
+      python scripts/ensure_chroma_db.py &&
       python -m flask --app app:app run --host 0.0.0.0 --port 5001 --debug --reload
       "
     depends_on:

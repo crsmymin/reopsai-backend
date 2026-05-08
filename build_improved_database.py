@@ -20,8 +20,33 @@ def backup_existing_database(db_path="./chroma_db", enable_backup=False):
         print(f"기존 데이터베이스가 {backup_path}로 백업되었습니다.")
         return backup_path
     elif os.path.exists(db_path):
-        print("백업 없이 기존 데이터베이스를 삭제합니다.")
+        print("백업 없이 기존 데이터베이스 내용을 삭제합니다.")
     return None
+
+def clear_database_directory(db_path="./chroma_db"):
+    """ChromaDB 디렉터리 내부만 비운다.
+
+    Docker volume은 db_path 자체가 마운트 지점일 수 있어 디렉터리 자체를 삭제하면
+    Device or resource busy 오류가 발생한다.
+    """
+    os.makedirs(db_path, exist_ok=True)
+
+    removed_count = 0
+    for entry in os.scandir(db_path):
+        entry_path = entry.path
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry_path)
+            else:
+                os.remove(entry_path)
+            removed_count += 1
+        except Exception as e:
+            raise RuntimeError(f"기존 ChromaDB 항목 삭제 실패 ({entry_path}): {e}") from e
+
+    if removed_count > 0:
+        print(f"기존 데이터베이스 내용 {removed_count}개 항목이 삭제되었습니다.")
+    else:
+        print("기존 데이터베이스가 비어 있습니다.")
 
 def cleanup_old_backups(db_path="./chroma_db"):
     """기존 백업 폴더들 정리"""
@@ -57,11 +82,9 @@ def build_improved_database():
     # 2. 기존 데이터베이스 백업 (비활성화)
     backup_path = backup_existing_database(enable_backup=False)
     
-    # 3. 기존 데이터베이스 삭제
+    # 3. 기존 데이터베이스 내용 삭제
     db_path = "./chroma_db"
-    if os.path.exists(db_path):
-        shutil.rmtree(db_path)
-        print("기존 데이터베이스가 삭제되었습니다.")
+    clear_database_directory(db_path)
     
     # 4. 자동 매니페스트 생성
     print("\n📄 자동 매니페스트 생성 중...")
