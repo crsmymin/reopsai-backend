@@ -5,10 +5,15 @@ Ensure the local Chroma RAG database exists before starting the app.
 
 import os
 import sys
+from pathlib import Path
 
 import chromadb
 from chromadb.config import Settings
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 DB_PATH = os.getenv("RAG_DB_PATH", "./chroma_db")
 COLLECTION_NAME = os.getenv("RAG_COLLECTION_NAME", "ux_rag")
