@@ -9,6 +9,7 @@ from services.openai_service import openai_service
 from services.gemini_service import gemini_service
 from routes.auth import tier_required
 from utils.request_utils import _extract_request_user_id, _resolve_workspace_owner_ids
+from utils.usage_metering import build_llm_usage_context, run_with_llm_usage_context
 from rag_system.improved.improved_vector_db_service import VectorDBServiceWrapper
 from db.engine import session_scope
 from db.models.core import Artifact, ArtifactEditHistory
@@ -237,6 +238,10 @@ def modify_artifact_text(artifact_id):
         artifact, err_resp = _require_artifact_access(artifact_id, owner_ids)
         if err_resp:
             return err_resp
+        llm_usage_context = build_llm_usage_context(
+            user_id=user_id_int,
+            feature_key="artifact_ai",
+        )
         
         # RAG 검색: user_prompt + selected_text로 관련 원칙/예시 검색 (도메인 지식 보강)
         rag_principles = ""
@@ -338,10 +343,12 @@ def modify_artifact_text(artifact_id):
             'max_output_tokens': estimated_tokens,
         }
         
-        response = gemini_service.generate_response(
+        response = run_with_llm_usage_context(
+            llm_usage_context,
+            gemini_service.generate_response,
             prompt=llm_prompt,
             generation_config=generation_config,
-            model_name="gemini-2.5-flash"
+            model_name="gemini-2.5-flash",
         )
         
         if not response.get('success'):
@@ -469,7 +476,9 @@ def modify_artifact_text(artifact_id):
                 + "반드시 selected_text 전체를 modified에 반환하세요. (요청한 부분만 수정 + 나머지는 원문 유지)\n"
                 + "형식은 동일하게 {\"original\": \"...\", \"modified\": \"...\"} JSON만 출력하세요."
             )
-            retry = gemini_service.generate_response(
+            retry = run_with_llm_usage_context(
+                llm_usage_context,
+                gemini_service.generate_response,
                 prompt=harden_prompt,
                 generation_config=generation_config,
                 model_name="gemini-2.5-flash",

@@ -27,6 +27,7 @@ from utils.keyword_utils import (
     extract_contextual_keywords_from_input,
 )
 from utils.request_utils import _extract_request_user_id, _resolve_workspace_owner_ids
+from utils.usage_metering import build_llm_usage_context, run_with_llm_usage_context, stream_with_llm_usage_context
 from api_logger import (
     log_analysis_complete, log_data_processing, log_error,
     log_expert_analysis,
@@ -548,6 +549,8 @@ def workspace_generate_tags():
 - 가능한 경우 {project_title}의 서비스 유형을 추론하여 구체적인 산업/사용 시나리오 태그를 추가하세요.
 """
 
+        llm_usage_context = build_llm_usage_context(feature_key="workspace_ai")
+
         # 스트리밍 응답 생성
         def generate_stream():
             result = openai_service.generate_response(
@@ -573,7 +576,10 @@ def workspace_generate_tags():
             final_tags = tags[:8]
             yield f"data: {_json.dumps({'tags': final_tags, 'done': True}, ensure_ascii=False)}\n\n"
 
-        return Response(generate_stream(), mimetype='text/event-stream')
+        return Response(
+            stream_with_llm_usage_context(llm_usage_context, generate_stream()),
+            mimetype='text/event-stream',
+        )
 
     except Exception as e:
         log_error(e, "태그 생성 API 오류")
@@ -958,6 +964,10 @@ def regenerate_study_plan(study_id):
             project_id = study_obj.project_id
 
         project_keywords = fetch_project_keywords(project_id)
+        llm_usage_context = build_llm_usage_context(
+            user_id=user_id_int,
+            feature_key="plan_generation",
+        )
 
         def generate_plan_background():
             # Import here to avoid circular imports
@@ -994,7 +1004,10 @@ def regenerate_study_plan(study_id):
                 except Exception as delete_error:
                     log_error(delete_error, f"재생성 오류 후 artifact 삭제 실패: artifact_id={artifact_id}")
 
-        thread = threading.Thread(target=generate_plan_background, daemon=True)
+        thread = threading.Thread(
+            target=lambda: run_with_llm_usage_context(llm_usage_context, generate_plan_background),
+            daemon=True,
+        )
         thread.start()
 
         return jsonify({

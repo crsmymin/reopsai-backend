@@ -18,6 +18,7 @@ from services.openai_service import openai_service
 from services.vector_service import vector_service
 from utils.keyword_utils import extract_contextual_keywords_from_input, fetch_project_keywords
 from utils.llm_utils import parse_llm_json_response
+from utils.usage_metering import build_llm_usage_context, run_with_llm_usage_context
 
 guideline_bp = Blueprint('guideline', __name__, url_prefix='/api')
 
@@ -115,6 +116,7 @@ def guideline_create_and_generate():
             project_id_for_keywords = study_obj.project_id
 
         project_keywords = fetch_project_keywords(project_id_for_keywords)
+        llm_usage_context = build_llm_usage_context(feature_key="guideline_generation")
 
         def generate_in_background():
             try:
@@ -213,7 +215,9 @@ def guideline_create_and_generate():
                     except Exception:
                         pass
 
-        thread = threading.Thread(target=generate_in_background)
+        thread = threading.Thread(
+            target=lambda: run_with_llm_usage_context(llm_usage_context, generate_in_background)
+        )
         thread.start()
 
         return jsonify({'success': True, 'artifact_id': artifact_id})

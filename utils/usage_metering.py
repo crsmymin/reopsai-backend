@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import math
+import traceback
 import uuid
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, Optional, Tuple, TypeVar
 
 from flask import g, has_request_context, request
 from flask_jwt_extended import get_jwt, get_jwt_identity, verify_jwt_in_request
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db.engine import session_scope
@@ -24,20 +25,32 @@ from db.models.core import (
     Team,
     TeamMember,
     TeamUsageEvent,
+    User,
 )
 
 
 FEATURE_PREFIXES = {
-    "plan_generation": ["/api/generator", "/api/studies/", "/api/plans", "/api/generator/create-plan"],
-    "survey_generation": ["/api/surveys", "/api/survey"],
-    "guideline_generation": ["/api/guidelines", "/api/guideline"],
+    "plan_generation": [
+        "/api/generator/create-plan",
+        "/api/generator/create-plan-oneshot",
+        "/api/generator/conversation-maker/finalize-oneshot",
+        "/api/generator",
+        "/api/conversation/message",
+        "/api/study-helper/chat",
+        "/api/studies/",
+        "/api/plans",
+    ],
+    "survey_generation": ["/api/survey", "/api/surveys", "/api/survey-diagnoser"],
+    "guideline_generation": ["/api/guideline", "/api/guidelines", "/api/extract-methodologies"],
     "artifact_ai": ["/api/artifacts/", "/api/artifact-ai"],
     "screener": ["/api/screener"],
+    "workspace_ai": ["/api/workspace/generate-"],
 }
 
 INITIAL_COMPANY_WEIGHTED_TOKEN_GRANT = 100_000
 BASE_WEIGHT_PRICE_PER_1M_USD = Decimal("0.15")
 _LLM_USAGE_CONTEXT: ContextVar[Optional[Dict[str, Any]]] = ContextVar("llm_usage_context", default=None)
+_T = TypeVar("_T")
 
 
 def _to_int(value: Any) -> int:
@@ -54,6 +67,15 @@ def _to_decimal(value: Any) -> Decimal:
         return Decimal(str(value))
     except Exception:
         return Decimal("0")
+
+
+def _to_optional_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 
 def _resolve_primary_team_id(db_session, user_id: Optional[int]) -> Optional[int]:
@@ -92,58 +114,128 @@ def get_llm_usage_context() -> Dict[str, Any]:
     return dict(_LLM_USAGE_CONTEXT.get() or {})
 
 
+def run_with_llm_usage_context(context: Optional[Dict[str, Any]], func: Callable[..., _T], *args, **kwargs) -> _T:
+    token = _LLM_USAGE_CONTEXT.set(dict(context) if context is not None else None)
+    try:
+        return func(*args, **kwargs)
+    finally:
+        _LLM_USAGE_CONTEXT.reset(token)
+
+
+def stream_with_llm_usage_context(context: Optional[Dict[str, Any]], iterable: Iterable[_T]) -> Iterator[_T]:
+    token = _LLM_USAGE_CONTEXT.set(dict(context) if context is not None else None)
+    try:
+        yield from iterable
+    finally:
+        _LLM_USAGE_CONTEXT.reset(token)
+
+
+def _request_id_from_flask_context(fallback: Optional[str] = None) -> Optional[str]:
+    if not has_request_context():
+        return fallback
+    request_id = getattr(g, "request_id", None) or fallback
+    if not request_id:
+        request_id = uuid.uuid4().hex
+    g.request_id = request_id
+    return request_id
+
+
+def _resolve_company_id_for_user(user_id: Optional[int]) -> Optional[int]:
+    if user_id is None or session_scope is None:
+        return None
+    try:
+        with session_scope() as db_session:
+            company_id = db_session.execute(
+                select(User.company_id).where(User.id == int(user_id)).limit(1)
+            ).scalar_one_or_none()
+            return int(company_id) if company_id is not None else None
+    except Exception:
+        return None
+
+
+def _resolve_team_id_for_user(user_id: Optional[int]) -> Optional[int]:
+    if user_id is None or session_scope is None:
+        return None
+    try:
+        with session_scope() as db_session:
+            return _resolve_primary_team_id(db_session, int(user_id))
+    except Exception:
+        return None
+
+
+def build_llm_usage_context(
+    *,
+    feature_key: Optional[str] = None,
+    endpoint: Optional[str] = None,
+    user_id: Optional[Any] = None,
+    company_id: Optional[Any] = None,
+    team_id: Optional[Any] = None,
+    request_id: Optional[str] = None,
+    account_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    usage_context = get_llm_usage_context()
+    claims: Dict[str, Any] = {}
+    identity = None
+
+    if has_request_context():
+        try:
+            verify_jwt_in_request(optional=True)
+            claims = get_jwt() or {}
+            identity = get_jwt_identity()
+        except Exception:
+            claims = {}
+        if user_id is None:
+            user_id = request.headers.get("X-User-ID") or identity
+        if endpoint is None:
+            endpoint = request.path or usage_context.get("endpoint") or ""
+        request_id = _request_id_from_flask_context(request_id or usage_context.get("request_id"))
+    else:
+        endpoint = endpoint if endpoint is not None else usage_context.get("endpoint") or ""
+        request_id = request_id or usage_context.get("request_id")
+
+    user_id_int = _to_optional_int(user_id)
+    if user_id_int is None:
+        user_id_int = _to_optional_int(identity)
+    if user_id_int is None:
+        user_id_int = _to_optional_int(usage_context.get("user_id"))
+
+    company_id_int = _to_optional_int(company_id)
+    if company_id_int is None:
+        company_id_int = _to_optional_int(claims.get("company_id"))
+    if company_id_int is None:
+        company_id_int = _to_optional_int(usage_context.get("company_id"))
+    if company_id_int is None:
+        company_id_int = _resolve_company_id_for_user(user_id_int)
+
+    team_id_int = _to_optional_int(team_id)
+    if team_id_int is None:
+        team_id_int = _to_optional_int(usage_context.get("team_id"))
+    if team_id_int is None:
+        team_id_int = _resolve_team_id_for_user(user_id_int)
+
+    resolved_endpoint = endpoint or ""
+    resolved_feature_key = (
+        feature_key
+        or classify_feature_key(resolved_endpoint)
+        or usage_context.get("feature_key")
+    )
+
+    return {
+        "company_id": company_id_int,
+        "team_id": team_id_int,
+        "user_id": user_id_int,
+        "account_type": account_type or claims.get("account_type") or usage_context.get("account_type"),
+        "endpoint": resolved_endpoint,
+        "feature_key": resolved_feature_key,
+        "request_id": request_id,
+    }
+
+
 def _request_context() -> Dict[str, Any]:
     usage_context = get_llm_usage_context()
     if not has_request_context():
         return usage_context
-    try:
-        verify_jwt_in_request(optional=True)
-    except Exception:
-        return {
-            "company_id": usage_context.get("company_id"),
-            "user_id": usage_context.get("user_id"),
-            "account_type": usage_context.get("account_type"),
-            "endpoint": request.path or usage_context.get("endpoint") or "",
-            "feature_key": classify_feature_key(request.path or "") or usage_context.get("feature_key"),
-            "request_id": getattr(g, "request_id", None) or usage_context.get("request_id"),
-        }
-
-    claims = get_jwt() or {}
-    identity = get_jwt_identity()
-    try:
-        user_id = int(identity) if identity is not None else None
-    except Exception:
-        user_id = None
-    try:
-        company_id = int(claims.get("company_id")) if claims.get("company_id") is not None else None
-    except Exception:
-        company_id = None
-    team_id = usage_context.get("team_id")
-    try:
-        team_id = int(team_id) if team_id is not None else None
-    except Exception:
-        team_id = None
-    if team_id is None and user_id is not None and session_scope is not None:
-        try:
-            with session_scope() as db_session:
-                team_id = _resolve_primary_team_id(db_session, user_id)
-        except Exception:
-            team_id = None
-
-    request_id = getattr(g, "request_id", None)
-    if not request_id:
-        request_id = uuid.uuid4().hex
-        g.request_id = request_id
-
-    return {
-        "company_id": company_id if company_id is not None else usage_context.get("company_id"),
-        "team_id": team_id,
-        "user_id": user_id if user_id is not None else usage_context.get("user_id"),
-        "account_type": claims.get("account_type") or usage_context.get("account_type"),
-        "endpoint": request.path or usage_context.get("endpoint") or "",
-        "feature_key": classify_feature_key(request.path or "") or usage_context.get("feature_key"),
-        "request_id": request_id or usage_context.get("request_id"),
-    }
+    return build_llm_usage_context()
 
 
 def extract_openai_usage(usage_obj: Any) -> Dict[str, int]:
@@ -381,9 +473,9 @@ def record_llm_call(
                 insert_stmt.on_conflict_do_update(
                     index_elements=[
                         LlmUsageDailyAggregate.usage_date,
-                        func.coalesce(LlmUsageDailyAggregate.company_id, -1),
-                        func.coalesce(LlmUsageDailyAggregate.team_id, -1),
-                        func.coalesce(LlmUsageDailyAggregate.user_id, -1),
+                        literal_column("COALESCE(company_id, -1)"),
+                        literal_column("COALESCE(team_id, -1)"),
+                        literal_column("COALESCE(user_id, -1)"),
                         LlmUsageDailyAggregate.provider,
                         LlmUsageDailyAggregate.model,
                         LlmUsageDailyAggregate.feature_key,
@@ -401,7 +493,9 @@ def record_llm_call(
                     },
                 )
             )
-    except Exception:
+    except Exception as exc:
+        print(f"[WARN] record_llm_call failed: provider={provider}, model={model}, error={exc}")
+        traceback.print_exc()
         event_id = None
 
     track_llm_usage(usage)

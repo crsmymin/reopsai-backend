@@ -289,11 +289,25 @@ class GeminiService:
                 
                 # 프롬프트와 이미지를 함께 전달
                 model = self.model
+                t0 = time.time()
                 response = model.generate_content([prompt_to_send, image])
+                duration = time.time() - t0
                 
                 # 성공 시 쿨다운 초기화
                 if current_key in self.key_cooldown:
                     del self.key_cooldown[current_key]
+
+                usage = {}
+                try:
+                    um = getattr(response, "usage_metadata", None) or getattr(response, "usageMetadata", None)
+                    if um is not None:
+                        usage = extract_gemini_usage(um)
+                except Exception:
+                    usage = {}
+
+                log_duration("LLM(Gemini Vision)", duration, extra="model=gemini-2.0-flash")
+                log_tokens("gemini", usage, extra="model=gemini-2.0-flash vision")
+                record_llm_call(provider="gemini", model="gemini-2.0-flash", usage=usage)
                 
                 return response.text
             

@@ -13,6 +13,7 @@ from services.gemini_service import gemini_service
 from services.openai_service import openai_service
 from prompts.analysis_prompts import ScreenerPrompts
 from utils.llm_utils import parse_llm_json_response
+from utils.usage_metering import build_llm_usage_context, stream_with_llm_usage_context
 from db.engine import session_scope
 from db.models.core import StudySchedule
 from routes.auth import tier_required
@@ -161,6 +162,8 @@ def find_optimal_participants():
             yield f"data: {json.dumps({'error': '필수 데이터가 누락되었습니다.'})}\n\n"
         return Response(error_generate(), mimetype='text/event-stream')
 
+    llm_usage_context = build_llm_usage_context(feature_key="screener")
+
     def generate():
         try:
             if isinstance(plan_json, str):
@@ -229,7 +232,10 @@ def find_optimal_participants():
             traceback.print_exc()
             yield f"data: {json.dumps({'error': str(e), 'step': 'error'})}\n\n"
 
-    return Response(generate(), mimetype='text/event-stream')
+    return Response(
+        stream_with_llm_usage_context(llm_usage_context, generate()),
+        mimetype='text/event-stream',
+    )
 
 
 # ---------------------------------------------------------------------------

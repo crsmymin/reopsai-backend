@@ -24,7 +24,7 @@ from api_logger import (
     log_step_search_clean,
 )
 from db.engine import session_scope
-from db.models.core import Artifact, Project, Study, Team, TeamMember, User
+from db.models.core import Artifact, Project, Study
 from db.repositories.workspace_repository import WorkspaceRepository
 from debug_utils import analyze_error_patterns, get_stats, request_tracker
 from prompts.analysis_prompts import (
@@ -43,7 +43,7 @@ from utils.keyword_utils import (
     fetch_project_keywords,
 )
 from utils.llm_utils import _safe_parse_json_object, parse_llm_json_response
-from utils.usage_metering import classify_feature_key, get_llm_usage_context, set_llm_usage_context
+from utils.usage_metering import build_llm_usage_context, get_llm_usage_context, run_with_llm_usage_context, stream_with_llm_usage_context
 
 plan_bp = Blueprint('plan', __name__, url_prefix='/api')
 
@@ -53,63 +53,15 @@ plan_bp = Blueprint('plan', __name__, url_prefix='/api')
 # ---------------------------------------------------------------------------
 
 def _build_llm_usage_context(user_id, request_id):
-    try:
-        claims = get_jwt() or {}
-    except Exception:
-        claims = {}
-
-    company_id = claims.get("company_id")
-    try:
-        company_id = int(company_id) if company_id is not None else None
-    except Exception:
-        company_id = None
-
-    if company_id is None and session_scope and user_id is not None:
-        try:
-            with session_scope() as db_session:
-                company_id = db_session.execute(
-                    select(User.company_id)
-                    .where(User.id == int(user_id))
-                    .limit(1)
-                ).scalar_one_or_none()
-        except Exception:
-            company_id = None
-    team_id = None
-    if session_scope and user_id is not None:
-        try:
-            with session_scope() as db_session:
-                team_id = db_session.execute(
-                    select(Team.id)
-                    .where(Team.owner_id == int(user_id), Team.status != "deleted")
-                    .order_by(Team.created_at.asc())
-                    .limit(1)
-                ).scalar_one_or_none()
-                if team_id is None:
-                    team_id = db_session.execute(
-                        select(TeamMember.team_id)
-                        .join(Team, Team.id == TeamMember.team_id)
-                        .where(TeamMember.user_id == int(user_id), Team.status != "deleted")
-                        .order_by(TeamMember.joined_at.asc())
-                        .limit(1)
-                    ).scalar_one_or_none()
-                team_id = int(team_id) if team_id is not None else None
-        except Exception:
-            team_id = None
-
-    return {
-        "company_id": company_id,
-        "team_id": team_id,
-        "user_id": int(user_id) if user_id is not None else None,
-        "account_type": claims.get("account_type"),
-        "endpoint": request.path or "",
-        "feature_key": classify_feature_key(request.path or "") or "plan_generation",
-        "request_id": request_id,
-    }
+    return build_llm_usage_context(
+        user_id=user_id,
+        request_id=request_id,
+        feature_key="plan_generation",
+    )
 
 
 def _run_with_llm_usage_context(context, func, *args, **kwargs):
-    set_llm_usage_context(context)
-    return func(*args, **kwargs)
+    return run_with_llm_usage_context(context, func, *args, **kwargs)
 
 def _analyze_previous_step_selections(ledger_cards, step_int):
     """이전 단계에서 선택된 내용 분석"""
@@ -665,6 +617,8 @@ def study_helper_chat():
         if mode == 'help':
             generation_config = {"temperature": 0.1, "max_output_tokens": 1000, "top_p": 0.8}
 
+        llm_usage_context = build_llm_usage_context(feature_key="plan_generation")
+
         def generate_streaming_response():
             try:
                 result = openai_service.generate_response(helper_prompt, generation_config)
@@ -686,7 +640,7 @@ def study_helper_chat():
                 yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
 
         return current_app.response_class(
-            generate_streaming_response(),
+            stream_with_llm_usage_context(llm_usage_context, generate_streaming_response()),
             mimetype='text/event-stream',
             headers={
                 'Cache-Control': 'no-cache',
@@ -859,7 +813,6 @@ def generator_create_plan_oneshot():
             artifact_id = artifact.id
 
         def generate_plan_background():
-            set_llm_usage_context(llm_usage_context)
             try:
                 log_expert_analysis("백그라운드 계획서 생성", f"시작: artifact_id={artifact_id}")
                 response = handle_oneshot_parallel_experts(form_data, project_keywords)
@@ -892,7 +845,10 @@ def generator_create_plan_oneshot():
                 except Exception as delete_error:
                     log_error(delete_error, f"생성 오류 후 artifact 삭제 실패: artifact_id={artifact_id}")
 
-        thread = threading.Thread(target=generate_plan_background, daemon=True)
+        thread = threading.Thread(
+            target=lambda: run_with_llm_usage_context(llm_usage_context, generate_plan_background),
+            daemon=True,
+        )
         thread.start()
 
         response_payload = {
@@ -1443,7 +1399,6 @@ def conversation_maker_finalize_oneshot():
             artifact_id = artifact.id
 
         def generate_plan_background():
-            set_llm_usage_context(llm_usage_context)
             try:
                 log_expert_analysis("ConversationStudyMaker 최종계획서", f"시작: artifact_id={artifact_id}")
 
@@ -1544,7 +1499,10 @@ def conversation_maker_finalize_oneshot():
                 except Exception as delete_error:
                     log_error(delete_error, f"ConversationStudyMaker 실패 후 artifact 업데이트 실패: artifact_id={artifact_id}")
 
-        thread = threading.Thread(target=generate_plan_background, daemon=True)
+        thread = threading.Thread(
+            target=lambda: run_with_llm_usage_context(llm_usage_context, generate_plan_background),
+            daemon=True,
+        )
         thread.start()
 
         response_payload = {
