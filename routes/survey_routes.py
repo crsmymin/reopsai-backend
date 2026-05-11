@@ -18,7 +18,7 @@ from api_logger import (
 from db.engine import session_scope
 from db.models.core import Artifact, Project, Study
 from prompts.analysis_prompts import ScreenerPrompts, SurveyBuilderPrompts, SurveyDiagnosisPrompts, SurveyGenerationPrompts
-from routes.auth import tier_required
+from reopsai_backend.shared.auth import tier_required
 from services.gemini_service import gemini_service
 from services.openai_service import openai_service
 from services.vector_service import vector_service

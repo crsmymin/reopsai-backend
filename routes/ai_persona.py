@@ -6,7 +6,7 @@ AI 퍼소나(AI 인터뷰) 전용 API 라우터.
 from flask import Blueprint, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
-from routes.auth import tier_required
+from reopsai_backend.shared.auth import tier_required
 
 
 ai_persona_bp = Blueprint("ai_persona", __name__, url_prefix="/api/ai-persona")
@@ -18,4 +18,3 @@ ai_persona_bp = Blueprint("ai_persona", __name__, url_prefix="/api/ai-persona")
 def health():
     """B2B(엔터프라이즈) 전용 헬스체크. 라우터 동작 확인용."""
     return jsonify({"success": True, "service": "ai-persona"})
-

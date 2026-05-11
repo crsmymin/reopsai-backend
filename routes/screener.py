@@ -16,7 +16,7 @@ from utils.llm_utils import parse_llm_json_response
 from utils.usage_metering import build_llm_usage_context, stream_with_llm_usage_context
 from db.engine import session_scope
 from db.models.core import StudySchedule
-from routes.auth import tier_required
+from reopsai_backend.shared.auth import tier_required
 
 from screener.utils import normalize_column_name, find_matching_column_name
 from screener.filters import apply_sincerity_filter

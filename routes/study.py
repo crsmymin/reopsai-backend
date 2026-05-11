@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from db.engine import session_scope
 from db.models.core import Project, Study
-from routes.auth import tier_required
+from reopsai_backend.shared.auth import tier_required
 from utils.request_utils import _resolve_workspace_owner_ids
 import traceback
 

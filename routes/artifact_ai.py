@@ -7,7 +7,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import get_jwt_identity, get_jwt
 from services.openai_service import openai_service
 from services.gemini_service import gemini_service
-from routes.auth import tier_required
+from reopsai_backend.shared.auth import tier_required
 from utils.request_utils import _extract_request_user_id, _resolve_workspace_owner_ids
 from utils.usage_metering import build_llm_usage_context, run_with_llm_usage_context
 from rag_system.improved.improved_vector_db_service import VectorDBServiceWrapper

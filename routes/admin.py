@@ -29,7 +29,8 @@ from db.models.core import (
     User,
     UserFeedback,
 )
-from routes.auth import get_primary_team_id_for_user, tier_required
+from reopsai_backend.shared.auth import tier_required
+from routes.auth import get_primary_team_id_for_user
 from utils.usage_metering import cleanup_old_llm_usage_events, ensure_company_initial_grant, get_company_token_balance
 
 

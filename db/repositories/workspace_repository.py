@@ -141,6 +141,19 @@ class WorkspaceRepository:
         return model_to_dict(row) if row else None
 
     @staticmethod
+    def get_project_for_owner_ids(
+        session: Session, project_id: int, owner_ids: Sequence[int]
+    ) -> Tuple[Optional[dict], bool]:
+        project = WorkspaceRepository.get_project_by_id(session, project_id)
+        if not project:
+            return None, False
+        allowed_owner_ids = {str(owner_id) for owner_id in owner_ids if owner_id is not None}
+        owner_id = project.get("owner_id")
+        if owner_id is not None and str(owner_id) not in allowed_owner_ids:
+            return project, False
+        return project, True
+
+    @staticmethod
     def get_project_owner_id(session: Session, project_id: int) -> Optional[int]:
         owner_id = session.execute(
             select(Project.owner_id).where(Project.id == project_id).limit(1)
@@ -159,6 +172,19 @@ class WorkspaceRepository:
             return None
         study, owner_id = row
         return model_to_dict(study), int(owner_id) if owner_id is not None else None
+
+    @staticmethod
+    def get_study_for_owner_ids(
+        session: Session, study_id: int, owner_ids: Sequence[int]
+    ) -> Tuple[Optional[dict], bool]:
+        row = WorkspaceRepository.get_study_by_id_with_owner(session, study_id)
+        if not row:
+            return None, False
+        study, owner_id = row
+        allowed_owner_ids = {str(owner_id) for owner_id in owner_ids if owner_id is not None}
+        if owner_id is not None and str(owner_id) not in allowed_owner_ids:
+            return study, False
+        return study, True
 
     @staticmethod
     def get_studies_by_project_id(session: Session, project_id: int) -> List[dict]:
@@ -187,6 +213,22 @@ class WorkspaceRepository:
             .values(content=content, updated_at=datetime.utcnow())
         )
         return result.rowcount > 0
+
+    @staticmethod
+    def get_artifact_by_id(session: Session, artifact_id: int) -> Optional[dict]:
+        row = session.execute(select(Artifact).where(Artifact.id == artifact_id).limit(1)).scalar_one_or_none()
+        return model_to_dict(row) if row else None
+
+    @staticmethod
+    def get_artifact_by_id_for_owner(
+        session: Session, artifact_id: int, owner_id: int
+    ) -> Optional[dict]:
+        row = session.execute(
+            select(Artifact)
+            .where(Artifact.id == artifact_id, Artifact.owner_id == owner_id)
+            .limit(1)
+        ).scalar_one_or_none()
+        return model_to_dict(row) if row else None
 
     @staticmethod
     def get_artifacts_by_study_id(session: Session, study_id: int) -> List[dict]:
@@ -219,6 +261,94 @@ class WorkspaceRepository:
         if owner_check is None or int(owner_check) != int(owner_id):
             return None
         return model_to_dict(row)
+
+    @staticmethod
+    def delete_study_for_owner(session: Session, study_id: int, owner_id: int) -> Tuple[bool, str]:
+        study = session.execute(select(Study).where(Study.id == study_id).limit(1)).scalar_one_or_none()
+        if not study:
+            return False, "not_found"
+
+        actual_owner_id = session.execute(
+            select(Project.owner_id).where(Project.id == study.project_id).limit(1)
+        ).scalar_one_or_none()
+        if actual_owner_id is None or int(actual_owner_id) != int(owner_id):
+            return False, "forbidden"
+
+        session.delete(study)
+        return True, "deleted"
+
+    @staticmethod
+    def delete_artifact_for_owner(session: Session, artifact_id: int, owner_id: int) -> bool:
+        artifact = session.execute(
+            select(Artifact)
+            .where(Artifact.id == artifact_id, Artifact.owner_id == owner_id)
+            .limit(1)
+        ).scalar_one_or_none()
+        if not artifact:
+            return False
+        session.delete(artifact)
+        return True
+
+    @staticmethod
+    def replace_plan_artifact_for_study_owner(
+        session: Session, study_id: int, owner_id: int
+    ) -> Tuple[Optional[dict], str]:
+        study = session.execute(select(Study).where(Study.id == study_id).limit(1)).scalar_one_or_none()
+        if not study:
+            return None, "not_found"
+
+        actual_owner_id = session.execute(
+            select(Project.owner_id).where(Project.id == study.project_id).limit(1)
+        ).scalar_one_or_none()
+        if actual_owner_id is None or int(actual_owner_id) != int(owner_id):
+            return None, "forbidden"
+
+        existing_plans = session.execute(
+            select(Artifact).where(Artifact.study_id == study_id, Artifact.artifact_type == "plan")
+        ).scalars().all()
+        for existing in existing_plans:
+            session.delete(existing)
+
+        pending = Artifact(
+            study_id=study_id,
+            artifact_type="plan",
+            content="",
+            owner_id=int(actual_owner_id),
+            status="pending",
+        )
+        session.add(pending)
+        session.flush()
+        session.refresh(pending)
+        return (
+            {
+                "artifact_id": pending.id,
+                "study_slug": study.slug or str(study_id),
+                "project_id": study.project_id,
+                "owner_id": int(actual_owner_id),
+            },
+            "created",
+        )
+
+    @staticmethod
+    def complete_artifact(session: Session, artifact_id: int, content: str) -> bool:
+        artifact = session.execute(
+            select(Artifact).where(Artifact.id == int(artifact_id)).limit(1)
+        ).scalar_one_or_none()
+        if not artifact:
+            return False
+        artifact.content = content
+        artifact.status = "completed"
+        return True
+
+    @staticmethod
+    def delete_artifact_by_id(session: Session, artifact_id: int) -> bool:
+        artifact = session.execute(
+            select(Artifact).where(Artifact.id == int(artifact_id)).limit(1)
+        ).scalar_one_or_none()
+        if not artifact:
+            return False
+        session.delete(artifact)
+        return True
 
     @staticmethod
     def group_studies_by_project(studies: Iterable[dict]) -> Dict[int, List[dict]]:

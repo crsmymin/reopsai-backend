@@ -1,7 +1,7 @@
 """Generator 관련 API 라우트 - 파일 업로드 및 AI 처리"""
 
 from flask import Blueprint, request, jsonify
-from routes.auth import tier_required
+from reopsai_backend.shared.auth import tier_required
 import os
 import base64
 import uuid

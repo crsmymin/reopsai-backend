@@ -3,7 +3,6 @@
 
 app.py에서 분리됨. URL prefix: /api
 """
-import json
 import re
 import threading
 import traceback
@@ -12,19 +11,16 @@ from typing import List, Optional, Set
 import requests
 from bs4 import BeautifulSoup
 from flask import Blueprint, Response, jsonify, request
-from flask_jwt_extended import get_jwt, get_jwt_identity
-from sqlalchemy import func, select
 from urllib.parse import urlparse
 
 from api_logger import log_error
 from db.engine import session_scope
-from db.models.core import Artifact, Project, Study
 from db.repositories.workspace_repository import WorkspaceRepository
-from routes.auth import tier_required
+from reopsai_backend.application.workspace_service import workspace_service
+from reopsai_backend.shared.auth import tier_required
 from services.openai_service import openai_service
 from utils.keyword_utils import (
-    _clean_metadata_text, _refine_extracted_keywords, fetch_project_keywords,
-    extract_contextual_keywords_from_input,
+    _clean_metadata_text, fetch_project_keywords,
 )
 from utils.request_utils import _extract_request_user_id, _resolve_workspace_owner_ids
 from utils.usage_metering import build_llm_usage_context, run_with_llm_usage_context, stream_with_llm_usage_context
@@ -163,8 +159,7 @@ def workspace_get_projects():
             return err_body, err_status
 
         owner_ids = _resolve_workspace_owner_ids(user_id_int)
-        with session_scope() as db_session:
-            projects = WorkspaceRepository.get_projects_by_owner_ids(db_session, owner_ids)
+        projects = workspace_service.list_projects(owner_ids)
         return jsonify({'success': True, 'projects': projects})
     except Exception as e:
         log_error(e, "프로젝트 목록 조회")
@@ -189,46 +184,13 @@ def workspace_get_projects_with_studies():
 
         owner_ids = _resolve_workspace_owner_ids(user_id_int)
 
-        with session_scope() as db_session:
-            projects = WorkspaceRepository.get_projects_by_owner_ids(db_session, owner_ids)
-            project_ids = [p['id'] for p in projects]
-            studies = WorkspaceRepository.get_studies_by_project_ids(db_session, project_ids)
-            study_ids = [s['id'] for s in studies]
-            artifacts = WorkspaceRepository.get_artifacts_by_study_ids(db_session, study_ids)
-
-        studies_by_project = WorkspaceRepository.group_studies_by_project(studies)
-        artifacts_by_study = WorkspaceRepository.group_artifacts_by_study(artifacts)
-
-        projects_with_studies = []
-        all_studies = []
-        for project in projects:
-            project_with_studies = project.copy()
-            project_studies = studies_by_project.get(project['id'], [])
-            for study in project_studies:
-                study['artifacts'] = artifacts_by_study.get(study['id'], [])
-                all_studies.append(study.copy())
-            project_with_studies['studies'] = project_studies
-            projects_with_studies.append(project_with_studies)
-
-        all_artifacts = []
-        for study in all_studies:
-            for artifact in study.get('artifacts', []):
-                artifact_with_study = artifact.copy()
-                artifact_with_study['study_name'] = study.get('name', '')
-                artifact_with_study['study_slug'] = study.get('slug', study.get('id'))
-                all_artifacts.append(artifact_with_study)
-
-        recent_artifacts = sorted(
-            all_artifacts,
-            key=lambda x: x.get('created_at', ''),
-            reverse=True
-        )[:3]
+        summary = workspace_service.get_workspace_summary(owner_ids)
 
         return jsonify({
             'success': True,
-            'projects': projects_with_studies,
-            'all_studies': all_studies,
-            'recent_artifacts': recent_artifacts
+            'projects': summary.projects,
+            'all_studies': summary.all_studies,
+            'recent_artifacts': summary.recent_artifacts
         })
     except Exception as e:
         log_error(e, "프로젝트+스터디 목록 조회")
@@ -249,19 +211,10 @@ def workspace_create_project():
         if not (session_scope and WorkspaceRepository):
             return jsonify({'success': False, 'error': '데이터베이스 연결이 필요합니다.'}), 500
 
-        data = request.json
+        data = request.json or {}
         name = data.get('name')
         tags = data.get('tags', [])
         product_url = data.get('productUrl', '')
-
-        keywords_array = []
-        try:
-            if isinstance(tags, list) and len(tags) > 0:
-                keywords_array = tags
-            elif isinstance(tags, str):
-                keywords_array = [tags]
-        except Exception:
-            keywords_array = []
 
         if not name:
             return jsonify({'success': False, 'error': '프로젝트 이름은 필수입니다.'}), 400
@@ -270,14 +223,12 @@ def workspace_create_project():
         if err_body:
             return err_body, err_status
 
-        with session_scope() as db_session:
-            created_project = WorkspaceRepository.create_project(
-                db_session,
-                owner_id=int(user_id_int),
-                name=name,
-                product_url=product_url,
-                keywords=keywords_array,
-            )
+        created_project = workspace_service.create_project(
+            owner_id=int(user_id_int),
+            name=name,
+            product_url=product_url,
+            tags=tags,
+        )
         return jsonify({'success': True, 'project': created_project})
     except Exception as e:
         log_error(e, "프로젝트 생성")
@@ -301,8 +252,7 @@ def workspace_delete_project(project_id):
         if err_body:
             return err_body, err_status
 
-        with session_scope() as db_session:
-            WorkspaceRepository.delete_project_for_owner(db_session, project_id, int(user_id_int))
+        workspace_service.delete_project(project_id=project_id, owner_id=int(user_id_int))
         return jsonify({'success': True, 'message': f'프로젝트 {project_id} 삭제 완료'})
     except Exception as e:
         log_error(e, f"프로젝트 {project_id} 삭제")
@@ -324,31 +274,17 @@ def workspace_update_project(project_id):
         if err_body:
             return err_body, err_status
 
-        data = request.json
-        update_data = {}
-        if 'name' in data:
-            update_data['name'] = data['name']
-        if 'productUrl' in data:
-            update_data['product_url'] = data['productUrl']
-        if 'tags' in data:
-            tags = data['tags']
-            if isinstance(tags, list):
-                update_data['keywords'] = tags
-            elif isinstance(tags, str):
-                update_data['keywords'] = [tags]
-            else:
-                update_data['keywords'] = []
-
-        if not update_data:
+        data = request.json or {}
+        result = workspace_service.update_project(
+            project_id=project_id,
+            owner_id=int(user_id_int),
+            data=data,
+        )
+        if result.status == "empty_update":
             return jsonify({'success': False, 'error': '업데이트할 데이터가 없습니다.'}), 400
-
-        with session_scope() as db_session:
-            updated_project = WorkspaceRepository.update_project_for_owner(
-                db_session, project_id, int(user_id_int), update_data
-            )
-        if not updated_project:
+        if result.status == "not_found":
             return jsonify({'success': False, 'error': '프로젝트를 찾을 수 없습니다.'}), 404
-        return jsonify({'success': True, 'message': '프로젝트 정보가 업데이트되었습니다.', 'data': updated_project})
+        return jsonify({'success': True, 'message': '프로젝트 정보가 업데이트되었습니다.', 'data': result.data})
     except Exception as e:
         log_error(e, f"프로젝트 {project_id} 업데이트")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -603,15 +539,12 @@ def get_study(study_id):
             return err_body, err_status
 
         owner_ids = _resolve_workspace_owner_ids(user_id_int)
-        allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
-        with session_scope() as db_session:
-            study_row = WorkspaceRepository.get_study_by_id_with_owner(db_session, study_id)
-        if not study_row:
+        result = workspace_service.get_study(study_id=study_id, owner_ids=owner_ids)
+        if result.status == "not_found":
             return jsonify({'error': '연구를 찾을 수 없습니다.'}), 404
-        study, owner_id = study_row
-        if owner_id is not None and str(owner_id) not in allowed_owner_ids:
+        if result.status == "forbidden":
             return jsonify({'error': '접근 권한이 없습니다.'}), 403
-        return jsonify(study)
+        return jsonify(result.data)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -629,15 +562,12 @@ def get_project(project_id):
             return err_body, err_status
 
         owner_ids = _resolve_workspace_owner_ids(user_id_int)
-        allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
-        with session_scope() as db_session:
-            project = WorkspaceRepository.get_project_by_id(db_session, project_id)
-        if not project:
+        result = workspace_service.get_project(project_id=project_id, owner_ids=owner_ids)
+        if result.status == "not_found":
             return jsonify({'error': '프로젝트를 찾을 수 없습니다.'}), 404
-        owner_id = project.get('owner_id')
-        if owner_id is not None and str(owner_id) not in allowed_owner_ids:
+        if result.status == "forbidden":
             return jsonify({'error': '접근 권한이 없습니다.'}), 403
-        return jsonify(project)
+        return jsonify(result.data)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -655,16 +585,12 @@ def get_project_studies(project_id):
             return err_body, err_status
 
         owner_ids = _resolve_workspace_owner_ids(user_id_int)
-        allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
-
-        with session_scope() as db_session:
-            project_owner_id = WorkspaceRepository.get_project_owner_id(db_session, project_id)
-            if project_owner_id is None:
-                return jsonify({'error': '프로젝트를 찾을 수 없습니다.'}), 404
-            if str(project_owner_id) not in allowed_owner_ids:
-                return jsonify({'error': '접근 권한이 없습니다.'}), 403
-            studies = WorkspaceRepository.get_studies_by_project_id(db_session, project_id)
-        return jsonify({'success': True, 'studies': studies})
+        result = workspace_service.list_project_studies(project_id=project_id, owner_ids=owner_ids)
+        if result.status == "not_found":
+            return jsonify({'error': '프로젝트를 찾을 수 없습니다.'}), 404
+        if result.status == "forbidden":
+            return jsonify({'error': '접근 권한이 없습니다.'}), 403
+        return jsonify({'success': True, 'studies': result.data})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -682,15 +608,12 @@ def get_study_schedule(study_id):
             return err_body, err_status
 
         owner_ids = _resolve_workspace_owner_ids(user_id_int)
-        allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
-        with session_scope() as db_session:
-            study_row = WorkspaceRepository.get_study_by_id_with_owner(db_session, study_id)
-            if not study_row:
-                return jsonify({'error': '연구를 찾을 수 없습니다.'}), 404
-            _study, owner_id = study_row
-            if owner_id is not None and str(owner_id) not in allowed_owner_ids:
-                return jsonify({'error': '접근 권한이 없습니다.'}), 403
-            schedule = WorkspaceRepository.get_latest_schedule_by_study_id(db_session, study_id)
+        result = workspace_service.get_study_schedule(study_id=study_id, owner_ids=owner_ids)
+        if result.status == "not_found":
+            return jsonify({'error': '연구를 찾을 수 없습니다.'}), 404
+        if result.status == "forbidden":
+            return jsonify({'error': '접근 권한이 없습니다.'}), 403
+        schedule = result.data
         if schedule:
             return jsonify({'success': True, 'schedule': schedule})
         return jsonify({'success': False, 'schedule': None})
@@ -708,7 +631,7 @@ def update_artifact(artifact_id):
         if not (session_scope and WorkspaceRepository):
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
-        data = request.json
+        data = request.json or {}
         content = data.get('content', '')
         if not content.strip():
             return jsonify({'success': False, 'error': '내용이 필요합니다.'}), 400
@@ -717,10 +640,11 @@ def update_artifact(artifact_id):
         if err_body:
             return err_body, err_status
 
-        with session_scope() as db_session:
-            updated = WorkspaceRepository.update_artifact_content_for_owner(
-                db_session, artifact_id, int(user_id_int), content
-            )
+        updated = workspace_service.update_artifact_content(
+            artifact_id=artifact_id,
+            owner_id=int(user_id_int),
+            content=content,
+        )
         if updated:
             return jsonify({'success': True, 'message': '아티팩트가 업데이트되었습니다.'})
         return jsonify({'success': False, 'error': '아티팩트를 찾을 수 없거나 접근 권한이 없습니다.'}), 404
@@ -741,17 +665,12 @@ def get_study_artifacts(study_id):
             return err_body, err_status
 
         owner_ids = _resolve_workspace_owner_ids(user_id_int)
-        allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
-
-        with session_scope() as db_session:
-            study_row = WorkspaceRepository.get_study_by_id_with_owner(db_session, study_id)
-            if not study_row:
-                return jsonify({'error': '연구를 찾을 수 없습니다.'}), 404
-            _study, owner_id = study_row
-            if owner_id is not None and str(owner_id) not in allowed_owner_ids:
-                return jsonify({'error': '접근 권한이 없습니다.'}), 403
-            artifacts = WorkspaceRepository.get_artifacts_by_study_id(db_session, study_id)
-        return jsonify({'success': True, 'artifacts': artifacts})
+        result = workspace_service.list_study_artifacts(study_id=study_id, owner_ids=owner_ids)
+        if result.status == "not_found":
+            return jsonify({'error': '연구를 찾을 수 없습니다.'}), 404
+        if result.status == "forbidden":
+            return jsonify({'error': '접근 권한이 없습니다.'}), 403
+        return jsonify({'success': True, 'artifacts': result.data})
     except Exception as e:
         print(f"[ERROR] get_study_artifacts 예외 발생: study_id={study_id}, error={str(e)}")
         traceback.print_exc()
@@ -775,15 +694,11 @@ def get_study_survey_deployments(study_id):
             return err_body, err_status
 
         owner_ids = _resolve_workspace_owner_ids(user_id_int)
-        allowed_owner_ids = {str(oid) for oid in owner_ids if oid is not None}
-
-        with session_scope() as db_session:
-            study_row = WorkspaceRepository.get_study_by_id_with_owner(db_session, study_id)
-            if not study_row:
-                return jsonify({'error': '연구를 찾을 수 없습니다.'}), 404
-            _study, owner_id = study_row
-            if owner_id is not None and str(owner_id) not in allowed_owner_ids:
-                return jsonify({'error': '접근 권한이 없습니다.'}), 403
+        result = workspace_service.authorize_study(study_id=study_id, owner_ids=owner_ids)
+        if result.status == "not_found":
+            return jsonify({'error': '연구를 찾을 수 없습니다.'}), 404
+        if result.status == "forbidden":
+            return jsonify({'error': '접근 권한이 없습니다.'}), 403
 
         return jsonify({'success': True, 'deployments': []}), 200
     except Exception as e:
@@ -808,17 +723,17 @@ def stream_artifact_generation(artifact_id):
         return err_resp, err_code
 
     def generate():
-        with session_scope() as db_session:
-            artifact = db_session.execute(
-                select(Artifact).where(Artifact.id == artifact_id, Artifact.owner_id == user_id_int).limit(1)
-            ).scalar_one_or_none()
+        artifact = workspace_service.get_artifact_for_stream_start(
+            artifact_id=artifact_id,
+            owner_id=int(user_id_int),
+        )
         if not artifact:
             yield f"data: {_json.dumps({'error': 'Artifact not found or access denied'})}\n\n"
             return
 
         # 이미 완료된 경우
-        if artifact.status == 'completed':
-            yield f"data: {_json.dumps({'content': artifact.content, 'done': True})}\n\n"
+        if artifact.get('status') == 'completed':
+            yield f"data: {_json.dumps({'content': artifact.get('content'), 'done': True})}\n\n"
             return
 
         # pending 상태면 폴링하면서 content 스트리밍
@@ -829,20 +744,19 @@ def stream_artifact_generation(artifact_id):
 
             try:
                 # artifact 다시 조회
-                with session_scope() as db_session:
-                    artifact = db_session.execute(
-                        select(Artifact).where(Artifact.id == artifact_id).limit(1)
-                    ).scalar_one_or_none()
+                artifact = workspace_service.get_artifact_for_stream_poll(artifact_id=artifact_id)
                 if artifact:
-                    if artifact.content and artifact.content != last_content:
-                        last_content = artifact.content
-                        yield f"data: {_json.dumps({'content': artifact.content}, ensure_ascii=False)}\n\n"
+                    artifact_content = artifact.get('content')
+                    artifact_status = artifact.get('status')
+                    if artifact_content and artifact_content != last_content:
+                        last_content = artifact_content
+                        yield f"data: {_json.dumps({'content': artifact_content}, ensure_ascii=False)}\n\n"
 
-                    if artifact.status == 'completed':
+                    if artifact_status == 'completed':
                         yield f"data: {_json.dumps({'done': True})}\n\n"
                         return
 
-                    if artifact.status == 'failed':
+                    if artifact_status == 'failed':
                         yield f"data: {_json.dumps({'error': '생성 실패', 'done': True})}\n\n"
                         return
             except Exception as e:
@@ -870,20 +784,11 @@ def delete_study(study_id):
         if err_resp:
             return err_resp, err_code
 
-        with session_scope() as db_session:
-            study_obj = db_session.execute(
-                select(Study).where(Study.id == study_id).limit(1)
-            ).scalar_one_or_none()
-            if not study_obj:
-                return jsonify({'success': False, 'error': '연구를 찾을 수 없습니다.'}), 404
-
-            owner_id = db_session.execute(
-                select(Project.owner_id).where(Project.id == study_obj.project_id).limit(1)
-            ).scalar_one_or_none()
-            if owner_id is None or int(owner_id) != user_id_int:
-                return jsonify({'error': '접근 권한이 없습니다.'}), 403
-
-            db_session.delete(study_obj)
+        result = workspace_service.delete_study(study_id=study_id, owner_id=int(user_id_int))
+        if result.status == "not_found":
+            return jsonify({'success': False, 'error': '연구를 찾을 수 없습니다.'}), 404
+        if result.status == "forbidden":
+            return jsonify({'error': '접근 권한이 없습니다.'}), 403
 
         return jsonify({'success': True, 'message': '연구가 삭제되었습니다.'})
     except Exception as e:
@@ -902,13 +807,12 @@ def delete_artifact(artifact_id):
         if err_resp:
             return err_resp, err_code
 
-        with session_scope() as db_session:
-            artifact = db_session.execute(
-                select(Artifact).where(Artifact.id == artifact_id, Artifact.owner_id == user_id_int).limit(1)
-            ).scalar_one_or_none()
-            if not artifact:
-                return jsonify({'success': False, 'error': '아티팩트를 찾을 수 없거나 삭제 권한이 없습니다.'}), 404
-            db_session.delete(artifact)
+        deleted = workspace_service.delete_artifact(
+            artifact_id=artifact_id,
+            owner_id=int(user_id_int),
+        )
+        if not deleted:
+            return jsonify({'success': False, 'error': '아티팩트를 찾을 수 없거나 삭제 권한이 없습니다.'}), 404
 
         return jsonify({'success': True, 'message': '아티팩트가 삭제되었습니다.'})
     except Exception as e:
@@ -930,38 +834,18 @@ def regenerate_study_plan(study_id):
         if err_resp:
             return err_resp, err_code
 
-        with session_scope() as db_session:
-            study_obj = db_session.execute(
-                select(Study).where(Study.id == study_id).limit(1)
-            ).scalar_one_or_none()
-            if not study_obj:
-                return jsonify({'success': False, 'error': '연구를 찾을 수 없습니다.'}), 404
+        prepared = workspace_service.prepare_plan_regeneration(
+            study_id=study_id,
+            owner_id=int(user_id_int),
+        )
+        if prepared.status == "not_found":
+            return jsonify({'success': False, 'error': '연구를 찾을 수 없습니다.'}), 404
+        if prepared.status == "forbidden":
+            return jsonify({'error': '접근 권한이 없습니다.'}), 403
 
-            owner_id = db_session.execute(
-                select(Project.owner_id).where(Project.id == study_obj.project_id).limit(1)
-            ).scalar_one_or_none()
-            if owner_id is None or int(owner_id) != user_id_int:
-                return jsonify({'error': '접근 권한이 없습니다.'}), 403
-
-            existing_plans = db_session.execute(
-                select(Artifact).where(Artifact.study_id == study_id, Artifact.artifact_type == 'plan')
-            ).scalars().all()
-            for existing in existing_plans:
-                db_session.delete(existing)
-
-            pending = Artifact(
-                study_id=study_id,
-                artifact_type='plan',
-                content='',
-                owner_id=int(owner_id),
-                status='pending',
-            )
-            db_session.add(pending)
-            db_session.flush()
-            db_session.refresh(pending)
-            artifact_id = pending.id
-            study_slug = study_obj.slug or str(study_id)
-            project_id = study_obj.project_id
+        artifact_id = prepared.data['artifact_id']
+        study_slug = prepared.data['study_slug']
+        project_id = prepared.data['project_id']
 
         project_keywords = fetch_project_keywords(project_id)
         llm_usage_context = build_llm_usage_context(
@@ -975,32 +859,25 @@ def regenerate_study_plan(study_id):
             try:
                 log_expert_analysis("백그라운드 계획서 재생성", f"시작: artifact_id={artifact_id}, study_id={study_id}")
                 response = handle_oneshot_parallel_experts(form_data, project_keywords)
-                with session_scope() as bg_session:
-                    target = bg_session.execute(
-                        select(Artifact).where(Artifact.id == int(artifact_id)).limit(1)
-                    ).scalar_one_or_none()
-                    if not target:
+                if response.get('success'):
+                    updated = workspace_service.complete_artifact(
+                        artifact_id=artifact_id,
+                        content=response.get('final_plan', ''),
+                    )
+                    if not updated:
                         return
-                    if response.get('success'):
-                        target.content = response.get('final_plan', '')
-                        target.status = 'completed'
-                        log_analysis_complete()
-                        log_data_processing(
-                            "계획서 재생성 완료",
-                            {"artifact_id": artifact_id, "study_id": study_id},
-                            "백그라운드 계획서 재생성 성공",
-                        )
-                    else:
-                        bg_session.delete(target)
+                    log_analysis_complete()
+                    log_data_processing(
+                        "계획서 재생성 완료",
+                        {"artifact_id": artifact_id, "study_id": study_id},
+                        "백그라운드 계획서 재생성 성공",
+                    )
+                else:
+                    workspace_service.delete_artifact_by_id(artifact_id=artifact_id)
             except Exception as e:
                 log_error(e, f"백그라운드 계획서 재생성 오류: artifact_id={artifact_id}, study_id={study_id}")
                 try:
-                    with session_scope() as bg_session:
-                        target = bg_session.execute(
-                            select(Artifact).where(Artifact.id == int(artifact_id)).limit(1)
-                        ).scalar_one_or_none()
-                        if target:
-                            bg_session.delete(target)
+                    workspace_service.delete_artifact_by_id(artifact_id=artifact_id)
                 except Exception as delete_error:
                     log_error(delete_error, f"재생성 오류 후 artifact 삭제 실패: artifact_id={artifact_id}")
 
@@ -1026,58 +903,31 @@ def regenerate_study_plan(study_id):
 def update_study(study_id):
     """연구 정보 업데이트"""
     try:
-        if session_scope and WorkspaceRepository:
-            data = request.json
-            user_id_int, err_body, err_status = _extract_request_user_id()
-            if err_body:
-                return err_body, err_status
+        if not (session_scope and WorkspaceRepository):
+            return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
-            with session_scope() as db_session:
-                study_row = WorkspaceRepository.get_study_by_id_with_owner(db_session, study_id)
-                if not study_row:
-                    return jsonify({'success': False, 'error': '연구를 찾을 수 없습니다.'}), 404
-                _study, owner_id = study_row
-                if owner_id is not None and int(owner_id) != int(user_id_int):
-                    return jsonify({'error': '접근 권한이 없습니다.'}), 403
+        data = request.json or {}
+        user_id_int, err_body, err_status = _extract_request_user_id()
+        if err_body:
+            return err_body, err_status
 
-                update_data = {}
-                for key, value in data.items():
-                    if key == 'initial_input':
-                        update_data['initial_input'] = value
-                    elif key == 'name':
-                        update_data['name'] = value
-                    elif key == 'methodologies':
-                        update_data['methodologies'] = value
-                    elif key == 'target_audience':
-                        update_data['target_audience'] = value
-                    elif key == 'participant_count':
-                        update_data['participant_count'] = value
-                    elif key == 'start_date':
-                        update_data['start_date'] = value
-                    elif key == 'end_date':
-                        update_data['end_date'] = value
-                    elif key == 'timeline':
-                        update_data['timeline'] = value
-                    elif key == 'budget':
-                        update_data['budget'] = value
-                    elif key == 'additional_requirements':
-                        update_data['additional_requirements'] = value
+        result = workspace_service.update_study(
+            study_id=study_id,
+            owner_id=int(user_id_int),
+            data=data,
+        )
+        if result.status == "empty_update":
+            return jsonify({'success': False, 'error': '업데이트할 데이터가 없습니다.'}), 400
+        if result.status == "not_found":
+            return jsonify({'success': False, 'error': '연구를 찾을 수 없습니다.'}), 404
+        if result.status == "forbidden":
+            return jsonify({'error': '접근 권한이 없습니다.'}), 403
 
-                if not update_data:
-                    return jsonify({'success': False, 'error': '업데이트할 데이터가 없습니다.'}), 400
-
-                updated = WorkspaceRepository.update_study_for_owner(
-                    db_session, study_id, int(user_id_int), update_data
-                )
-                if not updated:
-                    return jsonify({'success': False, 'error': '연구를 찾을 수 없습니다.'}), 404
-            return jsonify({
-                'success': True,
-                'message': '연구 정보가 업데이트되었습니다.',
-                'data': updated
-            })
-
-        return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
+        return jsonify({
+            'success': True,
+            'message': '연구 정보가 업데이트되었습니다.',
+            'data': result.data
+        })
     except Exception as e:
         print(f"[ERROR] 업데이트 오류: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500

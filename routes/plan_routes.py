@@ -30,7 +30,7 @@ from debug_utils import analyze_error_patterns, get_stats, request_tracker
 from prompts.analysis_prompts import (
     GenerationPrompts, KeywordExtractionPrompts, PlanGeneratorPrompts,
 )
-from routes.auth import tier_required
+from reopsai_backend.shared.auth import tier_required
 from services.gemini_service import gemini_service
 from services.openai_service import openai_service
 from services.vector_service import vector_service
