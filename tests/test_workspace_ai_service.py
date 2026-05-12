@@ -32,7 +32,7 @@ def _install_workspace_ai_import_fakes():
 
 _install_workspace_ai_import_fakes()
 
-from reopsai_backend.application.workspace_ai_service import WorkspaceAiService
+from reopsai.application.workspace_ai_service import WorkspaceAiService
 
 
 class FakeOpenAi:

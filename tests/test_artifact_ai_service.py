@@ -2,7 +2,7 @@ from contextlib import contextmanager
 import json
 from types import SimpleNamespace
 
-from reopsai_backend.application.artifact_ai_service import ArtifactAiService
+from reopsai.application.artifact_ai_service import ArtifactAiService
 
 
 @contextmanager

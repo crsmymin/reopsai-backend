@@ -16,7 +16,7 @@ class FakeDevEvaluatorService:
 
 
 def _make_client(monkeypatch):
-    import reopsai_backend.api.dev_evaluator as module
+    import reopsai.api.dev_evaluator as module
 
     fake_service = FakeDevEvaluatorService()
     monkeypatch.setattr(module, "dev_evaluator_service", fake_service)

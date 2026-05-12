@@ -38,7 +38,7 @@ class FakeArtifactAiService:
 
 
 def _make_artifact_ai_client(monkeypatch):
-    import reopsai_backend.api.artifact_ai as artifact_ai_module
+    import reopsai.api.artifact_ai as artifact_ai_module
 
     monkeypatch.setattr(artifact_ai_module, "artifact_ai_service", FakeArtifactAiService())
     monkeypatch.setattr(artifact_ai_module, "_resolve_workspace_owner_ids", lambda user_id: [user_id])

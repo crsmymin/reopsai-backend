@@ -24,7 +24,7 @@ def _install_plan_generation_import_fakes():
 
 _install_plan_generation_import_fakes()
 
-from reopsai_backend.application.plan_generation_service import PlanGenerationService
+from reopsai.application.plan_generation_service import PlanGenerationService
 
 
 class FakeOpenAi:

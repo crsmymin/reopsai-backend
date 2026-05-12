@@ -1,7 +1,7 @@
 """Compatibility entrypoint for Flask and ASGI deployments."""
 
 from config import Config
-from reopsai_backend.api.app_factory import create_app
+from reopsai.api.app_factory import create_app
 
 
 app = create_app()

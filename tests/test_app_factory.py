@@ -1,4 +1,4 @@
-from reopsai_backend.api import app_factory
+from reopsai.api import app_factory
 
 
 class TestConfig:

@@ -2,7 +2,7 @@ from contextlib import contextmanager
 import sys
 import types
 
-from reopsai_backend.application.screener_service import ScreenerService
+from reopsai.application.screener_service import ScreenerService
 
 fake_pandas = types.ModuleType("pandas")
 fake_pandas.Index = tuple

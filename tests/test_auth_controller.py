@@ -43,7 +43,7 @@ class FakeAuthService:
 
 
 def _make_auth_client(monkeypatch):
-    import reopsai_backend.api.auth as auth_module
+    import reopsai.api.auth as auth_module
 
     monkeypatch.setattr(auth_module, "auth_service", FakeAuthService())
     monkeypatch.setattr(auth_module.Config, "ALLOWED_ORIGINS", ["https://frontend.example.com"])

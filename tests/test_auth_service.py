@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from werkzeug.security import generate_password_hash
 
-from reopsai_backend.application.auth_service import AuthService, build_auth_context, build_user_payload
+from reopsai.application.auth_service import AuthService, build_auth_context, build_user_payload
 
 
 @contextmanager

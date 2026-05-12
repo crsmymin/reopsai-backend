@@ -95,7 +95,7 @@ class FakeAdminBackofficeService:
 
 
 def _make_admin_backoffice_client(monkeypatch, claims=None):
-    import reopsai_backend.api.admin as admin_module
+    import reopsai.api.admin as admin_module
 
     monkeypatch.setattr(admin_module, "admin_backoffice_service", FakeAdminBackofficeService())
 

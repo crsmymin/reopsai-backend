@@ -1,7 +1,7 @@
 from io import BytesIO
 from pathlib import Path
 
-from reopsai_backend.application.generator_service import GeneratorService
+from reopsai.application.generator_service import GeneratorService
 
 
 class FakeGemini:

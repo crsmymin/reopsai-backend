@@ -26,7 +26,7 @@ class FakeDemoService:
 
 
 def _make_demo_client(monkeypatch):
-    import reopsai_backend.api.demo as module
+    import reopsai.api.demo as module
 
     fake_service = FakeDemoService()
     monkeypatch.setattr(module, "demo_service", fake_service)

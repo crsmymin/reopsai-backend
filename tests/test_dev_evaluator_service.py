@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from reopsai_backend.application.dev_evaluator_service import DevEvaluatorService
+from reopsai.application.dev_evaluator_service import DevEvaluatorService
 
 
 @contextmanager

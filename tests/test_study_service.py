@@ -2,7 +2,7 @@ from contextlib import contextmanager
 from datetime import date, datetime
 from types import SimpleNamespace
 
-from reopsai_backend.application.study_service import StudyService
+from reopsai.application.study_service import StudyService
 
 
 @contextmanager

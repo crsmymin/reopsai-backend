@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from reopsai_backend.application.survey_service import SurveyService
+from reopsai.application.survey_service import SurveyService
 
 
 @contextmanager

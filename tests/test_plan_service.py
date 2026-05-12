@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from reopsai_backend.application.plan_service import PlanService, parse_plan_date
+from reopsai.application.plan_service import PlanService, parse_plan_date
 
 
 @contextmanager

@@ -36,7 +36,7 @@ class FakeScreenerService:
 
 
 def _make_screener_client(monkeypatch):
-    import reopsai_backend.api.screener as module
+    import reopsai.api.screener as module
 
     monkeypatch.setattr(module, "screener_service", FakeScreenerService())
 

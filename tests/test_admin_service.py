@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from reopsai_backend.application.admin_service import AdminService
+from reopsai.application.admin_service import AdminService
 
 
 @contextmanager

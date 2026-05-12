@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from reopsai_backend.application.workspace_service import (
+from reopsai.application.workspace_service import (
     WorkspaceService,
     build_project_update_data,
     build_study_update_data,

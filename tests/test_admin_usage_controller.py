@@ -65,7 +65,7 @@ class FakeAdminUsageService:
 
 
 def _make_admin_usage_client(monkeypatch):
-    import reopsai_backend.api.admin as admin_module
+    import reopsai.api.admin as admin_module
 
     monkeypatch.setattr(admin_module, "admin_usage_service", FakeAdminUsageService())
 

@@ -19,7 +19,7 @@ class FakeB2bService:
 
 
 def _make_b2b_client(monkeypatch):
-    import reopsai_backend.api.b2b as b2b_module
+    import reopsai.api.b2b as b2b_module
 
     monkeypatch.setattr(b2b_module, "b2b_service", FakeB2bService())
 

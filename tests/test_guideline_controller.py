@@ -40,7 +40,7 @@ class FakeGuidelineService:
 
 
 def _make_guideline_client(monkeypatch):
-    import reopsai_backend.api.guideline as guideline_module
+    import reopsai.api.guideline as guideline_module
 
     fake_service = FakeGuidelineService()
     monkeypatch.setattr(guideline_module, "guideline_service", fake_service)

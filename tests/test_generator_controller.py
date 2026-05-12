@@ -34,7 +34,7 @@ class FakeGeneratorService:
 
 
 def _make_generator_client(monkeypatch):
-    import reopsai_backend.api.generator as module
+    import reopsai.api.generator as module
 
     fake_service = FakeGeneratorService()
     monkeypatch.setattr(module, "generator_service", fake_service)

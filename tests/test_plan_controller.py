@@ -96,7 +96,7 @@ def _install_plan_import_fakes():
 
 def _make_plan_client(monkeypatch):
     _install_plan_import_fakes()
-    import reopsai_backend.api.plan as plan_module
+    import reopsai.api.plan as plan_module
 
     fake_service = FakePlanService()
     fake_generation_service = FakePlanGenerationService()

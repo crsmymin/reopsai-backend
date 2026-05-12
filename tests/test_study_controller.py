@@ -23,7 +23,7 @@ class FakeStudyService:
 
 
 def _make_study_client(monkeypatch):
-    import reopsai_backend.api.study as module
+    import reopsai.api.study as module
 
     fake_service = FakeStudyService()
     monkeypatch.setattr(module, "study_service", fake_service)
