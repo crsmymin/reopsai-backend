@@ -8,7 +8,6 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt, get_jwt_identity
 
 from api_logger import log_error
-from db.engine import session_scope
 from reopsai_backend.application.b2b_service import DEFAULT_BUSINESS_PASSWORD, b2b_service
 from reopsai_backend.shared.auth import tier_required
 
@@ -48,7 +47,7 @@ def _get_company_id_claim():
 
 
 def _require_db():
-    return session_scope is not None
+    return getattr(b2b_service, "db_ready", lambda: True)()
 
 
 def _require_user_id():

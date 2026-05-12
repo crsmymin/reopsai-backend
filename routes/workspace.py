@@ -9,8 +9,6 @@ import traceback
 from flask import Blueprint, Response, jsonify, request
 
 from api_logger import log_error
-from db.engine import session_scope
-from db.repositories.workspace_repository import WorkspaceRepository
 from reopsai_backend.application.workspace_ai_service import workspace_ai_service
 from reopsai_backend.application.workspace_service import workspace_service
 from reopsai_backend.shared.auth import tier_required
@@ -18,6 +16,10 @@ from utils.request_utils import _extract_request_user_id, _resolve_workspace_own
 from utils.usage_metering import build_llm_usage_context, run_with_llm_usage_context, stream_with_llm_usage_context
 
 workspace_bp = Blueprint('workspace', __name__, url_prefix='/api')
+
+
+def _workspace_service_ready():
+    return getattr(workspace_service, "db_ready", lambda: True)()
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +35,7 @@ def workspace_get_projects():
     - 최신순 정렬 (created_at DESC)
     """
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결이 필요합니다.'}), 500
 
         user_id_int, err_body, err_status = _extract_request_user_id()
@@ -57,7 +59,7 @@ def workspace_get_projects_with_studies():
     - 권한 체크를 한 번만 수행
     """
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결이 필요합니다.'}), 500
 
         user_id_int, err_body, err_status = _extract_request_user_id()
@@ -90,7 +92,7 @@ def workspace_create_project():
     - description은 사용 안 함 (UI에서 제거됨)
     """
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결이 필요합니다.'}), 500
 
         data = request.json or {}
@@ -127,7 +129,7 @@ def workspace_delete_project(project_id):
     - 관련된 studies도 CASCADE로 자동 삭제 (DB 설정 필요)
     """
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결이 필요합니다.'}), 500
 
         user_id_int, err_body, err_status = _extract_request_user_id()
@@ -149,7 +151,7 @@ def workspace_update_project(project_id):
     - SQLAlchemy에서 프로젝트 정보 업데이트
     """
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결이 필요합니다.'}), 500
 
         user_id_int, err_body, err_status = _extract_request_user_id()
@@ -269,7 +271,7 @@ def workspace_generate_tags():
 def get_study(study_id):
     """개별 연구 조회"""
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
         user_id_int, err_body, err_status = _extract_request_user_id()
@@ -292,7 +294,7 @@ def get_study(study_id):
 def get_project(project_id):
     """개별 프로젝트 조회"""
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
         user_id_int, err_body, err_status = _extract_request_user_id()
@@ -315,7 +317,7 @@ def get_project(project_id):
 def get_project_studies(project_id):
     """프로젝트의 연구 목록 조회"""
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
         user_id_int, err_body, err_status = _extract_request_user_id()
@@ -338,7 +340,7 @@ def get_project_studies(project_id):
 def get_study_schedule(study_id):
     """연구의 일정 데이터 조회"""
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
         user_id_int, err_body, err_status = _extract_request_user_id()
@@ -366,7 +368,7 @@ def get_study_schedule(study_id):
 def update_artifact(artifact_id):
     """아티팩트 내용 업데이트"""
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
         data = request.json or {}
@@ -395,7 +397,7 @@ def update_artifact(artifact_id):
 def get_study_artifacts(study_id):
     """연구의 아티팩트 목록 조회"""
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
         user_id_int, err_body, err_status = _extract_request_user_id()
@@ -424,7 +426,7 @@ def get_study_survey_deployments(study_id):
     반환한다. 실제 배포 저장소가 추가되면 이 엔드포인트의 응답 배열을 채운다.
     """
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
         user_id_int, err_body, err_status = _extract_request_user_id()
@@ -452,7 +454,7 @@ def stream_artifact_generation(artifact_id):
     import time as _time
     import json as _json
 
-    if not session_scope:
+    if not _workspace_service_ready():
         return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
     # 사용자 ID 확인 (스트리밍 시작 전에)
@@ -515,7 +517,7 @@ def stream_artifact_generation(artifact_id):
 def delete_study(study_id):
     """연구 삭제"""
     try:
-        if not session_scope:
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
         user_id_int, err_resp, err_code = _extract_request_user_id()
@@ -538,7 +540,7 @@ def delete_study(study_id):
 def delete_artifact(artifact_id):
     """아티팩트 삭제"""
     try:
-        if not session_scope:
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
         user_id_int, err_resp, err_code = _extract_request_user_id()
@@ -563,7 +565,7 @@ def delete_artifact(artifact_id):
 def regenerate_study_plan(study_id):
     """기존 연구의 계획서 재생성 - 비동기 처리"""
     try:
-        if not session_scope:
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': 'DB 연결 실패'}), 500
 
         data = request.json or {}
@@ -620,7 +622,7 @@ def regenerate_study_plan(study_id):
 def update_study(study_id):
     """연구 정보 업데이트"""
     try:
-        if not (session_scope and WorkspaceRepository):
+        if not _workspace_service_ready():
             return jsonify({'success': False, 'error': '데이터베이스 연결 실패'}), 500
 
         data = request.json or {}

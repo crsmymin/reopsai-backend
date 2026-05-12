@@ -59,6 +59,9 @@ class B2bService:
         self.repository = repository
         self.session_factory = session_factory
 
+    def db_ready(self):
+        return self.session_factory is not None
+
     def _company_id_for(self, db_session, *, user_id: int, company_id_claim: Optional[int] = None):
         return self.repository.get_my_company_id(db_session, user_id, company_id_claim)
 

@@ -81,6 +81,12 @@ class PlanGenerationService:
         self.usage_runner = usage_runner
         self.record_service = record_service or plan_service
 
+    def adapter_status(self):
+        return {
+            "vector_service": self.vector_adapter is not None,
+            "gemini_service": self.gemini_adapter is not None,
+        }
+
     @staticmethod
     def analyze_previous_step_selections(ledger_cards, step_int):
         analysis = {

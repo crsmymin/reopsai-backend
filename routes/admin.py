@@ -8,7 +8,6 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt, get_jwt_identity, jwt_required
 
-from db.engine import session_scope
 from reopsai_backend.application.admin_backoffice_service import admin_backoffice_service
 from reopsai_backend.application.admin_service import admin_service
 from reopsai_backend.application.admin_usage_service import admin_usage_service
@@ -40,10 +39,16 @@ def _to_int_or_none(value):
         return None
 
 
+def _service_ready(service):
+    return getattr(service, "db_ready", lambda: True)()
+
+
 def _ensure_db():
-    if session_scope is None:
-        return False
-    return True
+    return (
+        _service_ready(admin_service)
+        and _service_ready(admin_usage_service)
+        and _service_ready(admin_backoffice_service)
+    )
 
 
 def _parse_iso_date(value: str):

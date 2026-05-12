@@ -76,6 +76,9 @@ class WorkspaceService:
         self.repository = repository
         self.session_factory = session_factory
 
+    def db_ready(self):
+        return self.session_factory is not None and self.repository is not None
+
     def list_projects(self, owner_ids: Sequence[int]) -> list[dict]:
         with self.session_factory() as db_session:
             return self.repository.get_projects_by_owner_ids(db_session, owner_ids)

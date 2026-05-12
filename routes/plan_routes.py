@@ -19,8 +19,6 @@ from debug_utils import analyze_error_patterns, get_stats, request_tracker
 from reopsai_backend.application.plan_generation_service import plan_generation_service
 from reopsai_backend.application.plan_service import plan_service
 from reopsai_backend.shared.auth import tier_required
-from services.gemini_service import gemini_service
-from services.vector_service import vector_service
 from utils.idempotency import (
     _complete_idempotency_entry, _fail_idempotency_entry,
     _reserve_idempotency_entry, _respond_from_entry,
@@ -28,6 +26,10 @@ from utils.idempotency import (
 from utils.usage_metering import build_llm_usage_context, run_with_llm_usage_context, stream_with_llm_usage_context
 
 plan_bp = Blueprint('plan', __name__, url_prefix='/api')
+
+
+def _plan_service_ready():
+    return getattr(plan_service, "db_ready", lambda: True)()
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +109,7 @@ def generator_create_plan_oneshot():
         return jsonify(error_payload), status
 
     try:
-        if not plan_service.db_ready():
+        if not _plan_service_ready():
             return jsonify({'success': False, 'error': 'DB 연결 실패'}), 500
 
         data = request.json or {}
@@ -232,7 +234,7 @@ def conversation_maker_finalize_oneshot():
     created_artifact_id = None
 
     try:
-        if not plan_service.db_ready():
+        if not _plan_service_ready():
             return jsonify({'success': False, 'error': 'DB 연결 실패'}), 500
 
         data = request.json or {}
@@ -393,8 +395,7 @@ def debug_health_check():
         health_info = {
             'status': 'healthy',
             'timestamp': datetime.now().isoformat(),
-            'vector_service': vector_service is not None,
-            'gemini_service': gemini_service is not None,
+            **plan_generation_service.adapter_status(),
             'active_requests': len(request_tracker.active_requests),
             'completed_requests': len(request_tracker.completed_requests)
         }
