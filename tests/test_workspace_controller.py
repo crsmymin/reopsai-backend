@@ -11,6 +11,14 @@ def _install_route_import_fakes():
     fake_openai_module.openai_service = object()
     sys.modules.setdefault("services.openai_service", fake_openai_module)
 
+    fake_gemini_module = types.ModuleType("services.gemini_service")
+    fake_gemini_module.gemini_service = object()
+    sys.modules.setdefault("services.gemini_service", fake_gemini_module)
+
+    fake_vector_module = types.ModuleType("services.vector_service")
+    fake_vector_module.vector_service = object()
+    sys.modules.setdefault("services.vector_service", fake_vector_module)
+
     fake_requests = types.ModuleType("requests")
     fake_requests.get = lambda *args, **kwargs: None
     sys.modules.setdefault("requests", fake_requests)
@@ -36,11 +44,23 @@ class FakeWorkspaceService:
         return SimpleNamespace(status="ok", data={"id": project_id, "owner_id": owner_ids[0], "name": "Project"})
 
 
+class FakeWorkspaceAiService:
+    def generate_project_name(self, *, study_name, problem_definition):
+        return SimpleNamespace(status="ok", data={"projectName": "Generated Project", "tags": ["ux"]}, error=None)
+
+    def generate_study_name(self, *, problem_definition):
+        return SimpleNamespace(status="ok", data={"studyName": "Generated Study"}, error=None)
+
+    def stream_tags(self, *, project_title, product_url):
+        yield 'data: {"tags": ["ux"], "done": true}\n\n'
+
+
 def _make_workspace_client(monkeypatch):
     _install_route_import_fakes()
     import routes.workspace as workspace_module
 
     monkeypatch.setattr(workspace_module, "workspace_service", FakeWorkspaceService())
+    monkeypatch.setattr(workspace_module, "workspace_ai_service", FakeWorkspaceAiService())
 
     app = Flask(__name__)
     app.config.update(
@@ -89,3 +109,35 @@ def test_workspace_project_routes_preserve_response_shape(monkeypatch):
     project_response = client.get("/api/projects/2", headers=headers)
     assert project_response.status_code == 200
     assert project_response.get_json() == {"id": 2, "owner_id": 10, "name": "Project"}
+
+
+def test_workspace_ai_routes_preserve_response_shape(monkeypatch):
+    client, headers = _make_workspace_client(monkeypatch)
+
+    project_name = client.post(
+        "/api/workspace/generate-project-name",
+        headers=headers,
+        json={"studyName": "Study", "problemDefinition": "Problem"},
+    )
+    assert project_name.status_code == 200
+    assert project_name.get_json() == {
+        "success": True,
+        "projectName": "Generated Project",
+        "tags": ["ux"],
+    }
+
+    study_name = client.post(
+        "/api/workspace/generate-study-name",
+        headers=headers,
+        json={"problemDefinition": "충분히 긴 문제 정의입니다."},
+    )
+    assert study_name.status_code == 200
+    assert study_name.get_json() == {"success": True, "studyName": "Generated Study"}
+
+    tags = client.post(
+        "/api/workspace/generate-tags",
+        headers=headers,
+        json={"project_title": "Project"},
+    )
+    assert tags.status_code == 200
+    assert tags.data == b'data: {"tags": ["ux"], "done": true}\n\n'

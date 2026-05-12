@@ -4,11 +4,8 @@ FLASK_ENV=development 일 때만 사용. plan / survey / guideline / report 등 
 """
 import os
 from flask import Blueprint, request, jsonify
-from sqlalchemy import select
 
-from db.engine import session_scope
-from db.models.core import Artifact
-from services.dev_evaluator_service import run_evaluation
+from reopsai_backend.application.dev_evaluator_service import dev_evaluator_service
 
 dev_evaluator_bp = Blueprint("dev_evaluator", __name__, url_prefix="/api/dev")
 
@@ -39,28 +36,15 @@ def evaluate():
     if not isinstance(criteria, list):
         return jsonify({"success": False, "error": "criteria는 배열이어야 합니다."}), 400
 
-    # plan + final + artifact_id → DB에서 content 조회
-    if artifact_type == "plan" and stage == "final" and payload.get("artifact_id"):
-        aid = payload.get("artifact_id")
-        try:
-            aid = int(aid)
-        except (TypeError, ValueError):
-            return jsonify({"success": False, "error": "artifact_id는 숫자여야 합니다."}), 400
-        if session_scope is not None:
-            try:
-                with session_scope() as db_session:
-                    artifact = db_session.execute(
-                        select(Artifact).where(Artifact.id == aid).limit(1)
-                    ).scalar_one_or_none()
-                    if artifact:
-                        payload = {**payload, "content": (artifact.content or "")}
-            except Exception:
-                # 개발 전용 API이므로 조회 실패 시 기존 payload 그대로 진행
-                pass
-
-    result = run_evaluation(
-        artifact_type, stage, payload, criteria, evaluation_mode
+    result = dev_evaluator_service.evaluate(
+        artifact_type=artifact_type,
+        stage=stage,
+        payload=payload,
+        criteria=criteria,
+        evaluation_mode=evaluation_mode,
     )
-    if not result.get("success"):
-        return jsonify(result), 400
-    return jsonify(result), 200
+    if result.status == "invalid_artifact_id":
+        return jsonify({"success": False, "error": result.error}), 400
+    if result.status != "ok":
+        return jsonify(result.data), 400
+    return jsonify(result.data), 200
