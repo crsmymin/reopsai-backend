@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from db.repositories.dev_evaluator_repository import DevEvaluatorRepository
+from reopsai_backend.infrastructure.repositories import DevEvaluatorRepository
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ class DevEvaluatorService:
 
     @staticmethod
     def _run_evaluation_lazy(*args, **kwargs):
-        from services.dev_evaluator_service import run_evaluation
+        from reopsai_backend.infrastructure.evaluation import run_evaluation
 
         return run_evaluation(*args, **kwargs)
 

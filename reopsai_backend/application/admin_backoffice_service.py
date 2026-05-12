@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from db.repositories.admin_backoffice_repository import (
+from reopsai_backend.infrastructure.repositories import (
     AdminBackofficeRepository,
     DEFAULT_ENTERPRISE_PASSWORD,
 )

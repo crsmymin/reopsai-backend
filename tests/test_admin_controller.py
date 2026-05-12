@@ -60,7 +60,7 @@ class FakeAdminService:
 
 
 def _make_admin_client(monkeypatch):
-    import routes.admin as admin_module
+    import reopsai_backend.api.admin as admin_module
 
     monkeypatch.setattr(admin_module, "admin_service", FakeAdminService())
 

@@ -57,7 +57,7 @@ class FakeWorkspaceAiService:
 
 def _make_workspace_client(monkeypatch):
     _install_route_import_fakes()
-    import routes.workspace as workspace_module
+    import reopsai_backend.api.workspace as workspace_module
 
     monkeypatch.setattr(workspace_module, "workspace_service", FakeWorkspaceService())
     monkeypatch.setattr(workspace_module, "workspace_ai_service", FakeWorkspaceAiService())

@@ -17,8 +17,8 @@ from api_logger import (
 )
 from prompts.analysis_prompts import GenerationPrompts
 from reopsai_backend.application.plan_service import plan_service
-from utils.keyword_utils import _refine_extracted_keywords
-from utils.llm_utils import _safe_parse_json_object
+from reopsai_backend.application.keywords import _refine_extracted_keywords
+from reopsai_backend.shared.llm import _safe_parse_json_object
 
 
 @dataclass(frozen=True)
@@ -44,31 +44,31 @@ class PlanGenerationService:
         record_service=None,
     ):
         if openai_adapter is self._DEFAULT_ADAPTER:
-            from services.openai_service import openai_service
+            from reopsai_backend.infrastructure.llm import get_openai_service
 
-            openai_adapter = openai_service
+            openai_adapter = get_openai_service()
         if gemini_adapter is self._DEFAULT_ADAPTER:
-            from services.gemini_service import gemini_service
+            from reopsai_backend.infrastructure.llm import get_gemini_service
 
-            gemini_adapter = gemini_service
+            gemini_adapter = get_gemini_service()
         if vector_adapter is self._DEFAULT_ADAPTER:
-            from services.vector_service import vector_service
+            from reopsai_backend.infrastructure.rag import get_vector_service
 
-            vector_adapter = vector_service
+            vector_adapter = get_vector_service()
         if contextual_keyword_extractor is self._DEFAULT_ADAPTER:
-            from utils.keyword_utils import extract_contextual_keywords_from_input
+            from reopsai_backend.application.keywords import extract_contextual_keywords_from_input
 
             contextual_keyword_extractor = extract_contextual_keywords_from_input
         if project_keyword_fetcher is self._DEFAULT_ADAPTER:
-            from utils.keyword_utils import fetch_project_keywords
+            from reopsai_backend.application.keywords import fetch_project_keywords
 
             project_keyword_fetcher = fetch_project_keywords
         if usage_context_getter is self._DEFAULT_ADAPTER:
-            from utils.usage_metering import get_llm_usage_context
+            from reopsai_backend.shared.usage_metering import get_llm_usage_context
 
             usage_context_getter = get_llm_usage_context
         if usage_runner is self._DEFAULT_ADAPTER:
-            from utils.usage_metering import run_with_llm_usage_context
+            from reopsai_backend.shared.usage_metering import run_with_llm_usage_context
 
             usage_runner = run_with_llm_usage_context
 

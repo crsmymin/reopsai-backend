@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 from flask import jsonify
+from flask_jwt_extended import set_access_cookies
 
 
 @dataclass(frozen=True)
@@ -30,3 +31,9 @@ def failure(error: str, status_code: int = 400, **extra: Any) -> ApiResult:
     body = {"success": False, "error": error}
     body.update(extra)
     return ApiResult(body=body, status_code=status_code)
+
+
+def auth_response(payload: dict, access_token: str, status_code: int = 200):
+    response = jsonify(payload)
+    set_access_cookies(response, access_token)
+    return response, status_code

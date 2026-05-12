@@ -15,14 +15,14 @@ from api_logger import (
     log_step_search_clean,
     log_user_request,
 )
-from db.repositories.survey_repository import SurveyRepository
+from reopsai_backend.infrastructure.repositories import SurveyRepository
 from prompts.analysis_prompts import (
     ScreenerPrompts,
     SurveyBuilderPrompts,
     SurveyDiagnosisPrompts,
     SurveyGenerationPrompts,
 )
-from utils.llm_utils import parse_llm_json_response
+from reopsai_backend.shared.llm import parse_llm_json_response
 
 
 @dataclass(frozen=True)
@@ -56,31 +56,31 @@ class SurveyService:
 
             session_factory = session_scope
         if openai_adapter is self._DEFAULT_ADAPTER:
-            from services.openai_service import openai_service
+            from reopsai_backend.infrastructure.llm import get_openai_service
 
-            openai_adapter = openai_service
+            openai_adapter = get_openai_service()
         if gemini_adapter is self._DEFAULT_ADAPTER:
-            from services.gemini_service import gemini_service
+            from reopsai_backend.infrastructure.llm import get_gemini_service
 
-            gemini_adapter = gemini_service
+            gemini_adapter = get_gemini_service()
         if vector_adapter is self._DEFAULT_ADAPTER:
-            from services.vector_service import vector_service
+            from reopsai_backend.infrastructure.rag import get_vector_service
 
-            vector_adapter = vector_service
+            vector_adapter = get_vector_service()
         if project_keyword_fetcher is self._DEFAULT_ADAPTER:
-            from utils.keyword_utils import fetch_project_keywords
+            from reopsai_backend.application.keywords import fetch_project_keywords
 
             project_keyword_fetcher = fetch_project_keywords
         if contextual_keyword_extractor is self._DEFAULT_ADAPTER:
-            from utils.keyword_utils import extract_contextual_keywords_from_input
+            from reopsai_backend.application.keywords import extract_contextual_keywords_from_input
 
             contextual_keyword_extractor = extract_contextual_keywords_from_input
         if usage_context_builder is self._DEFAULT_ADAPTER:
-            from utils.usage_metering import build_llm_usage_context
+            from reopsai_backend.shared.usage_metering import build_llm_usage_context
 
             usage_context_builder = build_llm_usage_context
         if usage_runner is self._DEFAULT_ADAPTER:
-            from utils.usage_metering import run_with_llm_usage_context
+            from reopsai_backend.shared.usage_metering import run_with_llm_usage_context
 
             usage_runner = run_with_llm_usage_context
 

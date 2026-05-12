@@ -7,9 +7,9 @@ import json
 import traceback
 from typing import Any
 
-from db.repositories.screener_repository import ScreenerRepository
+from reopsai_backend.infrastructure.repositories import ScreenerRepository
 from prompts.analysis_prompts import ScreenerPrompts
-from utils.llm_utils import parse_llm_json_response
+from reopsai_backend.shared.llm import parse_llm_json_response
 
 
 @dataclass(frozen=True)
@@ -44,16 +44,16 @@ class ScreenerService:
 
     def _get_openai_adapter(self):
         if self.openai_adapter is self._DEFAULT_ADAPTER:
-            from services.openai_service import openai_service
+            from reopsai_backend.infrastructure.llm import get_openai_service
 
-            self.openai_adapter = openai_service
+            self.openai_adapter = get_openai_service()
         return self.openai_adapter
 
     def _get_gemini_adapter(self):
         if self.gemini_adapter is self._DEFAULT_ADAPTER:
-            from services.gemini_service import gemini_service
+            from reopsai_backend.infrastructure.llm import get_gemini_service
 
-            self.gemini_adapter = gemini_service
+            self.gemini_adapter = get_gemini_service()
         return self.gemini_adapter
 
     def db_ready(self):

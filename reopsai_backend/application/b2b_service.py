@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from db.repositories.b2b_repository import B2bRepository, BUSINESS_ACCOUNT_TYPE, DEFAULT_BUSINESS_PASSWORD
+from reopsai_backend.infrastructure.repositories import B2bRepository, BUSINESS_ACCOUNT_TYPE, DEFAULT_BUSINESS_PASSWORD
 
 
 @dataclass(frozen=True)

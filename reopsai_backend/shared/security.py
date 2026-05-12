@@ -7,7 +7,7 @@ import uuid
 from flask import g, jsonify, request
 from flask_jwt_extended import get_jwt, verify_jwt_in_request
 
-from utils.usage_metering import classify_feature_key, is_company_quota_exceeded
+from reopsai_backend.shared.usage_metering import classify_feature_key, is_company_quota_exceeded
 
 
 PASSWORD_CHANGE_ALLOWED_PATHS = {

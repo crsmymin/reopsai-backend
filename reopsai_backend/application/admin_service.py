@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import math
 from typing import Any
 
-from db.repositories.admin_repository import (
+from reopsai_backend.infrastructure.repositories import (
     AdminRepository,
     BUSINESS_ACCOUNT_TYPE,
     DEFAULT_ENTERPRISE_PASSWORD,

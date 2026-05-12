@@ -6,8 +6,8 @@ import json
 from typing import Any
 
 from api_logger import log_error
-from db.repositories.plan_repository import PlanRepository
-from utils.keyword_utils import fetch_project_keywords
+from reopsai_backend.infrastructure.repositories import PlanRepository
+from reopsai_backend.application.keywords import fetch_project_keywords
 
 
 @dataclass(frozen=True)

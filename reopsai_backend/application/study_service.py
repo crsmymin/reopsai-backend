@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from db.repositories.study_repository import StudyRepository
+from reopsai_backend.infrastructure.repositories import StudyRepository
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,24 @@
-"""LLM client adapter exports."""
+"""Lazy LLM client adapter accessors."""
 
-from services.gemini_service import gemini_service
-from services.openai_service import openai_service
+from __future__ import annotations
 
-__all__ = ["gemini_service", "openai_service"]
+from importlib import import_module
+
+
+def get_openai_service():
+    return import_module("services.openai_service").openai_service
+
+
+def get_gemini_service():
+    return import_module("services.gemini_service").gemini_service
+
+
+def __getattr__(name):
+    if name == "openai_service":
+        return get_openai_service()
+    if name == "gemini_service":
+        return get_gemini_service()
+    raise AttributeError(name)
+
+
+__all__ = ["get_openai_service", "get_gemini_service", "openai_service", "gemini_service"]

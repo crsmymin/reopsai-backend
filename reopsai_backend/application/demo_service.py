@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from api_logger import log_error
-from db.repositories.demo_repository import DemoRepository
+from reopsai_backend.infrastructure.repositories import DemoRepository
 from reopsai_backend.application.auth_service import build_auth_context, build_user_payload
-from utils.usage_metering import ensure_company_initial_grant
+from reopsai_backend.shared.usage_metering import ensure_company_initial_grant
 
 
 @dataclass(frozen=True)

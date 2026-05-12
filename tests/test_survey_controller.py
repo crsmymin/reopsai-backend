@@ -43,7 +43,7 @@ class FakeSurveyService:
 
 
 def _make_survey_client(monkeypatch):
-    import routes.survey_routes as survey_module
+    import reopsai_backend.api.survey as survey_module
 
     fake_service = FakeSurveyService()
     monkeypatch.setattr(survey_module, "survey_service", fake_service)

@@ -7,7 +7,7 @@ import re
 import traceback
 from typing import Any
 
-from db.repositories.artifact_ai_repository import ArtifactAiRepository
+from reopsai_backend.infrastructure.repositories import ArtifactAiRepository
 
 
 @dataclass(frozen=True)
@@ -37,17 +37,17 @@ class ArtifactAiService:
 
             session_factory = session_scope
         if gemini_adapter is self._DEFAULT_ADAPTER:
-            from services.gemini_service import gemini_service
+            from reopsai_backend.infrastructure.llm import get_gemini_service
 
-            gemini_adapter = gemini_service
+            gemini_adapter = get_gemini_service()
         if vector_adapter is self._DEFAULT_ADAPTER:
             vector_adapter = self._build_default_vector_service()
         if usage_context_builder is self._DEFAULT_ADAPTER:
-            from utils.usage_metering import build_llm_usage_context
+            from reopsai_backend.shared.usage_metering import build_llm_usage_context
 
             usage_context_builder = build_llm_usage_context
         if usage_runner is self._DEFAULT_ADAPTER:
-            from utils.usage_metering import run_with_llm_usage_context
+            from reopsai_backend.shared.usage_metering import run_with_llm_usage_context
 
             usage_runner = run_with_llm_usage_context
 

@@ -5,7 +5,7 @@ from typing import Any
 
 from werkzeug.security import check_password_hash
 
-from db.repositories.auth_repository import (
+from reopsai_backend.infrastructure.repositories import (
     AuthRepository,
     BUSINESS_ACCOUNT_TYPE,
     INDIVIDUAL_ACCOUNT_TYPE,

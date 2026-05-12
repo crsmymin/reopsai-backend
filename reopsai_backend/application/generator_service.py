@@ -50,9 +50,9 @@ class GeneratorService:
 
     def _get_gemini_adapter(self):
         if self.gemini_adapter is self._DEFAULT_ADAPTER:
-            from services.gemini_service import gemini_service
+            from reopsai_backend.infrastructure.llm import get_gemini_service
 
-            self.gemini_adapter = gemini_service
+            self.gemini_adapter = get_gemini_service()
         return self.gemini_adapter
 
     def allowed_file(self, filename):

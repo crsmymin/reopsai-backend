@@ -5,9 +5,9 @@ import json
 import traceback
 from typing import Any
 
-from db.repositories.guideline_repository import GuidelineRepository
+from reopsai_backend.infrastructure.repositories import GuidelineRepository
 from prompts.analysis_prompts import GuidelineGeneratorPrompts
-from utils.llm_utils import parse_llm_json_response
+from reopsai_backend.shared.llm import parse_llm_json_response
 
 
 @dataclass(frozen=True)
@@ -39,19 +39,19 @@ class GuidelineService:
 
             session_factory = session_scope
         if openai_adapter is self._DEFAULT_ADAPTER:
-            from services.openai_service import openai_service
+            from reopsai_backend.infrastructure.llm import get_openai_service
 
-            openai_adapter = openai_service
+            openai_adapter = get_openai_service()
         if vector_adapter is self._DEFAULT_ADAPTER:
-            from services.vector_service import vector_service
+            from reopsai_backend.infrastructure.rag import get_vector_service
 
-            vector_adapter = vector_service
+            vector_adapter = get_vector_service()
         if project_keyword_fetcher is self._DEFAULT_ADAPTER:
-            from utils.keyword_utils import fetch_project_keywords
+            from reopsai_backend.application.keywords import fetch_project_keywords
 
             project_keyword_fetcher = fetch_project_keywords
         if contextual_keyword_extractor is self._DEFAULT_ADAPTER:
-            from utils.keyword_utils import extract_contextual_keywords_from_input
+            from reopsai_backend.application.keywords import extract_contextual_keywords_from_input
 
             contextual_keyword_extractor = extract_contextual_keywords_from_input
 

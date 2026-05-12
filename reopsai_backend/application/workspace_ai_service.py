@@ -17,7 +17,7 @@ from api_logger import (
 )
 from reopsai_backend.application.plan_generation_service import plan_generation_service
 from reopsai_backend.application.workspace_service import workspace_service
-from utils.keyword_utils import _clean_metadata_text, fetch_project_keywords
+from reopsai_backend.application.keywords import _clean_metadata_text, fetch_project_keywords
 
 
 @dataclass(frozen=True)
@@ -39,9 +39,9 @@ class WorkspaceAiService:
         workspace_record_service=None,
     ):
         if openai_adapter is self._DEFAULT_ADAPTER:
-            from services.openai_service import openai_service
+            from reopsai_backend.infrastructure.llm import get_openai_service
 
-            openai_adapter = openai_service
+            openai_adapter = get_openai_service()
         if project_keyword_fetcher is self._DEFAULT_ADAPTER:
             project_keyword_fetcher = fetch_project_keywords
 

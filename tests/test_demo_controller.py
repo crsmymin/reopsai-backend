@@ -26,11 +26,11 @@ class FakeDemoService:
 
 
 def _make_demo_client(monkeypatch):
-    import routes.demo as module
+    import reopsai_backend.api.demo as module
 
     fake_service = FakeDemoService()
     monkeypatch.setattr(module, "demo_service", fake_service)
-    monkeypatch.setattr(module, "_auth_response", lambda payload, access_token: (payload, 200))
+    monkeypatch.setattr(module, "auth_response", lambda payload, access_token: (payload, 200))
 
     app = Flask(__name__)
     app.config.update(

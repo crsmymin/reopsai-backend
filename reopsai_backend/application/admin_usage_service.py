@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from db.repositories.admin_usage_repository import AdminUsageRepository
+from reopsai_backend.infrastructure.repositories import AdminUsageRepository
 
 
 @dataclass(frozen=True)
