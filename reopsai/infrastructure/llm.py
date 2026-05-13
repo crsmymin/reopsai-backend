@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from importlib import import_module
-
-
 def get_openai_service():
-    return import_module("services.openai_service").openai_service
+    from reopsai.infrastructure.openai_service import openai_service
+
+    return openai_service
 
 
 def get_gemini_service():
-    return import_module("services.gemini_service").gemini_service
+    from reopsai.infrastructure.gemini_service import gemini_service
+
+    return gemini_service
 
 
 def __getattr__(name):

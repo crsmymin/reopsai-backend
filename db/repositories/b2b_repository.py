@@ -14,7 +14,7 @@ from db.models.core import (
     LlmUsageEvent,
     User,
 )
-from utils.usage_metering import ensure_company_initial_grant, get_company_token_balance
+from reopsai.shared.usage_metering import ensure_company_initial_grant, get_company_token_balance
 
 
 BUSINESS_ACCOUNT_TYPE = "business"

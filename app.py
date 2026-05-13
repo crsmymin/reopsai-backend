@@ -9,7 +9,8 @@ app = create_app()
 
 if __name__ == "__main__":
     try:
-        from services.vector_service import vector_service
+        from reopsai.infrastructure.rag import get_vector_service
+        vector_service = get_vector_service()
     except Exception:
         vector_service = None
 

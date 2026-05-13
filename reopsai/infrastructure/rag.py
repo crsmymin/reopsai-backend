@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from importlib import import_module
-
-
 def get_vector_service():
-    return import_module("services.vector_service").vector_service
+    from reopsai.infrastructure.vector import vector_service
+
+    return vector_service
 
 
 def __getattr__(name):

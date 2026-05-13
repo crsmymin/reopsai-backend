@@ -13,7 +13,7 @@ from db.models.core import (
     User,
     UserFeedback,
 )
-from utils.usage_metering import ensure_company_initial_grant
+from reopsai.shared.usage_metering import ensure_company_initial_grant
 
 
 DEFAULT_ENTERPRISE_PASSWORD = "0000"

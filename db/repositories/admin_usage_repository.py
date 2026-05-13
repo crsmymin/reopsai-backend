@@ -15,7 +15,7 @@ from db.models.core import (
     TeamUsageEvent,
     User,
 )
-from utils.usage_metering import (
+from reopsai.shared.usage_metering import (
     cleanup_old_llm_usage_events,
     ensure_company_initial_grant,
     get_company_token_balance,

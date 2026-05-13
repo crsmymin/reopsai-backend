@@ -7,17 +7,17 @@ from flask_jwt_extended import JWTManager, create_access_token
 
 
 def _install_route_import_fakes():
-    fake_openai_module = types.ModuleType("services.openai_service")
+    fake_openai_module = types.ModuleType("reopsai.infrastructure.openai_service")
     fake_openai_module.openai_service = object()
-    sys.modules.setdefault("services.openai_service", fake_openai_module)
+    sys.modules.setdefault("reopsai.infrastructure.openai_service", fake_openai_module)
 
-    fake_gemini_module = types.ModuleType("services.gemini_service")
+    fake_gemini_module = types.ModuleType("reopsai.infrastructure.gemini_service")
     fake_gemini_module.gemini_service = object()
-    sys.modules.setdefault("services.gemini_service", fake_gemini_module)
+    sys.modules.setdefault("reopsai.infrastructure.gemini_service", fake_gemini_module)
 
-    fake_vector_module = types.ModuleType("services.vector_service")
+    fake_vector_module = types.ModuleType("reopsai.infrastructure.vector")
     fake_vector_module.vector_service = object()
-    sys.modules.setdefault("services.vector_service", fake_vector_module)
+    sys.modules.setdefault("reopsai.infrastructure.vector", fake_vector_module)
 
     fake_requests = types.ModuleType("requests")
     fake_requests.get = lambda *args, **kwargs: None
