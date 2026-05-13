@@ -81,6 +81,59 @@ def _make_admin_client(monkeypatch):
     return app.test_client(), {"Authorization": f"Bearer {token}"}
 
 
+def test_admin_blueprint_preserves_route_map():
+    import reopsai.api.admin as admin_module
+
+    app = Flask(__name__)
+    app.register_blueprint(admin_module.admin_bp)
+
+    expected_routes = {
+        ("/api/admin/enterprise/accounts", "GET"),
+        ("/api/admin/enterprise/accounts", "POST"),
+        ("/api/admin/enterprise/accounts/<int:account_id>", "PUT"),
+        ("/api/admin/enterprise/accounts/<int:account_id>/reset-password", "POST"),
+        ("/api/admin/users/<int:user_id>", "DELETE"),
+        ("/api/admin/teams", "GET"),
+        ("/api/admin/teams", "POST"),
+        ("/api/admin/teams/<int:team_id>", "DELETE"),
+        ("/api/admin/users", "GET"),
+        ("/api/admin/users/<user_id>/tier", "PUT"),
+        ("/api/admin/users/<user_id>/enterprise", "GET"),
+        ("/api/admin/users/<user_id>/enterprise/init-team", "POST"),
+        ("/api/admin/enterprise/users", "POST"),
+        ("/api/admin/teams/<int:team_id>/plan", "PUT"),
+        ("/api/admin/teams/<int:team_id>/usage", "GET"),
+        ("/api/admin/companies/<int:company_id>/usage", "GET"),
+        ("/api/admin/users/<int:user_id>/llm-usage", "GET"),
+        ("/api/admin/companies/<int:company_id>/llm-usage", "GET"),
+        ("/api/admin/teams/<int:team_id>/llm-usage", "GET"),
+        ("/api/admin/companies/<int:company_id>/token-balance", "GET"),
+        ("/api/admin/companies/<int:company_id>/token-topups", "POST"),
+        ("/api/admin/llm-model-prices", "GET"),
+        ("/api/admin/llm-usage-events/expired", "DELETE"),
+        ("/api/admin/companies", "GET"),
+        ("/api/admin/companies/<int:company_id>", "GET"),
+        ("/api/admin/companies/<int:company_id>", "PUT"),
+        ("/api/admin/stats", "GET"),
+        ("/api/admin/users/<user_id>/projects", "GET"),
+        ("/api/admin/users/<user_id>/studies", "GET"),
+        ("/api/admin/studies/<int:study_id>", "GET"),
+        ("/api/admin/studies/<int:study_id>/artifacts", "GET"),
+        ("/api/feedback", "POST"),
+        ("/api/feedback/<int:feedback_id>", "PATCH"),
+        ("/api/admin/feedback", "GET"),
+    }
+    actual_routes = {
+        (str(rule.rule), method)
+        for rule in app.url_map.iter_rules()
+        if rule.endpoint.startswith("admin.")
+        for method in rule.methods
+        if method not in {"HEAD", "OPTIONS"}
+    }
+
+    assert expected_routes <= actual_routes
+
+
 def test_admin_account_team_company_routes_preserve_response_shapes(monkeypatch):
     client, headers = _make_admin_client(monkeypatch)
 
