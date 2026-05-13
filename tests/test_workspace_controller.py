@@ -76,6 +76,46 @@ def _make_workspace_client(monkeypatch):
     return app.test_client(), {"Authorization": f"Bearer {token}", "X-User-ID": "10"}
 
 
+def test_workspace_blueprint_preserves_route_map():
+    _install_route_import_fakes()
+    import reopsai.api.workspace as workspace_module
+
+    app = Flask(__name__)
+    app.register_blueprint(workspace_module.workspace_bp)
+
+    expected_routes = {
+        ("/api/workspace/projects", "GET"),
+        ("/api/workspace/projects-with-studies", "GET"),
+        ("/api/workspace/projects", "POST"),
+        ("/api/workspace/projects/<int:project_id>", "DELETE"),
+        ("/api/workspace/projects/<int:project_id>", "PUT"),
+        ("/api/workspace/generate-project-name", "POST"),
+        ("/api/workspace/generate-study-name", "POST"),
+        ("/api/workspace/generate-tags", "POST"),
+        ("/api/studies/<int:study_id>", "GET"),
+        ("/api/projects/<int:project_id>", "GET"),
+        ("/api/projects/<int:project_id>/studies", "GET"),
+        ("/api/studies/<int:study_id>/schedule", "GET"),
+        ("/api/artifacts/<int:artifact_id>", "PUT"),
+        ("/api/studies/<int:study_id>/artifacts", "GET"),
+        ("/api/studies/<int:study_id>/survey/deployments", "GET"),
+        ("/api/artifacts/<int:artifact_id>/stream", "GET"),
+        ("/api/studies/<int:study_id>", "DELETE"),
+        ("/api/artifacts/<int:artifact_id>", "DELETE"),
+        ("/api/studies/<int:study_id>/regenerate-plan", "POST"),
+        ("/api/studies/<int:study_id>", "PUT"),
+    }
+    actual_routes = {
+        (str(rule.rule), method)
+        for rule in app.url_map.iter_rules()
+        if rule.endpoint.startswith("workspace.")
+        for method in rule.methods
+        if method not in {"HEAD", "OPTIONS"}
+    }
+
+    assert expected_routes <= actual_routes
+
+
 def test_workspace_project_routes_preserve_response_shape(monkeypatch):
     client, headers = _make_workspace_client(monkeypatch)
 

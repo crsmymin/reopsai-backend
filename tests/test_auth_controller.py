@@ -71,6 +71,44 @@ def _make_auth_client(monkeypatch):
     return app.test_client(), {"Authorization": f"Bearer {token}"}
 
 
+def test_auth_blueprint_preserves_route_map():
+    import reopsai.api.auth as auth_module
+
+    app = Flask(__name__)
+    app.register_blueprint(auth_module.auth_bp)
+
+    expected_routes = {
+        ("/api/login", "POST"),
+        ("/api/profile", "GET"),
+        ("/api/auth/logout", "POST"),
+        ("/api/premium-feature", "GET"),
+        ("/api/auth/test", "GET"),
+        ("/api/auth/check-user", "POST"),
+        ("/api/auth/register", "POST"),
+        ("/api/auth/login", "POST"),
+        ("/api/auth/users", "GET"),
+        ("/api/auth/google/verify", "POST"),
+        ("/api/auth/google/config", "GET"),
+        ("/api/auth/enterprise/login", "POST"),
+        ("/api/auth/business/login", "POST"),
+        ("/api/auth/enterprise/change-password", "POST"),
+        ("/api/auth/business/change-password", "POST"),
+        ("/api/auth/enterprise/profile", "PUT"),
+        ("/api/auth/business/profile", "PUT"),
+        ("/api/auth/dev-login", "POST"),
+        ("/api/auth/account", "DELETE"),
+    }
+    actual_routes = {
+        (str(rule.rule), method)
+        for rule in app.url_map.iter_rules()
+        if rule.endpoint.startswith("auth.")
+        for method in rule.methods
+        if method not in {"HEAD", "OPTIONS"}
+    }
+
+    assert expected_routes <= actual_routes
+
+
 def test_auth_profile_logout_check_and_login_response_shapes(monkeypatch):
     client, headers = _make_auth_client(monkeypatch)
 
