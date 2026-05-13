@@ -20,22 +20,23 @@ reopsai-backend/
 │   ├── api/                  # Flask app factory 및 Blueprint 등록
 │   ├── application/          # use case/service 계층
 │   ├── domain/               # 프레임워크 독립 도메인 타입/정책
-│   ├── infrastructure/       # adapter/export 호환 계층
+│   ├── infrastructure/       # DB/LLM/RAG adapter 및 persistence 구현
+│   │   └── persistence/      # SQLAlchemy engine/base/models/repositories
 │   └── shared/               # auth/security/http 등 공통 기능
 ├── config.py                 # 환경변수/설정 관리
 ├── requirements.txt          # Python 패키지 의존성
 ├── docker-compose.yml        # Docker 개발 환경
 │
-├── db/                      # 데이터베이스 계층
-│   ├── engine.py            # SQLAlchemy 엔진 설정
-│   ├── models/core.py        # ORM 모델 (User, Project, Study 등)
-│   ├── repositories/        # SQLAlchemy Repository 계층
-│   └── migrations/          # Alembic 마이그레이션
+├── db/                       # legacy DB import compatibility wrappers
+│   ├── engine.py             # reopsai.infrastructure.persistence.engine re-export
+│   ├── models/core.py        # persistence model re-export
+│   └── repositories/         # persistence repository re-export wrappers
+├── alembic/                  # Alembic migration runtime/versions
 │
-├── services/                # 기존 외부 서비스 singleton (호환 유지)
-│   ├── vector_service.py    # ChromaDB VectorDB (싱글턴)
-│   ├── openai_service.py    # OpenAI API
-│   └── gemini_service.py     # Google Gemini API
+├── services/                 # legacy external service compatibility wrappers
+│   ├── vector_service.py     # reopsai.infrastructure.vector re-export
+│   ├── openai_service.py     # reopsai.infrastructure.openai_service re-export
+│   └── gemini_service.py     # reopsai.infrastructure.gemini_service re-export
 │
 ├── screener/                # 참여자 선별 비즈니스 로직
 │   ├── csv_profiler.py      # CSV 컬럼 분석
@@ -52,10 +53,10 @@ reopsai-backend/
 ├── prompts/                 # LLM 프롬프트
 │   └── analysis_prompts.py  # 통합 프롬프트 클래스
 │
-├── utils/                   # 공통 유틸리티
-│   ├── idempotency.py       # 멱등성 처리
-│   ├── keyword_utils.py     # 키워드 추출
-│   └── llm_utils.py         # LLM 응답 파싱
+├── utils/                    # legacy shared/application helper wrappers
+│   ├── idempotency.py        # reopsai.shared.idempotency re-export
+│   ├── keyword_utils.py      # reopsai.application.keywords re-export
+│   └── llm_utils.py          # reopsai.shared.llm re-export
 │
 ├── data/                    # 데이터 파일
 ├── uploads/                 # 사용자 업로드 파일
@@ -71,22 +72,24 @@ reopsai-backend/
 - `app.py`와 `asgi.py`는 기존 배포 계약을 깨지 않기 위한 호환 진입점이며 `app = create_app()` 계약을 유지합니다.
 - `reopsai.api/*`는 요청 파싱, JWT/context 조회, 응답 JSON/status mapping에 집중하는 controller 역할을 맡습니다.
 - `reopsai.application/*_service.py`는 workspace, auth, b2b, admin, plan/survey/guideline, artifact AI, screener 등 use case orchestration을 담당합니다.
-- `db/repositories/*_repository.py`는 SQLAlchemy query/update/delete와 persistence payload 조립을 담당합니다.
+- `reopsai.infrastructure.persistence`가 SQLAlchemy `Base`, engine/session, ORM model, repository 구현의 source of truth입니다.
+- `reopsai.infrastructure.repositories`는 application layer가 사용하는 repository facade이며, 각 구현은 `reopsai.infrastructure.persistence.repositories/*_repository.py`에 있습니다.
+- `db/*`, `services/*`, `utils/*`는 기존 import 경로를 깨지 않기 위한 compatibility wrapper로 유지합니다.
 - 새 코드에서는 `reopsai.shared.auth.tier_required`를 사용합니다.
-- DB/LLM/RAG 접근은 service 생성 시 adapter/repository를 주입할 수 있는 구조로 전환하고, 기존 `services/*` singleton export는 호환을 위해 유지합니다.
+- DB/LLM/RAG 접근은 service 생성 시 adapter/repository를 주입할 수 있는 구조로 전환하고, 기존 root-level singleton/helper export는 호환을 위해 유지합니다.
 - 기능 보존을 위해 public URL, 응답 JSON shape, JWT claim, cookie 동작, Alembic schema는 변경하지 않습니다.
 
 ### 현재 분리된 주요 레이어
 
 | 영역 | Controller | Service | Repository |
 |------|------------|---------|------------|
-| Workspace CRUD/AI | `reopsai/api/workspace.py` | `workspace_service.py`, `workspace_ai_service.py` | `workspace_repository.py` |
-| Auth | `reopsai/api/auth.py` | `auth_service.py` | `auth_repository.py` |
-| B2B | `reopsai/api/b2b.py` | `b2b_service.py` | `b2b_repository.py` |
-| Admin | `reopsai/api/admin.py` | `admin_service.py`, `admin_usage_service.py`, `admin_backoffice_service.py` | `admin_repository.py`, `admin_usage_repository.py`, `admin_backoffice_repository.py` |
-| AI 생성 | `reopsai/api/plan.py`, `reopsai/api/survey.py`, `reopsai/api/guideline.py` | `plan_service.py`, `plan_generation_service.py`, `survey_service.py`, `guideline_service.py` | `plan_repository.py`, `survey_repository.py`, `guideline_repository.py` |
-| Artifact AI | `reopsai/api/artifact_ai.py` | `artifact_ai_service.py` | `artifact_ai_repository.py` |
-| 기타 API | `reopsai/api/screener.py`, `reopsai/api/study.py`, `reopsai/api/demo.py`, `reopsai/api/dev_evaluator.py`, `reopsai/api/generator.py` | 각 `*_service.py` | 필요 시 각 `*_repository.py` |
+| Workspace CRUD/AI | `reopsai/api/workspace.py` | `workspace_service.py`, `workspace_ai_service.py` | `reopsai.infrastructure.persistence.repositories.workspace_repository` |
+| Auth | `reopsai/api/auth.py` | `auth_service.py` | `reopsai.infrastructure.persistence.repositories.auth_repository` |
+| B2B | `reopsai/api/b2b.py` | `b2b_service.py` | `reopsai.infrastructure.persistence.repositories.b2b_repository` |
+| Admin | `reopsai/api/admin.py` | `admin_service.py`, `admin_usage_service.py`, `admin_backoffice_service.py` | `admin_repository`, `admin_usage_repository`, `admin_backoffice_repository` under persistence repositories |
+| AI 생성 | `reopsai/api/plan.py`, `reopsai/api/survey.py`, `reopsai/api/guideline.py` | `plan_service.py`, `plan_generation_service.py`, `survey_service.py`, `guideline_service.py` | `plan_repository`, `survey_repository`, `guideline_repository` under persistence repositories |
+| Artifact AI | `reopsai/api/artifact_ai.py` | `artifact_ai_service.py` | `reopsai.infrastructure.persistence.repositories.artifact_ai_repository` |
+| 기타 API | `reopsai/api/screener.py`, `reopsai/api/study.py`, `reopsai/api/demo.py`, `reopsai/api/dev_evaluator.py`, `reopsai/api/generator.py` | 각 `*_service.py` | 필요 시 persistence repository |
 
 ## 데이터베이스 모델
 
