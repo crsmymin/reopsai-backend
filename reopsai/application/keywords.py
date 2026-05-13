@@ -70,8 +70,8 @@ def fetch_project_keywords(project_id) -> List[str]:
         return keywords
 
     try:
-        session_scope = import_module("db.engine").session_scope
-        WorkspaceRepository = import_module("db.repositories.workspace_repository").WorkspaceRepository
+        session_scope = import_module("reopsai.infrastructure.persistence.engine").session_scope
+        WorkspaceRepository = import_module("reopsai.infrastructure.repositories").WorkspaceRepository
     except Exception:
         return keywords
 

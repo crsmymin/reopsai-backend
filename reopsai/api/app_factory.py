@@ -22,7 +22,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 
 def _init_database(config_object) -> bool:
     try:
-        from db.engine import init_engine as init_sqlalchemy_engine
+        from reopsai.infrastructure.persistence.engine import init_engine as init_sqlalchemy_engine
     except Exception:
         print("SQLAlchemy package not ready; engine initialization skipped")
         return False

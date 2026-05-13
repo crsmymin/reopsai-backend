@@ -6,8 +6,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from db.base import Base
-from db import models  # noqa: F401 - import registers models
+from reopsai.infrastructure.persistence.base import Base
+from reopsai.infrastructure.persistence import models  # noqa: F401 - import registers models
 
 
 config = context.config
@@ -64,4 +64,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-

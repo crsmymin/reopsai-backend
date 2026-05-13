@@ -1,5 +1,5 @@
-from sqlalchemy.orm import declarative_base
+"""Compatibility wrapper for SQLAlchemy declarative base."""
 
+from reopsai.infrastructure.persistence.base import Base
 
-Base = declarative_base()
-
+__all__ = ["Base"]

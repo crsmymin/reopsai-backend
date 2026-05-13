@@ -15,8 +15,8 @@ from flask_jwt_extended import get_jwt, get_jwt_identity, verify_jwt_in_request
 from sqlalchemy import delete, func, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from db.engine import session_scope
-from db.models.core import (
+from reopsai.infrastructure.persistence.engine import session_scope
+from reopsai.infrastructure.persistence.models.core import (
     CompanyTokenLedger,
     CompanyUsageEvent,
     LlmModelPrice,

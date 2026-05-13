@@ -14,7 +14,7 @@ from decimal import Decimal
 from typing import Any, Dict, Optional
 
 import config  # noqa: F401 - loads environment files
-from db.engine import get_engine, init_engine
+from reopsai.infrastructure.persistence.engine import get_engine, init_engine
 from sqlalchemy import text
 
 

@@ -62,14 +62,14 @@ def _resolve_owner_ids_sqlalchemy(user_id_int):
     company_id = claims.get('company_id')
 
     try:
-        from db.engine import session_scope
+        from reopsai.infrastructure.persistence.engine import session_scope
     except Exception:
         return owner_ids
 
     if account_type == 'business' and company_id and session_scope:
         with session_scope() as db_session:
             try:
-                from db.models.core import CompanyMember
+                from reopsai.infrastructure.persistence.models.core import CompanyMember
                 from sqlalchemy import select
                 member_ids = db_session.execute(
                     select(CompanyMember.user_id).where(CompanyMember.company_id == int(company_id))

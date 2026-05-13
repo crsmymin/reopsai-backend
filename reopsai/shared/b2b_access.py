@@ -11,8 +11,8 @@ from typing import List, Optional, Tuple
 from flask_jwt_extended import get_jwt, get_jwt_identity
 from sqlalchemy import select
 
-from db.engine import session_scope
-from db.models.core import CompanyMember
+from reopsai.infrastructure.persistence.engine import session_scope
+from reopsai.infrastructure.persistence.models.core import CompanyMember
 
 
 def _to_int_or_raw(value):

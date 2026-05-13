@@ -5,20 +5,28 @@ from __future__ import annotations
 from importlib import import_module
 
 
-_admin = import_module("db.repositories.admin_repository")
-_admin_backoffice = import_module("db.repositories.admin_backoffice_repository")
-_admin_usage = import_module("db.repositories.admin_usage_repository")
-_artifact_ai = import_module("db.repositories.artifact_ai_repository")
-_auth = import_module("db.repositories.auth_repository")
-_b2b = import_module("db.repositories.b2b_repository")
-_demo = import_module("db.repositories.demo_repository")
-_dev_evaluator = import_module("db.repositories.dev_evaluator_repository")
-_guideline = import_module("db.repositories.guideline_repository")
-_plan = import_module("db.repositories.plan_repository")
-_screener = import_module("db.repositories.screener_repository")
-_study = import_module("db.repositories.study_repository")
-_survey = import_module("db.repositories.survey_repository")
-_workspace = import_module("db.repositories.workspace_repository")
+_admin = import_module("reopsai.infrastructure.persistence.repositories.admin_repository")
+_admin_backoffice = import_module(
+    "reopsai.infrastructure.persistence.repositories.admin_backoffice_repository"
+)
+_admin_usage = import_module(
+    "reopsai.infrastructure.persistence.repositories.admin_usage_repository"
+)
+_artifact_ai = import_module(
+    "reopsai.infrastructure.persistence.repositories.artifact_ai_repository"
+)
+_auth = import_module("reopsai.infrastructure.persistence.repositories.auth_repository")
+_b2b = import_module("reopsai.infrastructure.persistence.repositories.b2b_repository")
+_demo = import_module("reopsai.infrastructure.persistence.repositories.demo_repository")
+_dev_evaluator = import_module(
+    "reopsai.infrastructure.persistence.repositories.dev_evaluator_repository"
+)
+_guideline = import_module("reopsai.infrastructure.persistence.repositories.guideline_repository")
+_plan = import_module("reopsai.infrastructure.persistence.repositories.plan_repository")
+_screener = import_module("reopsai.infrastructure.persistence.repositories.screener_repository")
+_study = import_module("reopsai.infrastructure.persistence.repositories.study_repository")
+_survey = import_module("reopsai.infrastructure.persistence.repositories.survey_repository")
+_workspace = import_module("reopsai.infrastructure.persistence.repositories.workspace_repository")
 
 AdminRepository = _admin.AdminRepository
 AdminBackofficeRepository = _admin_backoffice.AdminBackofficeRepository
