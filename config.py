@@ -15,6 +15,7 @@ default_env = BASE_DIR / '.env'
 
 
 DEFAULT_DEPLOYED_FRONTEND_ORIGINS = [
+    'https://stage.reopsai.com',
     'https://main.d18rr0wdie06s6.amplifyapp.com',
 ]
 

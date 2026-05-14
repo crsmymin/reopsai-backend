@@ -224,3 +224,25 @@ alembic downgrade -1
 # 마이그레이션 스크립트 생성
 alembic revision --autogenerate -m "description"
 ```
+
+## 릴리스 검증 체크리스트
+
+Persistence 계층 이동 이후 새 runtime 코드는 `reopsai.*` source of truth를 사용하고, `db/*`,
+`services/*`, `utils/*`는 legacy import compatibility wrapper로만 유지합니다.
+
+로컬 기본 검증:
+
+```bash
+python -m compileall app.py asgi.py reopsai services db utils tests alembic scripts
+python -m pytest tests/test_shared_helper_absorption.py tests/test_persistence_refactor_guards.py
+python -m pytest
+```
+
+컨테이너 runtime smoke:
+
+```bash
+docker exec reopsai-backend-local python -m pytest
+docker exec reopsai-backend-local alembic heads
+docker exec reopsai-backend-local alembic current
+docker exec reopsai-backend-local python -m compileall alembic db reopsai
+```
