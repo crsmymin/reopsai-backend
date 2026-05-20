@@ -45,7 +45,7 @@ def _init_cors(app: Flask, config_object) -> None:
         resources={
             r"/api/*": {
                 "origins": config_object.ALLOWED_ORIGINS,
-                "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+                "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                 "allow_headers": ["Content-Type", "Authorization", "Accept", "X-User-ID", "x-user-id"],
                 "supports_credentials": True,
                 "max_age": 86400,

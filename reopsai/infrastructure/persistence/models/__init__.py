@@ -17,6 +17,23 @@ from reopsai.infrastructure.persistence.models.core import (
     User,
     UserFeedback,
 )
+from reopsai.infrastructure.persistence.models.persona import (
+    Persona,
+    PersonaABTest,
+    PersonaABTestResult,
+    PersonaActivity,
+    PersonaAsset,
+    PersonaFigmaAccount,
+    PersonaFigmaFile,
+    PersonaFigmaFlow,
+    PersonaFolder,
+    PersonaInterview,
+    PersonaInterviewResult,
+    PersonaLearnedTrait,
+    PersonaMemorySettings,
+    PersonaUITest,
+    PersonaUITestResult,
+)
 
 __all__ = [
     "Company",
@@ -36,4 +53,19 @@ __all__ = [
     "StudySchedule",
     "UserFeedback",
     "ArtifactEditHistory",
+    "PersonaFolder",
+    "Persona",
+    "PersonaMemorySettings",
+    "PersonaActivity",
+    "PersonaLearnedTrait",
+    "PersonaAsset",
+    "PersonaFigmaAccount",
+    "PersonaFigmaFile",
+    "PersonaFigmaFlow",
+    "PersonaInterview",
+    "PersonaInterviewResult",
+    "PersonaUITest",
+    "PersonaUITestResult",
+    "PersonaABTest",
+    "PersonaABTestResult",
 ]

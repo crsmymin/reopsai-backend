@@ -247,6 +247,97 @@ class GeminiService:
             **pii_meta
         }
 
+    def generate_multimodal_response(self, prompt, *, media_parts=None, generation_config=None, model_name=None):
+        """
+        텍스트 프롬프트와 여러 이미지 파트를 함께 Gemini에 전달합니다.
+
+        media_parts:
+        - {"type": "text", "text": "..."}
+        - {"type": "image", "mime_type": "image/png", "data_base64": "..."}
+        """
+        if not media_parts:
+            return self.generate_response(prompt, generation_config=generation_config, model_name=model_name)
+
+        if not self.model and not model_name:
+            return {'success': False, 'error': 'Gemini 모델이 초기화되지 않았습니다.'}
+
+        if not self.api_keys:
+            return {'success': False, 'error': '사용 가능한 API 키가 없습니다.'}
+
+        redaction_enabled = os.getenv("GEMINI_LLM_PII_REDACTION", "1") != "0"
+        pii_meta = {"pii_redacted": False, "pii_counts": {"email": 0, "phone": 0, "rrn": 0}}
+        prompt_to_send = prompt or ""
+        if redaction_enabled:
+            prompt_to_send, changed, counts = sanitize_prompt_for_llm(prompt_to_send)
+            pii_meta = {"pii_redacted": bool(changed), "pii_counts": counts}
+
+        import io
+        import PIL.Image
+
+        content_parts = [prompt_to_send]
+        for part in media_parts or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text" and part.get("text"):
+                content_parts.append(str(part["text"]))
+            elif part.get("type") == "image" and part.get("data_base64"):
+                try:
+                    image_bytes = base64.b64decode(part["data_base64"])
+                    content_parts.append(PIL.Image.open(io.BytesIO(image_bytes)))
+                except Exception:
+                    continue
+
+        max_retries = len(self.api_keys)
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                current_key = self.api_keys[self.current_key_index]
+                model = genai.GenerativeModel(model_name) if model_name else self.model
+                model_display = model_name or "gemini-2.0-flash"
+
+                t0 = time.time()
+                response = model.generate_content(content_parts, generation_config=generation_config)
+                duration = time.time() - t0
+
+                if current_key in self.key_cooldown:
+                    del self.key_cooldown[current_key]
+
+                usage = {}
+                try:
+                    um = getattr(response, "usage_metadata", None) or getattr(response, "usageMetadata", None)
+                    if um is not None:
+                        usage = extract_gemini_usage(um)
+                except Exception:
+                    usage = {}
+
+                log_duration("LLM(Gemini Vision)", duration, extra=f"model={model_display};media_parts={len(media_parts or [])}")
+                log_tokens("gemini", usage, extra=f"model={model_display} vision")
+                record_llm_call(provider="gemini", model=model_display, usage=usage)
+                return {'success': True, 'content': response.text, "usage": usage, **pii_meta}
+
+            except Exception as e:
+                last_error = e
+                current_key = self.api_keys[self.current_key_index]
+                if self._is_rate_limit_error(e):
+                    print(f"⚠️ Vision API Rate Limit 오류 감지 (시도 {attempt + 1}/{max_retries}): {str(e)[:100]}")
+                    self._mark_key_failed(current_key)
+                    if self._switch_to_next_key():
+                        continue
+                    return {
+                        'success': False,
+                        'error': f'모든 API 키가 쿨다운 중입니다. 마지막 오류: {str(e)}',
+                        **pii_meta
+                    }
+                print(f"❌ Vision API 치명적 오류: {str(e)}")
+                return {'success': False, 'error': str(e), **pii_meta}
+
+        return {
+            'success': False,
+            'error': f'모든 API 키의 시도가 실패했습니다. 마지막 오류: {str(last_error)}',
+            **pii_meta
+        }
+
     def analyze_image_with_vision(self, image_data, mime_type, prompt):
         """
         이미지를 Vision API로 분석합니다.

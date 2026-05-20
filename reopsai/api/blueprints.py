@@ -12,6 +12,7 @@ def register_blueprints(app) -> None:
     from reopsai.api.b2b import b2b_bp
     from reopsai.api.demo import demo_bp
     from reopsai.api.generator import generator_bp
+    from reopsai.api.persona import persona_bp
     from reopsai.api.screener import screener_bp
     from reopsai.api.study import study_bp
 
@@ -23,6 +24,7 @@ def register_blueprints(app) -> None:
     app.register_blueprint(artifact_ai_bp)
     app.register_blueprint(b2b_bp)
     app.register_blueprint(ai_persona_bp)
+    app.register_blueprint(persona_bp)
 
     if os.getenv("FLASK_ENV") == "development":
         from reopsai.api.dev_evaluator import dev_evaluator_bp

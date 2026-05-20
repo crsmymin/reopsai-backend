@@ -1,0 +1,26 @@
+{
+  "sourceType": "segment_based",
+  "segmentInputs": [
+    {
+      "id": "segment-1",
+      "name": "가격 민감형",
+      "description": "통신비 절감과 할인 혜택을 우선하는 사용자",
+      "criteria": "월 통신비를 자주 비교하고 프로모션에 민감함",
+      "targetCount": 2
+    },
+    {
+      "id": "segment-2",
+      "name": "프리미엄 혜택형",
+      "description": "망 품질과 구독 혜택을 중시하는 사용자",
+      "criteria": "OTT, 멤버십, 안정적인 데이터 품질을 함께 고려함",
+      "targetCount": 1
+    }
+  ],
+  "totalCount": 3,
+  "locale": {
+    "country": "KR",
+    "language": "ko"
+  },
+  "includeImages": true,
+  "skipExistingPersonas": false
+}

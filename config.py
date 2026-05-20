@@ -101,6 +101,15 @@ class Config:
     BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:5001')
     FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
     DOMAIN = os.getenv('DOMAIN', 'localhost')
+    PERSONA_FIGMA_REDIRECT_PATH = os.getenv('PERSONA_FIGMA_REDIRECT_PATH', '/b2b/settings/figma')
+    PERSONA_FIGMA_REDIRECT_URI = os.getenv('PERSONA_FIGMA_REDIRECT_URI')
+    PERSONA_FIGMA_CLIENT_ID = os.getenv('PERSONA_FIGMA_CLIENT_ID') or os.getenv('FIGMA_CLIENT_ID')
+    PERSONA_FIGMA_CLIENT_SECRET = os.getenv('PERSONA_FIGMA_CLIENT_SECRET') or os.getenv('FIGMA_CLIENT_SECRET')
+    PERSONA_FIGMA_ENCRYPTION_KEY = os.getenv('PERSONA_FIGMA_ENCRYPTION_KEY') or os.getenv('FIGMA_ENCRYPTION_KEY')
+    PERSONA_STORAGE_BACKEND = os.getenv('PERSONA_STORAGE_BACKEND', 'local')
+    PERSONA_STORAGE_LOCAL_DIR = os.getenv('PERSONA_STORAGE_LOCAL_DIR', str(BASE_DIR / 'uploads' / 'persona_assets'))
+    PERSONA_S3_BUCKET = os.getenv('PERSONA_S3_BUCKET')
+    PERSONA_PLAYWRIGHT_TIMEOUT_MS = int(os.getenv('PERSONA_PLAYWRIGHT_TIMEOUT_MS', '15000'))
     
     # CORS 허용 출처 설정
     ALLOWED_ORIGINS = _parse_allowed_origins()

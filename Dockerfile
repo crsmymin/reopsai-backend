@@ -8,8 +8,8 @@ WORKDIR /app
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
+RUN python -m playwright install --with-deps chromium
 
 COPY . /app
 
 EXPOSE 5001
-

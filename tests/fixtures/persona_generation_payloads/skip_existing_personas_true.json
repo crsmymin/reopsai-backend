@@ -1,0 +1,22 @@
+{
+  "sourceType": "service_based",
+  "serviceDescription": "통신 요금제 추천 서비스",
+  "targetAudience": "20대 직장인",
+  "totalCount": 1,
+  "locale": {
+    "country": "KR",
+    "language": "ko"
+  },
+  "includeImages": true,
+  "skipExistingPersonas": true,
+  "existingPersonas": [
+    {
+      "name": "기존 페르소나",
+      "age": 32,
+      "generation": "millennial",
+      "title": "기획자",
+      "roleArea": "서비스 기획",
+      "personality": "꼼꼼함"
+    }
+  ]
+}
