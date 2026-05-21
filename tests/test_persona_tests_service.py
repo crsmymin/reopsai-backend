@@ -412,6 +412,8 @@ def test_ui_test_run_repairs_missing_screen_feedback_for_every_flow_screen():
     row = result.data["results"][0]
     assert {item["screenIndex"] for item in row["feedback"]["screenFeedbacks"]} == {0, 1}
     assert {item["screenIndex"] for item in row["flowAnalysis"]} == {0, 1}
+    assert {item["screenIndex"] for item in row["scores"]["screenScores"]} == {0, 1}
+    assert {item["screenId"] for item in row["scores"]["screenScores"]} == {"screen-1", "screen-2"}
     assert len(row["screenInsights"]) == 2
     assert row["confidence"]["screenCoverage"]["screens"] == 2
 

@@ -6,6 +6,7 @@ from reopsai.domain.persona.generation import (
     generate_seed_based_personas,
     load_seed_personas,
     select_nemotron_korea_seeds,
+    stage_nemotron_seed_narrative_polish,
     validate_generation_payload,
     validate_segment_suggestion_payload,
 )
@@ -86,6 +87,43 @@ def test_generation_payload_rejects_invalid_source_type():
     assert "sourceType must be service_based or segment_based" in errors
 
 
+def test_generation_payload_rejects_short_service_description():
+    payload, errors = validate_generation_payload(
+        {
+            "sourceType": "service_based",
+            "serviceDescription": "짧음",
+            "totalCount": 1,
+            "locale": {"country": "KR", "language": "ko"},
+        }
+    )
+
+    assert payload is None
+    assert "serviceDescription must be at least 10 characters" in errors
+
+
+def test_generation_payload_rejects_sparse_segment_inputs():
+    payload, errors = validate_generation_payload(
+        {
+            "sourceType": "segment_based",
+            "segmentInputs": [
+                {
+                    "id": "segment-1",
+                    "name": "A",
+                    "description": "짧음",
+                    "targetCount": 1,
+                },
+            ],
+            "totalCount": 2,
+            "locale": {"country": "KR", "language": "ko"},
+        }
+    )
+
+    assert payload is None
+    assert "segmentInputs[0].name must be at least 2 characters" in errors
+    assert "segmentInputs[0].description must be at least 10 characters" in errors
+    assert "totalCount must match the sum of segmentInputs.targetCount" in errors
+
+
 def test_segment_suggestion_payload_validation_and_pipeline():
     payload, errors = validate_segment_suggestion_payload(
         {
@@ -140,6 +178,41 @@ def test_segment_suggestion_payload_validation_and_pipeline():
         },
     ]
     assert usage["totalTokens"] == 33
+
+
+def test_narrative_polish_keeps_seed_fallback_when_model_returns_blank_required_field():
+    base_persona = {
+        "schemaVersion": 3,
+        "name": "김민수",
+        "attitudes": "통신 혜택을 꼼꼼하게 비교합니다.",
+        "biography": "통신 요금제를 직접 비교해 온 직장인입니다.",
+        "demeanour": "차분하고 분석적인 태도로 의사결정합니다.",
+        "interests": "앱 혜택과 요금제 비교에 관심이 많습니다.",
+        "behaviours": "요금제 변경 전에 커뮤니티 후기를 확인합니다.",
+        "motivation": "매달 통신비를 합리적으로 줄이고 싶어합니다.",
+        "upbringing": "서울에서 모바일 서비스를 익숙하게 사용했습니다.",
+        "personality": "신중하고 실용적인 성향이 강합니다.",
+        "preferences": "명확한 가격표와 장기 이용 혜택을 선호합니다.",
+        "socialContext": "가족 통신비도 함께 챙기는 편입니다.",
+        "culturalBackground": "도시 생활과 모바일 앱 사용에 익숙합니다.",
+        "quote": "혜택은 좋지만 조건이 명확해야 선택합니다.",
+        "imagePrompt": "Photorealistic Korean user persona portrait",
+    }
+
+    def fake_text_generator(prompt):
+        assert "narrative_polish" in prompt
+        return ('{"persona":{"preferences":""}}', {"inputTokens": 1, "outputTokens": 2, "totalTokens": 3, "model": "test"})
+
+    persona, usage = stage_nemotron_seed_narrative_polish(
+        base_persona,
+        {"sourceType": "service_based", "totalCount": 1, "locale": {"country": "KR", "language": "ko"}},
+        {"id": "service_based", "name": "Service based", "description": "통신 요금제 추천 서비스"},
+        {},
+        fake_text_generator,
+    )
+
+    assert persona["preferences"] == base_persona["preferences"]
+    assert usage["totalTokens"] == 3
 
 
 def _write_seed_fixture(tmp_path):

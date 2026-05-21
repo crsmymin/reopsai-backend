@@ -72,6 +72,19 @@ TELECOM_INTERVIEW_REFERENCES = [
         "summary": "프리미엄 요금제, OTT/구독 혜택, 앱 기반 탐색과 AI 상담 기대가 큰 이용자다.",
     },
 ]
+NARRATIVE_REQUIRED_FIELDS = [
+    "attitudes",
+    "biography",
+    "demeanour",
+    "interests",
+    "behaviours",
+    "motivation",
+    "personality",
+    "preferences",
+    "culturalBackground",
+    "quote",
+    "imagePrompt",
+]
 LANGUAGE_LABELS = {
     "ko": "Korean",
     "en": "English",
@@ -82,6 +95,9 @@ LANGUAGE_LABELS = {
 
 SEGMENT_SUGGESTION_MAX_CONTEXT_LENGTH = 4000
 SEGMENT_SUGGESTION_DEFAULT_MAX_SEGMENTS = 4
+MIN_SERVICE_DESCRIPTION_LENGTH = 10
+MIN_SEGMENT_NAME_LENGTH = 2
+MIN_SEGMENT_DESCRIPTION_LENGTH = 10
 
 
 class PersonaGenerationQualityError(ValueError):
@@ -204,7 +220,7 @@ def validate_generation_payload(payload: dict) -> tuple[dict | None, list[str]]:
             errors.append("segmentInputs must be an array of valid segment objects")
         else:
             parsed_segments = []
-            for segment in segment_inputs:
+            for index, segment in enumerate(segment_inputs):
                 if not isinstance(segment, dict):
                     errors.append("segmentInputs must be an array of valid segment objects")
                     break
@@ -212,11 +228,17 @@ def validate_generation_payload(payload: dict) -> tuple[dict | None, list[str]]:
                     target_count = int(round(float(segment["targetCount"])))
                     if target_count < 1:
                         raise ValueError("targetCount must be positive")
+                    segment_name = str(segment["name"]).strip()
+                    segment_description = str(segment["description"]).strip()
+                    if len(segment_name) < MIN_SEGMENT_NAME_LENGTH:
+                        errors.append(f"segmentInputs[{index}].name must be at least {MIN_SEGMENT_NAME_LENGTH} characters")
+                    if len(segment_description) < MIN_SEGMENT_DESCRIPTION_LENGTH:
+                        errors.append(f"segmentInputs[{index}].description must be at least {MIN_SEGMENT_DESCRIPTION_LENGTH} characters")
                     parsed_segments.append(
                         {
                             "id": str(segment["id"]).strip(),
-                            "name": str(segment["name"]).strip(),
-                            "description": str(segment["description"]).strip(),
+                            "name": segment_name,
+                            "description": segment_description,
                             "targetCount": target_count,
                             **({"criteria": str(segment["criteria"]).strip()} if segment.get("criteria") else {}),
                         }
@@ -237,8 +259,12 @@ def validate_generation_payload(payload: dict) -> tuple[dict | None, list[str]]:
 
     if inferred_source_type == "segment_based" and not parsed_segments:
         errors.append("segmentInputs must be provided when sourceType is segment_based")
-    if not parsed_segments and not service_description:
-        errors.append("serviceDescription is required when segmentInputs is not provided")
+    if inferred_source_type == "segment_based" and parsed_segments:
+        segment_total_count = sum(segment["targetCount"] for segment in parsed_segments)
+        if segment_total_count != total_count:
+            errors.append("totalCount must match the sum of segmentInputs.targetCount")
+    if inferred_source_type == "service_based" and len(service_description or "") < MIN_SERVICE_DESCRIPTION_LENGTH:
+        errors.append(f"serviceDescription must be at least {MIN_SERVICE_DESCRIPTION_LENGTH} characters")
 
     if errors:
         return None, errors
@@ -1028,6 +1054,7 @@ STAGE: narrative_polish
 Rewrite and enrich one GeneratedPersona. Return JSON with either "persona" or the persona fields.
 Required narrative fields: attitudes, biography, demeanour, interests, behaviours, motivation, upbringing,
 personality, preferences, socialContext, culturalBackground, quote, imagePrompt.
+Do not omit required fields. If a detail is not explicit, infer a concrete value from the draft persona, segment, and Nemotron seed.
 
 Generation input:
 {json.dumps(payload, ensure_ascii=False)}
@@ -1048,32 +1075,29 @@ def _has_text(value, *, min_length: int = 8) -> bool:
 
 
 def _validate_narrative(persona: dict):
-    required = [
-        "attitudes",
-        "biography",
-        "demeanour",
-        "interests",
-        "behaviours",
-        "motivation",
-        "personality",
-        "preferences",
-        "culturalBackground",
-        "quote",
-        "imagePrompt",
-    ]
-    missing = [field for field in required if not _has_text(persona.get(field))]
+    missing = [field for field in NARRATIVE_REQUIRED_FIELDS if not _has_text(persona.get(field))]
     if missing:
         raise PersonaGenerationQualityError(f"narrative fields missing: {', '.join(missing)}")
+
+
+def _merge_narrative_update(persona: dict, updates: dict) -> dict:
+    merged = {**persona}
+    for key, value in (updates or {}).items():
+        if key in NARRATIVE_REQUIRED_FIELDS and not _has_text(value):
+            continue
+        merged[key] = value
+    merged["schemaVersion"] = 3
+    return merged
 
 
 def stage_nemotron_seed_narrative_polish(persona: dict, payload: dict, segment: dict, seed: dict, text_generator: Callable[[str], tuple[str, dict]]) -> tuple[dict, dict]:
     def validate(parsed: dict):
         candidate = parsed.get("persona") if isinstance(parsed.get("persona"), dict) else parsed
-        _validate_narrative({**persona, **candidate})
+        _validate_narrative(_merge_narrative_update(persona, candidate))
 
     parsed, usage = _execute_json_stage(text_generator, _narrative_prompt(persona, payload, segment, seed), stage_name="narrative", validator=validate)
     updates = parsed.get("persona") if isinstance(parsed.get("persona"), dict) else parsed
-    merged = {**persona, **updates, "schemaVersion": 3}
+    merged = _merge_narrative_update(persona, updates)
     _validate_narrative(merged)
     return merged, usage
 

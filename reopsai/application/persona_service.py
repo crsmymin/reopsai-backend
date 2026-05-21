@@ -482,6 +482,7 @@ class PersonaService:
             "Use natural Korean. Write screenFeedbacks as persona reactions, and write summary/personaGoalFit as a researcher-style synthesis.",
             "Do not invent hard facts outside the persona. Reason from the persona context when the profile is incomplete.",
             "scores must include clarity, usability, appeal, overall as 0-100 integers.",
+            "scores must also include screenScores: one item for every screenIndex with screenId, clarity, usability, appeal, satisfaction, overall as 0-100 integers.",
             "feedback must include overallFeedback and screenFeedbacks. screenFeedbacks must include at least one item for every screenIndex.",
             "pinComments must be an array of concrete image markers with screenIndex, x, y, type, content. type must be one of praise, problem, improvement.",
             "Use praise for positive comments and problem/improvement for negative comments. screenInsights positives/issues must align with the same evidence used in pinComments.",
@@ -509,6 +510,18 @@ class PersonaService:
             {"screenIndex": index, "feedback": f"{persona_name} 관점에서 {screen.get('name') or index + 1} 화면의 다음 행동과 정보 구조를 확인했습니다."}
             for index, screen in enumerate(screens)
         ]
+        screen_scores = [
+            {
+                "screenIndex": index,
+                "screenId": str(screen.get("id") or f"screen-{index + 1}"),
+                "clarity": 70,
+                "usability": 70,
+                "appeal": 65,
+                "satisfaction": 65,
+                "overall": 68,
+            }
+            for index, screen in enumerate(screens)
+        ]
         flow_analysis = [
             {
                 "screenIndex": index,
@@ -524,17 +537,37 @@ class PersonaService:
         return {
             "summary": f"{persona_name}님은 주요 정보와 다음 행동을 기준으로 화면을 평가했습니다.",
             "personaGoalFit": "목표 수행에 필요한 핵심 정보를 확인할 수 있습니다.",
-            "scores": {"clarity": 70, "usability": 70, "appeal": 65, "overall": 68, "overallFlowScore": 68 if is_flow else None},
+            "scores": {
+                "clarity": 70,
+                "usability": 70,
+                "appeal": 65,
+                "overall": 68,
+                "overallFlowScore": 68 if is_flow else None,
+                "screenScores": screen_scores,
+            },
             "feedback": {"overallFeedback": f"{persona_name}님은 전반적으로 이해 가능한 흐름으로 평가했습니다.", "screenFeedbacks": screen_feedbacks},
             "pinComments": [
-                {"screenIndex": 0, "x": 42, "y": 44, "type": "praise", "content": "핵심 정보 접근이 가능해 화면의 목적을 빠르게 파악할 수 있습니다."},
-                {"screenIndex": 0, "x": 58, "y": 52, "type": "improvement", "content": "핵심 CTA와 근거 정보를 더 가깝게 배치하면 다음 행동 판단이 쉬워집니다."},
+                item
+                for index, _screen in enumerate(screens)
+                for item in (
+                    {"screenIndex": index, "x": 42, "y": 44, "type": "praise", "content": "핵심 정보 접근이 가능해 화면의 목적을 빠르게 파악할 수 있습니다."},
+                    {"screenIndex": index, "x": 58, "y": 52, "type": "improvement", "content": "핵심 CTA와 근거 정보를 더 가깝게 배치하면 다음 행동 판단이 쉬워집니다."},
+                )
             ],
             "flowAnalysis": flow_analysis,
             "strengths": ["핵심 정보 접근이 가능합니다."],
             "risks": ["일부 사용자는 다음 행동을 다시 확인할 수 있습니다."],
             "recommendations": ["주요 CTA와 신뢰 근거를 강화합니다."],
-            "screenInsights": [{"screenId": str(screens[0].get("id") or "screen-1"), "name": screens[0].get("name") or "화면 1", "positives": ["핵심 정보 접근이 가능합니다."], "issues": ["핵심 CTA와 근거 정보의 근접성이 약합니다."], "recommendation": "핵심 행동을 강조합니다."}],
+            "screenInsights": [
+                {
+                    "screenId": str(screen.get("id") or f"screen-{index + 1}"),
+                    "name": screen.get("name") or f"화면 {index + 1}",
+                    "positives": ["핵심 정보 접근이 가능합니다."],
+                    "issues": ["핵심 CTA와 근거 정보의 근접성이 약합니다."],
+                    "recommendation": "핵심 행동을 강조합니다.",
+                }
+                for index, screen in enumerate(screens)
+            ],
         }
 
     def _normalize_ui_pin_type(self, raw_type):
@@ -678,6 +711,85 @@ class PersonaService:
             )
         return sorted(normalized, key=lambda item: item["screenIndex"])
 
+    def _resolve_ui_screen_reference_index(self, item: dict, screens, fallback_index: int = 0):
+        screen_id = item.get("screenId") or item.get("screen_id")
+        if screen_id is not None:
+            matched_index = next(
+                (
+                    index
+                    for index, screen in enumerate(screens)
+                    if str(screen.get("id") or f"screen-{index + 1}") == str(screen_id)
+                ),
+                None,
+            )
+            if matched_index is not None:
+                return matched_index
+        raw_index = item.get("screenIndex", item.get("screen_index", fallback_index))
+        try:
+            screen_index = int(raw_index)
+        except (TypeError, ValueError):
+            screen_index = fallback_index
+        return max(0, min(screen_index, max(len(screens) - 1, 0)))
+
+    def _score_value(self, source: dict, keys, fallback: int):
+        for key in keys:
+            if source.get(key) is not None:
+                return _clamp_percent(source.get(key), fallback)
+        return _clamp_percent(fallback, 0)
+
+    def _normalize_ui_screen_scores(self, *, feedback: dict, screens, scores: dict, flow_analysis):
+        base = {
+            "clarity": self._score_value(scores, ("clarity", "clear", "readability"), 70),
+            "usability": self._score_value(scores, ("usability", "ease", "overall"), 70),
+            "appeal": self._score_value(scores, ("appeal", "satisfaction", "score"), 65),
+            "overall": self._score_value(scores, ("overall", "overallFlowScore", "overall_flow_score"), 68),
+        }
+        existing = _as_list(
+            scores.get("screenScores")
+            or scores.get("screen_scores")
+            or feedback.get("screenScores")
+            or feedback.get("screen_scores")
+        )
+        normalized_by_index = {}
+        for fallback_index, item in enumerate(existing):
+            if not isinstance(item, dict):
+                continue
+            screen_index = self._resolve_ui_screen_reference_index(item, screens, fallback_index)
+            screen = screens[screen_index] if screen_index < len(screens) else {}
+            clarity = self._score_value(item, ("clarity", "clear", "readability"), base["clarity"])
+            usability = self._score_value(item, ("usability", "ease"), base["usability"])
+            appeal = self._score_value(item, ("appeal", "satisfaction", "score"), base["appeal"])
+            normalized_by_index[screen_index] = {
+                **item,
+                "screenIndex": screen_index,
+                "screenId": str(screen.get("id") or item.get("screenId") or item.get("screen_id") or f"screen-{screen_index + 1}"),
+                "clarity": clarity,
+                "usability": usability,
+                "appeal": appeal,
+                "satisfaction": appeal,
+                "overall": self._score_value(item, ("overall", "overallScore", "overall_score"), round((clarity + usability + appeal) / 3)),
+            }
+
+        flow_by_index = {item.get("screenIndex"): item for item in _as_list(flow_analysis) if isinstance(item, dict)}
+        for screen_index, screen in enumerate(screens):
+            if screen_index in normalized_by_index:
+                continue
+            flow_item = flow_by_index.get(screen_index) or {}
+            clarity = 100 - _clamp_percent(flow_item.get("confusionScore"), 100 - base["clarity"]) if flow_item else base["clarity"]
+            usability = 100 - _clamp_percent(flow_item.get("dropoffRisk"), 100 - base["usability"]) if flow_item else base["usability"]
+            appeal = base["appeal"]
+            normalized_by_index[screen_index] = {
+                "screenIndex": screen_index,
+                "screenId": str(screen.get("id") or f"screen-{screen_index + 1}"),
+                "clarity": _clamp_percent(clarity, base["clarity"]),
+                "usability": _clamp_percent(usability, base["usability"]),
+                "appeal": appeal,
+                "satisfaction": appeal,
+                "overall": round((_clamp_percent(clarity, base["clarity"]) + _clamp_percent(usability, base["usability"]) + appeal) / 3),
+            }
+
+        return [normalized_by_index[index] for index in sorted(normalized_by_index)]
+
     def _normalize_ui_screen_insights(self, *, feedback: dict, screens, pin_comments, screen_feedbacks):
         existing = _as_list(feedback.get("screenInsights") or feedback.get("screen_insights"))
         insights = []
@@ -737,6 +849,12 @@ class PersonaService:
         screen_feedbacks = self._normalize_ui_screen_feedbacks(feedback=feedback, persona=persona, screens=screens)
         pin_comments = self._normalize_ui_pin_comments(feedback=feedback, screens=screens)
         flow_analysis = self._normalize_ui_flow_analysis(feedback=feedback, screens=screens, is_flow=is_flow)
+        screen_scores = self._normalize_ui_screen_scores(
+            feedback=feedback,
+            screens=screens,
+            scores=scores,
+            flow_analysis=flow_analysis,
+        )
         screen_insights = self._normalize_ui_screen_insights(
             feedback=feedback,
             screens=screens,
@@ -753,12 +871,13 @@ class PersonaService:
             "summary": summary,
             "persona_goal_fit": feedback.get("personaGoalFit") or feedback.get("persona_goal_fit"),
             "scores": {
-                "clarity": int(scores.get("clarity", 70)),
-                "usability": int(scores.get("usability", 70)),
-                "appeal": int(scores.get("appeal", 65)),
-                "overall": int(scores.get("overall", scores.get("overallFlowScore", 68))),
+                "clarity": self._score_value(scores, ("clarity", "clear", "readability"), 70),
+                "usability": self._score_value(scores, ("usability", "ease"), 70),
+                "appeal": self._score_value(scores, ("appeal", "satisfaction", "score"), 65),
+                "overall": self._score_value(scores, ("overall", "overallFlowScore", "overall_flow_score"), 68),
                 "overallFlowScore": scores.get("overallFlowScore"),
                 "flowSummary": scores.get("flowSummary"),
+                "screenScores": screen_scores,
             },
             "feedback": feedback_payload,
             "pin_comments": pin_comments,
