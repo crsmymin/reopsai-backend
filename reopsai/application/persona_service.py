@@ -12,9 +12,11 @@ from typing import Any, Mapping, Optional
 
 from reopsai.domain.persona.generation import (
     PersonaGenerationQualityError,
+    generate_segment_suggestions_pipeline,
     generate_personas_pipeline,
     infer_persona_source_type,
     validate_generation_payload,
+    validate_segment_suggestion_payload,
 )
 from reopsai.infrastructure.persistence.engine import session_scope
 from reopsai.infrastructure.persistence.repositories.persona_repository import PersonaRepository
@@ -210,6 +212,8 @@ class PersonaService:
         generation_config = {"temperature": 0.7, "max_output_tokens": 8192}
         if "STAGE: telecom_dimensions" in prompt:
             generation_config = {"temperature": 0.35, "max_output_tokens": 4500}
+        elif "STAGE: segment_suggestion" in prompt:
+            generation_config = {"temperature": 0.4, "max_output_tokens": 4096}
         adapter = self._get_llm_adapter()
         if media_parts and hasattr(adapter, "generate_multimodal_response"):
             result = adapter.generate_multimodal_response(
@@ -1522,6 +1526,32 @@ class PersonaService:
                 "tokenUsage": generated["token_usage"],
             }
         )
+
+    def suggest_segments(self, *, company_id: int, user_id: int, data: dict):
+        validated, errors = validate_segment_suggestion_payload(data)
+        if errors or validated is None:
+            return PersonaServiceResult(
+                status="invalid",
+                error="Invalid segment suggestion payload",
+                data={"details": errors},
+                status_code=400,
+            )
+
+        usage_context = build_llm_usage_context(company_id=company_id, user_id=user_id, feature_key="persona_segment_suggestion")
+
+        def generate():
+            return generate_segment_suggestions_pipeline(
+                validated,
+                text_generator=self._generate_text,
+            )
+
+        try:
+            segments, usage = run_with_llm_usage_context(usage_context, generate)
+        except PersonaGenerationQualityError as exc:
+            return self._error("generation_incomplete", str(exc), 502)
+        except RuntimeError as exc:
+            return self._error("generation_failed", str(exc), 502)
+        return self._ok({"segments": segments, "tokenUsage": usage})
 
     def save_generated_personas(self, *, company_id: int, user_id: int, data: dict):
         personas_input = data.get("personas")

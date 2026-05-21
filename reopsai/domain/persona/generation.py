@@ -80,6 +80,9 @@ LANGUAGE_LABELS = {
     "zh": "Chinese",
 }
 
+SEGMENT_SUGGESTION_MAX_CONTEXT_LENGTH = 4000
+SEGMENT_SUGGESTION_DEFAULT_MAX_SEGMENTS = 4
+
 
 class PersonaGenerationQualityError(ValueError):
     """Raised when a stage returns syntactically valid but incomplete persona data."""
@@ -256,6 +259,49 @@ def validate_generation_payload(payload: dict) -> tuple[dict | None, list[str]]:
     }, []
 
 
+def validate_segment_suggestion_payload(payload: dict) -> tuple[dict | None, list[str]]:
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return None, ["Request body must be an object"]
+
+    context = payload.get("context")
+    context = context.strip() if isinstance(context, str) else ""
+    if len(context) < 10:
+        errors.append("세그먼트 초안 생성을 위해 최소 10자 이상의 컨텍스트가 필요합니다.")
+    if len(context) > SEGMENT_SUGGESTION_MAX_CONTEXT_LENGTH:
+        errors.append("컨텍스트는 4000자 이내여야 합니다.")
+
+    locale = payload.get("locale")
+    if not isinstance(locale, dict) or not isinstance(locale.get("country"), str) or not isinstance(locale.get("language"), str):
+        errors.append("locale.country and locale.language are required")
+        locale = None
+    else:
+        locale = {
+            "country": locale["country"].strip().upper(),
+            "language": locale["language"].strip().lower(),
+            **({"region": locale["region"].strip()} if isinstance(locale.get("region"), str) and locale.get("region").strip() else {}),
+        }
+
+    max_segments = payload.get("maxSegments")
+    if max_segments is None:
+        max_segments = SEGMENT_SUGGESTION_DEFAULT_MAX_SEGMENTS
+    try:
+        max_segments = int(round(float(max_segments)))
+    except Exception:
+        errors.append("maxSegments must be an integer between 2 and 6")
+        max_segments = SEGMENT_SUGGESTION_DEFAULT_MAX_SEGMENTS
+    max_segments = max(2, min(6, max_segments))
+
+    if errors:
+        return None, errors
+
+    return {
+        "context": context,
+        "locale": locale,
+        "maxSegments": max_segments,
+    }, []
+
+
 def _json_extract(text: str) -> dict:
     stripped = (text or "").strip()
     if stripped.startswith("```"):
@@ -268,6 +314,99 @@ def _json_extract(text: str) -> dict:
         if not match:
             raise
         return json.loads(match.group(0))
+
+
+def _trim_context(context: str, max_length: int) -> str:
+    normalized = context.strip()
+    if len(normalized) <= max_length:
+        return normalized
+    return f"{normalized[:max_length].rstrip()}\n\n[Context truncated for segment generation]"
+
+
+def _segment_suggestion_prompt(payload: dict) -> str:
+    locale = payload.get("locale") or {}
+    max_segments = max(2, min(int(payload.get("maxSegments") or SEGMENT_SUGGESTION_DEFAULT_MAX_SEGMENTS), 6))
+    context = _trim_context(payload.get("context") or "", 1800)
+    return f"""
+STAGE: segment_suggestion
+You are an expert in market segmentation and persona discovery.
+
+Analyze the provided context and propose distinct, actionable customer segments.
+
+Rules:
+- Segments must be clearly differentiated
+- Segment names should be concise
+- Descriptions should be short and specific
+- Criteria should be short keyword-style text
+- target_count is optional and should usually be 1-3
+- Generate between 2 and {max_segments} segments
+- Generate all text in {locale.get("language") or "ko"}
+- Respond with JSON only
+
+Return this JSON shape:
+{{
+  "segments": [
+    {{
+      "name": "string",
+      "description": "string",
+      "criteria": "string",
+      "target_count": 1
+    }}
+  ]
+}}
+
+Context:
+{context}
+
+Locale:
+- Country: {locale.get("country") or "KR"}
+- Language: {locale.get("language") or "ko"}
+""".strip()
+
+
+def _normalize_segment_suggestions(raw_segments: list, *, max_segments: int) -> list[dict]:
+    normalized = []
+    for index, segment in enumerate(raw_segments):
+        if not isinstance(segment, dict):
+            continue
+        name = str(segment.get("name") or "").strip()
+        description = str(segment.get("description") or "").strip()
+        if not name or not description:
+            continue
+        criteria = str(segment.get("criteria") or "").strip()
+        target_count = _coerce_count(segment.get("target_count") or segment.get("targetCount"), default=1)
+        normalized.append(
+            {
+                "id": f"segment-suggested-{index + 1}",
+                "name": name[:100],
+                "description": description[:500],
+                "criteria": criteria[:2000],
+                "targetCount": max(1, min(10, target_count)),
+            }
+        )
+        if len(normalized) >= max_segments:
+            break
+    return normalized
+
+
+def generate_segment_suggestions_pipeline(payload: dict, text_generator: Callable[[str], tuple[str, dict]]) -> tuple[list[dict], dict]:
+    max_segments = max(2, min(int(payload.get("maxSegments") or SEGMENT_SUGGESTION_DEFAULT_MAX_SEGMENTS), 6))
+
+    def validate(parsed: dict):
+        segments = parsed.get("segments")
+        if not isinstance(segments, list) or len(segments) < 2:
+            raise ValueError("segments missing or below requested count")
+
+    parsed, usage = _execute_json_stage(
+        text_generator,
+        _segment_suggestion_prompt(payload),
+        stage_name="segment_suggestion",
+        validator=validate,
+    )
+    segments = _normalize_segment_suggestions(parsed.get("segments") or [], max_segments=max_segments)
+    if len(segments) < 2:
+        raise PersonaGenerationQualityError("segment_suggestion returned fewer than 2 usable segments")
+    return segments, usage
 
 
 def _usage_from(raw: dict | None) -> dict:
@@ -699,8 +838,8 @@ def _execute_json_stage(
     last_error = None
     for attempt in range(max_attempts):
         retry = "" if attempt == 0 else f"\n\nRetry because the previous {stage_name} response was invalid: {last_error}. Return complete JSON only."
-        content, usage = text_generator(f"{prompt}{retry}")
         try:
+            content, usage = text_generator(f"{prompt}{retry}")
             parsed = _json_extract(content)
             if validator:
                 validator(parsed)

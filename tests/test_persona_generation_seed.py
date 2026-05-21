@@ -2,10 +2,12 @@ from pathlib import Path
 
 from reopsai.domain.persona.generation import (
     DEFAULT_SEED_PATH,
+    generate_segment_suggestions_pipeline,
     generate_seed_based_personas,
     load_seed_personas,
     select_nemotron_korea_seeds,
     validate_generation_payload,
+    validate_segment_suggestion_payload,
 )
 
 
@@ -82,6 +84,62 @@ def test_generation_payload_rejects_invalid_source_type():
 
     assert payload is None
     assert "sourceType must be service_based or segment_based" in errors
+
+
+def test_segment_suggestion_payload_validation_and_pipeline():
+    payload, errors = validate_segment_suggestion_payload(
+        {
+            "context": "해외여행을 앞두고 로밍 요금제와 도시락 와이파이를 비교하는 사용자를 리서치합니다.",
+            "locale": {"country": "kr", "language": "KO"},
+            "maxSegments": 3,
+        }
+    )
+
+    def fake_text_generator(prompt):
+        assert "Generate between 2 and 3 segments" in prompt
+        return (
+            """
+            {
+              "segments": [
+                {
+                  "name": "로밍 안정성 중시형",
+                  "description": "해외에서도 통신 품질과 고객지원을 우선합니다.",
+                  "criteria": "출장, 장기 여행",
+                  "target_count": 2
+                },
+                {
+                  "name": "비용 절감형",
+                  "description": "도시락 와이파이와 eSIM을 비교해 가장 싼 옵션을 찾습니다.",
+                  "criteria": "가격 비교",
+                  "target_count": 1
+                }
+              ]
+            }
+            """,
+            {"inputTokens": 11, "outputTokens": 22, "totalTokens": 33, "model": "gemini-test"},
+        )
+
+    segments, usage = generate_segment_suggestions_pipeline(payload, fake_text_generator)
+
+    assert errors == []
+    assert payload["locale"] == {"country": "KR", "language": "ko"}
+    assert segments == [
+        {
+            "id": "segment-suggested-1",
+            "name": "로밍 안정성 중시형",
+            "description": "해외에서도 통신 품질과 고객지원을 우선합니다.",
+            "criteria": "출장, 장기 여행",
+            "targetCount": 2,
+        },
+        {
+            "id": "segment-suggested-2",
+            "name": "비용 절감형",
+            "description": "도시락 와이파이와 eSIM을 비교해 가장 싼 옵션을 찾습니다.",
+            "criteria": "가격 비교",
+            "targetCount": 1,
+        },
+    ]
+    assert usage["totalTokens"] == 33
 
 
 def _write_seed_fixture(tmp_path):

@@ -141,6 +141,58 @@ class GeminiService:
         self.key_cooldown[key] = time.time()
         print(f"⏸️ 키 쿨다운 설정: {key[:10]}... ({self.cooldown_duration}초, {self.cooldown_duration//60}분)")
 
+    def _value_from(self, value, key, default=None):
+        if isinstance(value, dict):
+            return value.get(key, default)
+        return getattr(value, key, default)
+
+    def _finish_reason_label(self, value):
+        if value is None:
+            return "unknown"
+        name = getattr(value, "name", None)
+        if name:
+            return name
+        return str(value)
+
+    def _extract_response_text(self, response):
+        try:
+            text = response.text
+            if text:
+                return text, None
+        except Exception as exc:
+            text_error = str(exc)
+        else:
+            text_error = None
+
+        parts_text = []
+        finish_reasons = []
+        candidates = self._value_from(response, "candidates", []) or []
+        for candidate in candidates:
+            finish_reason = self._value_from(candidate, "finish_reason", None) or self._value_from(candidate, "finishReason", None)
+            if finish_reason is not None:
+                finish_reasons.append(self._finish_reason_label(finish_reason))
+            content = self._value_from(candidate, "content", None) or {}
+            parts = self._value_from(content, "parts", []) or []
+            for part in parts:
+                part_text = self._value_from(part, "text", None)
+                if part_text:
+                    parts_text.append(part_text)
+
+        if parts_text:
+            return "\n".join(parts_text), None
+
+        prompt_feedback = self._value_from(response, "prompt_feedback", None) or self._value_from(response, "promptFeedback", None)
+        block_reason = self._value_from(prompt_feedback, "block_reason", None) or self._value_from(prompt_feedback, "blockReason", None)
+        details = []
+        if finish_reasons:
+            details.append(f"finish_reason={','.join(finish_reasons)}")
+        if block_reason is not None:
+            details.append(f"block_reason={self._finish_reason_label(block_reason)}")
+        if text_error:
+            details.append(text_error)
+        detail_text = "; ".join(details) if details else "no text parts returned"
+        return None, f"Gemini 응답에 텍스트 파트가 없습니다. ({detail_text})"
+
     def generate_response(self, prompt, generation_config=None, model_name=None):
         """
         주어진 프롬프트와 설정에 따라 Gemini API를 호출하고 응답을 반환합니다.
@@ -209,9 +261,13 @@ class GeminiService:
                 log_duration("LLM(Gemini)", duration, extra=f"model={model_display}")
                 log_tokens("gemini", usage, extra=f"model={model_display}")
                 
+                content, content_error = self._extract_response_text(response)
+                if content_error:
+                    return {'success': False, 'error': content_error, "usage": usage, **pii_meta}
+
                 # 성공적인 응답을 딕셔너리 형태로 반환
                 record_llm_call(provider="gemini", model=model_display, usage=usage)
-                return {'success': True, 'content': response.text, "usage": usage, **pii_meta}
+                return {'success': True, 'content': content, "usage": usage, **pii_meta}
             
             except Exception as e:
                 last_error = e
@@ -313,8 +369,11 @@ class GeminiService:
 
                 log_duration("LLM(Gemini Vision)", duration, extra=f"model={model_display};media_parts={len(media_parts or [])}")
                 log_tokens("gemini", usage, extra=f"model={model_display} vision")
+                content, content_error = self._extract_response_text(response)
+                if content_error:
+                    return {'success': False, 'error': content_error, "usage": usage, **pii_meta}
                 record_llm_call(provider="gemini", model=model_display, usage=usage)
-                return {'success': True, 'content': response.text, "usage": usage, **pii_meta}
+                return {'success': True, 'content': content, "usage": usage, **pii_meta}
 
             except Exception as e:
                 last_error = e
@@ -401,7 +460,11 @@ class GeminiService:
                 log_tokens("gemini", usage, extra="model=gemini-2.0-flash vision")
                 record_llm_call(provider="gemini", model="gemini-2.0-flash", usage=usage)
                 
-                return response.text
+                content, content_error = self._extract_response_text(response)
+                if content_error:
+                    print(f"❌ Gemini Vision 응답 오류: {content_error}")
+                    return None
+                return content
             
             except Exception as e:
                 last_error = e

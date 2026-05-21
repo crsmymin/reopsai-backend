@@ -138,6 +138,15 @@ def create_persona():
     return _response(persona_service.generate_personas(company_id=context["company_id"], user_id=context["user_id"], data=_json_body()))
 
 
+@persona_bp.route("/personas/segments", methods=["POST"])
+@tier_required(["enterprise"])
+def suggest_segments():
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.suggest_segments(company_id=context["company_id"], user_id=context["user_id"], data=_json_body()))
+
+
 @persona_bp.route("/personas/manual", methods=["POST"])
 @tier_required(["enterprise"])
 def create_manual_persona():

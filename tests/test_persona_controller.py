@@ -35,6 +35,30 @@ class FakePersonaService:
             },
         )
 
+    def suggest_segments(self, *, company_id, user_id, data):
+        return PersonaServiceResult(
+            status="ok",
+            data={
+                "segments": [
+                    {
+                        "id": "segment-suggested-1",
+                        "name": "가격 민감형",
+                        "description": "통신비 절감을 우선합니다.",
+                        "criteria": "프로모션 비교",
+                        "targetCount": 1,
+                    },
+                    {
+                        "id": "segment-suggested-2",
+                        "name": "혜택 중시형",
+                        "description": "멤버십과 부가 혜택을 중시합니다.",
+                        "criteria": "VIP 혜택",
+                        "targetCount": 1,
+                    },
+                ],
+                "tokenUsage": {"inputTokens": 10, "outputTokens": 20, "totalTokens": 30, "model": "gemini-2.5-pro"},
+            },
+        )
+
     def get_persona(self, *, company_id, persona_id):
         return PersonaServiceResult(
             status="ok",
@@ -152,6 +176,29 @@ def test_persona_routes_preserve_success_shape(monkeypatch):
     assert create_response.status_code == 200
     assert create_response.get_json()["personas"] == [{"schemaVersion": 3, "name": "Persona A"}]
     assert "data" not in create_response.get_json()
+
+
+def test_persona_segment_suggestion_route_preserves_legacy_shape(monkeypatch):
+    client, headers = _make_client(
+        monkeypatch,
+        claims={"tier": "enterprise", "account_type": "business", "company_id": 100},
+    )
+
+    response = client.post(
+        "/api/persona/personas/segments",
+        headers=headers,
+        json={
+            "context": "통신비 절감과 멤버십 혜택을 비교하는 서비스를 위한 세그먼트가 필요합니다.",
+            "locale": {"country": "KR", "language": "ko"},
+        },
+    )
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body["success"] is True
+    assert body["segments"][0]["name"] == "가격 민감형"
+    assert body["segments"][0]["targetCount"] == 1
+    assert "data" not in body
 
 
 def test_persona_detail_route_matches_legacy_detail_shape(monkeypatch):
