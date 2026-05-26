@@ -96,22 +96,34 @@ class FakePersonaService:
         return PersonaServiceResult(status="ok")
 
     def generate_interview_questions(self, *, company_id, user_id, data):
-        return PersonaServiceResult(status="ok", data={"data": {"goal": data["goal"], "questions": [{"id": "q1", "text": "질문"}]}})
+        return PersonaServiceResult(
+            status="ok",
+            data={
+                "data": {
+                    "questions": {
+                        "opening": ["질문"],
+                        "tasks": [{"title": "핵심", "questions": ["후속 질문"]}],
+                        "closing": ["마무리 질문"],
+                        "followup_strategies": ["답변 근거를 더 묻습니다."],
+                    }
+                }
+            },
+        )
 
     def create_interview(self, *, company_id, user_id, data):
-        return PersonaServiceResult(status="ok", status_code=201, data={"data": {"id": 7, "company_id": company_id, "name": data["name"], "goal": data["goal"]}})
+        return PersonaServiceResult(status="ok", status_code=201, data={"data": {"id": 7, "company_id": company_id, "name": data["name"], "goal": data["goal"], "results": []}})
 
     def get_interview(self, *, company_id, interview_id):
-        return PersonaServiceResult(status="ok", data={"data": {"id": interview_id, "company_id": company_id}, "results": []})
+        return PersonaServiceResult(status="ok", data={"data": {"id": interview_id, "company_id": company_id, "results": []}, "results": []})
 
     def delete_interview(self, *, company_id, user_id, interview_id):
         return PersonaServiceResult(status="ok")
 
     def run_interview(self, *, company_id, user_id, interview_id, data):
-        return PersonaServiceResult(status="ok", data={"data": {"id": interview_id, "status": "completed"}, "results": []})
+        return PersonaServiceResult(status="ok", data={"data": {"id": interview_id, "status": "completed", "results": []}, "results": []})
 
     def list_interviews(self, *, company_id):
-        return PersonaServiceResult(status="ok", data={"data": [{"id": 7, "company_id": company_id}]})
+        return PersonaServiceResult(status="ok", data={"data": [{"id": 7, "company_id": company_id, "results": []}]})
 
     def list_interview_personas(self, *, company_id):
         return PersonaServiceResult(status="ok", data={"data": [{"id": 10, "company_id": company_id}]})
@@ -122,6 +134,9 @@ class FakePersonaService:
 
         url = PersonaFigmaClient(config=FigmaConfig).authorization_url(state=f"{company_id}:{user_id}:nonce", redirect_uri=redirect_uri)
         return PersonaServiceResult(status="ok", data={"url": url})
+
+    def delete_figma_file(self, *, company_id, file_id):
+        return PersonaServiceResult(status="ok", data={"deleted": {"company_id": company_id, "file_id": file_id}})
 
 
 def _make_client(monkeypatch, *, claims):
@@ -299,6 +314,19 @@ def test_figma_connect_route_expands_origin_only_explicit_redirect_uri(monkeypat
     assert redirect_uri == "http://localhost:5001/api/persona/figma/callback"
 
 
+def test_figma_file_delete_route_uses_business_company_context(monkeypatch):
+    client, headers = _make_client(
+        monkeypatch,
+        claims={"tier": "enterprise", "account_type": "business", "company_id": 100},
+    )
+
+    response = client.delete("/api/persona/figma/files/42", headers=headers)
+    body = response.get_json()
+
+    assert response.status_code == 200
+    assert body == {"success": True, "deleted": {"company_id": 100, "file_id": 42}}
+
+
 def test_persona_test_routes_include_combined_ab_delete_and_interviews(monkeypatch):
     client, headers = _make_client(
         monkeypatch,
@@ -318,9 +346,13 @@ def test_persona_test_routes_include_combined_ab_delete_and_interviews(monkeypat
     assert ab_patch.status_code == 200
     assert ab_patch.get_json()["data"]["status"] == "draft"
     assert ab_delete.status_code == 200
-    assert questions.get_json()["data"]["questions"][0]["text"] == "질문"
+    assert questions.get_json()["data"]["questions"]["opening"][0] == "질문"
     assert created.status_code == 201
+    assert created.get_json()["data"]["results"] == []
+    assert loaded.get_json()["data"]["results"] == []
     assert loaded.get_json()["results"] == []
+    assert run.get_json()["data"]["results"] == []
+    assert run.get_json()["results"] == []
     assert run.get_json()["data"]["status"] == "completed"
 
 

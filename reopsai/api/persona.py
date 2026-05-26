@@ -309,7 +309,7 @@ def get_ui_test(test_id: int):
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.get_ui_test(company_id=context["company_id"], test_id=test_id))
+    return _response(persona_service.get_ui_test(company_id=context["company_id"], user_id=context["user_id"], test_id=test_id))
 
 
 @persona_bp.route("/tests/<int:test_id>", methods=["PATCH"])
@@ -552,6 +552,15 @@ def sync_figma_file():
     return _response(persona_service.sync_figma_file(company_id=context["company_id"], user_id=context["user_id"], data=_json_body()))
 
 
+@persona_bp.route("/figma/files/<int:file_id>", methods=["DELETE"])
+@tier_required(["enterprise"])
+def delete_figma_file(file_id: int):
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.delete_figma_file(company_id=context["company_id"], file_id=file_id))
+
+
 @persona_bp.route("/figma/files/<int:file_id>/flows", methods=["GET"])
 @tier_required(["enterprise"])
 def list_figma_flows(file_id: int):
@@ -559,6 +568,15 @@ def list_figma_flows(file_id: int):
     if error_response:
         return error_response
     return _response(persona_service.list_figma_flows(company_id=context["company_id"], file_id=file_id))
+
+
+@persona_bp.route("/figma/files/<int:file_id>/flows/<int:flow_id>/preview", methods=["GET"])
+@tier_required(["enterprise"])
+def preview_figma_flow(file_id: int, flow_id: int):
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.preview_figma_flow(company_id=context["company_id"], user_id=context["user_id"], file_id=file_id, flow_id=flow_id))
 
 
 @persona_bp.route("/figma/files/<int:file_id>/flows/sync", methods=["POST"])

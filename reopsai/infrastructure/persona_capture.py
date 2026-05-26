@@ -53,14 +53,24 @@ class PersonaCapture:
         return self._capture_with_playwright(url)
 
     def _capture_with_playwright(self, url: str) -> dict:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 
         timeout = int(Config.PERSONA_PLAYWRIGHT_TIMEOUT_MS)
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch()
             try:
                 page = browser.new_page()
-                response = page.goto(url, wait_until="networkidle", timeout=timeout)
+                response = None
+                navigation_timed_out = False
+                try:
+                    response = page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+                except PlaywrightTimeoutError:
+                    navigation_timed_out = True
+                try:
+                    page.wait_for_load_state("networkidle", timeout=min(timeout, 3000))
+                except PlaywrightTimeoutError:
+                    pass
+                page.wait_for_timeout(500)
                 screenshot = page.screenshot(full_page=True)
                 return {
                     "url": url,
@@ -70,6 +80,7 @@ class PersonaCapture:
                     "screenshot_base64": __import__("base64").b64encode(screenshot).decode("ascii"),
                     "screenshot_bytes": len(screenshot),
                     "capture_backend": "playwright",
+                    "navigation_timed_out": navigation_timed_out,
                 }
             finally:
                 browser.close()

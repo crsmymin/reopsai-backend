@@ -311,6 +311,18 @@ class PersonaRepository:
         return persona
 
     @staticmethod
+    def update_persona_interview_pack(session, persona, *, user_id: int, pack: dict, source_hash: str, model: str, version: str):
+        persona.interview_pack = pack
+        persona.interview_pack_source_hash = source_hash
+        persona.interview_pack_model = model
+        persona.interview_pack_version = version
+        persona.interview_pack_updated_at = utcnow()
+        persona.updated_by_user_id = int(user_id)
+        persona.updated_at = utcnow()
+        session.flush()
+        return persona
+
+    @staticmethod
     def soft_delete_persona(session, persona, *, user_id: int):
         persona.deleted_at = utcnow()
         persona.updated_by_user_id = int(user_id)
@@ -887,12 +899,28 @@ class PersonaRepository:
         return figma_file
 
     @staticmethod
+    def get_figma_file_by_key(session, *, company_id: int, figma_file_key: str):
+        return session.execute(
+            select(PersonaFigmaFile)
+            .where(
+                PersonaFigmaFile.company_id == int(company_id),
+                PersonaFigmaFile.figma_file_key == figma_file_key,
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+
+    @staticmethod
     def get_figma_file(session, *, company_id: int, file_id: int):
         return session.execute(
             select(PersonaFigmaFile)
             .where(PersonaFigmaFile.company_id == int(company_id), PersonaFigmaFile.id == int(file_id))
             .limit(1)
         ).scalar_one_or_none()
+
+    @staticmethod
+    def delete_figma_file(session, figma_file: PersonaFigmaFile):
+        session.delete(figma_file)
+        session.flush()
 
     @staticmethod
     def list_figma_flows(session, *, company_id: int, file_id: int):
