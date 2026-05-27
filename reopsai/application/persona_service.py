@@ -628,6 +628,10 @@ class PersonaService:
             "Do not use generic center coordinates unless the target element is genuinely centered. If exact location is uncertain, choose the most plausible visible element area and name that element in content.",
             is_flow
             and "This is a flow test. Evaluate whether the persona can keep moving toward the task goal across screens; include flowAnalysis for every screenIndex with confusionScore, dropoffRisk, frictionPoints, suggestions, transitionFromPrevious, expectedNextAction, bottleneckRisk.",
+            is_flow
+            and "For flow tests, frictionPoints are the primary comments shown in the result-side friction panel. Each frictionPoint must explain why the persona may hesitate, become confused, or lose motivation at that step.",
+            is_flow
+            and "For flow tests, pinComments should focus on friction/improvement evidence for visible UI elements; use praise only when it is genuinely important evidence.",
             not is_flow and "This is a single-screen test. Do not include flowAnalysis unless it is directly useful.",
             f"Test: {test.name}",
             f"Description: {test.description or ''}",
@@ -851,6 +855,34 @@ class PersonaService:
             )
         return sorted(normalized, key=lambda item: item["screenIndex"])
 
+    def _merge_ui_flow_friction_pin_comments(self, *, pin_comments, flow_analysis):
+        pins = list(_as_list(pin_comments))
+        existing = {
+            (pin.get("screenIndex"), str(pin.get("content") or "").strip())
+            for pin in pins
+            if isinstance(pin, dict) and str(pin.get("content") or "").strip()
+        }
+        for flow_item in _as_list(flow_analysis):
+            if not isinstance(flow_item, dict):
+                continue
+            screen_index = flow_item.get("screenIndex")
+            for point in _as_list(flow_item.get("frictionPoints") or flow_item.get("friction_points")):
+                content = str(point or "").strip()
+                if not content or (screen_index, content) in existing:
+                    continue
+                pins.append(
+                    {
+                        "screenIndex": screen_index,
+                        "type": "improvement",
+                        "content": content,
+                        "source": "flowAnalysis.frictionPoints",
+                        "hasMarkerCoordinates": False,
+                        "has_marker_coordinates": False,
+                    }
+                )
+                existing.add((screen_index, content))
+        return pins
+
     def _resolve_ui_screen_reference_index(self, item: dict, screens, fallback_index: int = 0):
         screen_id = item.get("screenId") or item.get("screen_id")
         if screen_id is not None:
@@ -989,6 +1021,8 @@ class PersonaService:
         screen_feedbacks = self._normalize_ui_screen_feedbacks(feedback=feedback, persona=persona, screens=screens)
         pin_comments = self._normalize_ui_pin_comments(feedback=feedback, screens=screens)
         flow_analysis = self._normalize_ui_flow_analysis(feedback=feedback, screens=screens, is_flow=is_flow)
+        if is_flow:
+            pin_comments = self._merge_ui_flow_friction_pin_comments(pin_comments=pin_comments, flow_analysis=flow_analysis)
         screen_scores = self._normalize_ui_screen_scores(
             feedback=feedback,
             screens=screens,
