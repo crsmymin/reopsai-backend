@@ -936,22 +936,48 @@ class PersonaRepository:
 
     @staticmethod
     def replace_figma_flows(session, *, company_id: int, file_id: int, flows: Iterable[dict]):
+        normalized_flows = []
+        seen_start_node_ids = set()
+        for flow_data in flows:
+            start_node_id = flow_data["figma_start_node_id"]
+            if start_node_id in seen_start_node_ids:
+                continue
+            seen_start_node_ids.add(start_node_id)
+            normalized_flows.append(flow_data)
+
+        now = utcnow()
         session.query(PersonaFigmaFlow).filter(
             PersonaFigmaFlow.company_id == int(company_id),
             PersonaFigmaFlow.figma_file_id == int(file_id),
-        ).update({PersonaFigmaFlow.active: False, PersonaFigmaFlow.updated_at: utcnow()})
+        ).update({PersonaFigmaFlow.active: False, PersonaFigmaFlow.updated_at: now})
+        existing_by_start_node_id = {}
+        if seen_start_node_ids:
+            existing_rows = session.execute(
+                select(PersonaFigmaFlow)
+                .where(
+                    PersonaFigmaFlow.company_id == int(company_id),
+                    PersonaFigmaFlow.figma_file_id == int(file_id),
+                    PersonaFigmaFlow.figma_start_node_id.in_(seen_start_node_ids),
+                )
+            ).scalars().all()
+            existing_by_start_node_id = {row.figma_start_node_id: row for row in existing_rows}
         created = []
-        for flow_data in flows:
-            flow = PersonaFigmaFlow(
-                company_id=int(company_id),
-                figma_file_id=int(file_id),
-                figma_page_id=flow_data.get("figma_page_id"),
-                figma_page_name=flow_data.get("figma_page_name"),
-                figma_start_node_id=flow_data["figma_start_node_id"],
-                figma_flow_name=flow_data.get("figma_flow_name") or flow_data["figma_start_node_id"],
-                metadata_=flow_data.get("metadata"),
-            )
-            session.add(flow)
+        for flow_data in normalized_flows:
+            start_node_id = flow_data["figma_start_node_id"]
+            flow = existing_by_start_node_id.get(start_node_id)
+            if flow is None:
+                flow = PersonaFigmaFlow(
+                    company_id=int(company_id),
+                    figma_file_id=int(file_id),
+                    figma_start_node_id=start_node_id,
+                )
+                session.add(flow)
+            flow.figma_page_id = flow_data.get("figma_page_id")
+            flow.figma_page_name = flow_data.get("figma_page_name")
+            flow.figma_flow_name = flow_data.get("figma_flow_name") or start_node_id
+            flow.metadata_ = flow_data.get("metadata")
+            flow.active = True
+            flow.updated_at = now
             created.append(flow)
         session.flush()
         return created

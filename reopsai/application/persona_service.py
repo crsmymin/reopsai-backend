@@ -2871,6 +2871,46 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             payload["flows"] = [self.figma_flow_payload(row) for row in created_flows]
             return self._ok({"data": payload}, 201)
 
+    def refresh_figma_file(self, *, company_id: int, user_id: int, file_id: int):
+        with self.session_factory() as db_session:
+            account = self.repository.get_figma_account(db_session, company_id=company_id, user_id=user_id)
+            if not account:
+                return self._error("not_connected", "Figma account is not connected", 409)
+            figma_file = self.repository.get_figma_file(db_session, company_id=company_id, file_id=file_id)
+            if not figma_file:
+                return self._error("not_found", "figma file not found", 404)
+
+            access_token = self.figma_client.decrypt(account.access_token_encrypted)
+            if not access_token:
+                return self._error("not_connected", "Figma account is not connected", 409)
+            try:
+                figma_payload = self.figma_client.fetch_file_with_flows(file_key=figma_file.figma_file_key, access_token=access_token)
+            except PersonaFigmaClientError as exc:
+                return self._error(exc.code, exc.message, exc.status_code)
+            flows = figma_payload.get("flows") or []
+            if not flows:
+                return self._error("missing_flow", "파일 내 프로토 타입 Flow가 연결되어 있는지 확인해주세요.", 400)
+
+            refreshed_file = self.repository.upsert_figma_file(
+                db_session,
+                company_id=company_id,
+                account_id=account.id,
+                data={
+                    "figma_account_id": account.id,
+                    "figma_file_key": figma_file.figma_file_key,
+                    "figma_file_name": figma_payload.get("figma_file_name") or figma_file.figma_file_name or figma_file.figma_file_key,
+                    "figma_file_link": figma_file.figma_file_link,
+                    "thumbnail_url": figma_payload.get("thumbnail_url") or figma_file.thumbnail_url,
+                    "last_synced_at": datetime.now(timezone.utc),
+                    "sync_status": "completed",
+                    "sync_error": None,
+                },
+            )
+            created_flows = self.repository.replace_figma_flows(db_session, company_id=company_id, file_id=refreshed_file.id, flows=flows)
+            payload = self.figma_file_payload(refreshed_file)
+            payload["flows"] = [self.figma_flow_payload(row) for row in created_flows]
+            return self._ok({"data": payload})
+
     def delete_figma_file(self, *, company_id: int, file_id: int):
         with self.session_factory() as db_session:
             figma_file = self.repository.get_figma_file(db_session, company_id=company_id, file_id=file_id)

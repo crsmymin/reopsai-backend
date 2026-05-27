@@ -552,6 +552,15 @@ def sync_figma_file():
     return _response(persona_service.sync_figma_file(company_id=context["company_id"], user_id=context["user_id"], data=_json_body()))
 
 
+@persona_bp.route("/figma/files/<int:file_id>/sync", methods=["POST"])
+@tier_required(["enterprise"])
+def refresh_figma_file(file_id: int):
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.refresh_figma_file(company_id=context["company_id"], user_id=context["user_id"], file_id=file_id))
+
+
 @persona_bp.route("/figma/files/<int:file_id>", methods=["DELETE"])
 @tier_required(["enterprise"])
 def delete_figma_file(file_id: int):

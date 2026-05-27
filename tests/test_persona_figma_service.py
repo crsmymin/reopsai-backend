@@ -16,9 +16,14 @@ class FakeRepository:
     figma_file = SimpleNamespace(
         id=42,
         company_id=100,
+        figma_account_id=7,
         figma_file_key="file-a",
         figma_file_name="File A",
         figma_file_link="https://figma.com/design/file-a/a",
+        thumbnail_url="https://example.com/old.png",
+        last_synced_at=None,
+        sync_status="completed",
+        sync_error=None,
     )
     figma_flows = [
         SimpleNamespace(
@@ -34,6 +39,7 @@ class FakeRepository:
     deleted_file = None
     upserted_files = []
     replaced_flows = []
+    refresh_existing_on_upsert = False
 
     @staticmethod
     def get_figma_account(session, *, company_id, user_id):
@@ -64,6 +70,25 @@ class FakeRepository:
 
     @staticmethod
     def upsert_figma_file(session, *, company_id, account_id, data):
+        existing = next(
+            (
+                row
+                for row in FakeRepository.upserted_files
+                if row.company_id == company_id and row.figma_file_key == data["figma_file_key"]
+            ),
+            None,
+        )
+        if (
+            existing is None
+            and FakeRepository.refresh_existing_on_upsert
+            and FakeRepository.figma_file.company_id == company_id
+            and FakeRepository.figma_file.figma_file_key == data["figma_file_key"]
+        ):
+            existing = FakeRepository.figma_file
+        if existing is not None:
+            for key, value in data.items():
+                setattr(existing, key, value)
+            return existing
         figma_file = SimpleNamespace(
             id=len(FakeRepository.upserted_files) + 1,
             company_id=company_id,
@@ -181,6 +206,7 @@ class FakeStorage:
 def test_sync_figma_file_allows_sequential_file_connections():
     FakeRepository.upserted_files = []
     FakeRepository.replaced_flows = []
+    FakeRepository.refresh_existing_on_upsert = False
     service = PersonaService(repository=FakeRepository, session_factory=fake_session_factory, figma_client=FakeFigmaClient)
 
     first = service.sync_figma_file(
@@ -235,6 +261,25 @@ def test_sync_figma_file_requires_prototype_flow():
     assert result.status == "missing_flow"
     assert result.status_code == 400
     assert result.error == "파일 내 프로토 타입 Flow가 연결되어 있는지 확인해주세요."
+
+
+def test_refresh_figma_file_refetches_file_and_replaces_flows():
+    FakeRepository.upserted_files = []
+    FakeRepository.replaced_flows = []
+    FakeRepository.refresh_existing_on_upsert = True
+    service = PersonaService(repository=FakeRepository, session_factory=fake_session_factory, figma_client=FakeFigmaClient)
+
+    result = service.refresh_figma_file(company_id=100, user_id=10, file_id=42)
+
+    assert result.status == "ok"
+    refreshed = result.data["data"]
+    assert refreshed["id"] == 42
+    assert refreshed["figma_file_name"] == "File A from Figma"
+    assert refreshed["thumbnail_url"] == "https://example.com/a.png"
+    assert refreshed["last_synced_at"]
+    assert refreshed["flows"][0]["figma_flow_name"] == "Main Flow"
+    assert FakeRepository.replaced_flows[0]["figma_start_node_id"] == "2:1"
+    FakeRepository.refresh_existing_on_upsert = False
 
 
 def test_preview_figma_flow_returns_storage_backed_screen_images():
