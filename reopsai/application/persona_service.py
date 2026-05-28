@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ import mimetypes
 import re
 import time
 import os
+from types import SimpleNamespace
 from typing import Any, Mapping, Optional
 
 from reopsai.domain.persona.generation import (
@@ -42,6 +44,7 @@ class PersonaUrlCaptureError(RuntimeError):
 
 PERSONA_INTERVIEW_PACK_VERSION = "persona_interview_pack_v1"
 DEFAULT_PERSONA_PACK_MODEL = "gemini-2.5-pro"
+DEFAULT_INTERVIEW_MAX_CONCURRENCY = 4
 
 
 def _dt(value):
@@ -87,6 +90,17 @@ def _clamp_percent(value, fallback: int = 50):
     if not isinstance(value, (int, float)):
         return fallback
     return max(0, min(100, round(value)))
+
+
+def _resolve_interview_max_concurrency(persona_count: int) -> int:
+    configured = os.getenv("PERSONA_INTERVIEW_MAX_CONCURRENCY") or os.getenv("INTERVIEW_MAX_CONCURRENCY") or ""
+    try:
+        max_workers = int(configured)
+    except Exception:
+        max_workers = DEFAULT_INTERVIEW_MAX_CONCURRENCY
+    if max_workers <= 0:
+        max_workers = DEFAULT_INTERVIEW_MAX_CONCURRENCY
+    return max(1, min(max(1, int(persona_count or 0)), max_workers))
 
 
 def _normalize_marker_percent(value, fallback: int = 50):
@@ -1590,6 +1604,86 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             "raw_response": {"parsed": parsed, "usage": usage},
         }
 
+    def _failed_interview_result_data(self, *, persona_snapshot: dict | None, error: Exception):
+        return {
+            "status": "failed",
+            "persona_snapshot": persona_snapshot or {},
+            "summary": {},
+            "turns": [],
+            "pack": None,
+            "raw_response": None,
+            "error_message": str(error),
+        }
+
+    def _run_interview_for_persona_id(
+        self,
+        *,
+        company_id: int,
+        user_id: int,
+        interview_context,
+        persona_id: int,
+        pack_model: str | None = None,
+    ):
+        with self.session_factory() as db_session:
+            personas = self._resolve_run_personas(db_session, company_id=company_id, explicit_ids=[persona_id])
+            persona = personas[0] if personas else None
+            if not persona:
+                raise ValueError(f"Persona not found for interview: {persona_id}")
+            return self._run_interview_for_persona(
+                db_session=db_session,
+                company_id=company_id,
+                user_id=user_id,
+                interview=interview_context,
+                persona=persona,
+                pack_model=pack_model,
+            )
+
+    def _run_interviews_for_personas(
+        self,
+        *,
+        company_id: int,
+        user_id: int,
+        interview_context,
+        persona_ids: list[int],
+        persona_snapshots: dict[int, dict],
+        pack_model: str | None = None,
+    ) -> list[tuple[int, dict]]:
+        if not persona_ids:
+            return []
+        max_workers = _resolve_interview_max_concurrency(len(persona_ids))
+        results: list[tuple[int, dict] | None] = [None] * len(persona_ids)
+
+        def run_one(persona_id: int):
+            return self._run_interview_for_persona_id(
+                company_id=company_id,
+                user_id=user_id,
+                interview_context=interview_context,
+                persona_id=persona_id,
+                pack_model=pack_model,
+            )
+
+        if max_workers == 1:
+            for index, persona_id in enumerate(persona_ids):
+                try:
+                    result_data = run_one(persona_id)
+                except Exception as exc:
+                    result_data = self._failed_interview_result_data(persona_snapshot=persona_snapshots.get(persona_id), error=exc)
+                results[index] = (persona_id, result_data)
+            return [row for row in results if row is not None]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="persona-interview") as executor:
+            future_to_index = {executor.submit(run_one, persona_id): index for index, persona_id in enumerate(persona_ids)}
+            for future in concurrent.futures.as_completed(future_to_index):
+                index = future_to_index[future]
+                persona_id = persona_ids[index]
+                try:
+                    result_data = future.result()
+                except Exception as exc:
+                    result_data = self._failed_interview_result_data(persona_snapshot=persona_snapshots.get(persona_id), error=exc)
+                results[index] = (persona_id, result_data)
+
+        return [row for row in results if row is not None]
+
     def _preview_image_timeout(self) -> int:
         try:
             return max(1, int(os.getenv("PERSONA_IMAGE_GENERATION_TIMEOUT_SECONDS", "45")))
@@ -2764,34 +2858,29 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 },
             )
             self.repository.delete_interview_results(db_session, company_id=company_id, interview_id=interview.id)
+            persona_ids_to_run = [row.id for row in personas]
+            persona_snapshots = {row.id: self._persona_snapshot_payload(row) for row in personas}
+            interview_context = SimpleNamespace(
+                id=interview.id,
+                name=interview.name,
+                goal=interview.goal,
+                product_description=interview.product_description,
+                length=interview.length,
+                question_set=interview.question_set,
+                model=model,
+                pack_model=pack_model,
+            )
+            generated_results = self._run_interviews_for_personas(
+                company_id=company_id,
+                user_id=user_id,
+                interview_context=interview_context,
+                persona_ids=persona_ids_to_run,
+                persona_snapshots=persona_snapshots,
+                pack_model=pack_model,
+            )
             results = []
-            for persona in personas:
-                try:
-                    result_data = self._run_interview_for_persona(
-                        db_session=db_session,
-                        company_id=company_id,
-                        user_id=user_id,
-                        interview=interview,
-                        persona=persona,
-                        pack_model=pack_model,
-                    )
-                    result = self.repository.create_interview_result(db_session, company_id=company_id, interview_id=interview.id, persona_id=persona.id, data=result_data)
-                except Exception as exc:
-                    result = self.repository.create_interview_result(
-                        db_session,
-                        company_id=company_id,
-                        interview_id=interview.id,
-                        persona_id=persona.id,
-                        data={
-                            "status": "failed",
-                            "persona_snapshot": self._persona_snapshot_payload(persona),
-                            "summary": {},
-                            "turns": [],
-                            "pack": None,
-                            "raw_response": None,
-                            "error_message": str(exc),
-                        },
-                    )
+            for persona_id, result_data in generated_results:
+                result = self.repository.create_interview_result(db_session, company_id=company_id, interview_id=interview.id, persona_id=persona_id, data=result_data)
                 results.append(self.interview_result_payload(result))
             has_failures = any(row.get("status") == "failed" or row.get("error") for row in results)
             summary = {

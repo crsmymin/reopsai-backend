@@ -1,6 +1,8 @@
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
+import threading
+import time
 from types import SimpleNamespace
 
 from reopsai.application.persona_service import PersonaService
@@ -191,6 +193,28 @@ class FailingInterviewAdapter(FakeLlmAdapter):
         if "아래 인터뷰 설계" in prompt:
             raise RuntimeError("interview failed")
         return super().generate_response(prompt, generation_config=generation_config, model_name=model_name)
+
+
+class ConcurrentInterviewAdapter(FakeLlmAdapter):
+    def __init__(self):
+        super().__init__()
+        self._lock = threading.Lock()
+        self._active_interviews = 0
+        self.max_active_interviews = 0
+
+    def generate_response(self, prompt, generation_config=None, model_name=None):
+        if "아래 인터뷰 설계" not in prompt:
+            return super().generate_response(prompt, generation_config=generation_config, model_name=model_name)
+
+        with self._lock:
+            self._active_interviews += 1
+            self.max_active_interviews = max(self.max_active_interviews, self._active_interviews)
+        try:
+            time.sleep(0.05)
+            return super().generate_response(prompt, generation_config=generation_config, model_name=model_name)
+        finally:
+            with self._lock:
+                self._active_interviews -= 1
 
 
 class FakeRepository:
@@ -913,6 +937,42 @@ def test_interview_run_generates_turns():
     assert result.data["data"]["results"][0]["turns"][0]["answer"] == "금액과 조건을 먼저 봅니다."
     assert result.data["results"][0]["pack"]["identity"]["name"] == "김민수"
     assert FakeRepository.pack_updates[0]["version"] == "persona_interview_pack_v1"
+
+
+def test_interview_run_processes_personas_concurrently(monkeypatch):
+    FakeRepository.interview = SimpleNamespace(
+        id=3,
+        company_id=100,
+        created_by_user_id=10,
+        name="가입 인터뷰",
+        goal="가입 반응 확인",
+        product_description="가입 서비스",
+        length="quick",
+        question_set={"questions": [{"id": "q1", "text": "무엇을 확인하나요?"}]},
+        model=None,
+        pack_model=None,
+        status="draft",
+        progress=0,
+        persona_ids=[20, 21, 22, 23],
+        summary=None,
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    FakeRepository.personas = [_persona_record(id=persona_id, name=f"김민수{persona_id}") for persona_id in [20, 21, 22, 23]]
+    FakeRepository.pack_updates = []
+    monkeypatch.setenv("PERSONA_INTERVIEW_MAX_CONCURRENCY", "3")
+    adapter = ConcurrentInterviewAdapter()
+
+    result = _service(llm_adapter=adapter).run_interview(company_id=100, user_id=10, interview_id=3, data={})
+
+    assert result.status_code == 200
+    assert result.data["data"]["status"] == "completed"
+    assert len(result.data["results"]) == 4
+    assert adapter.max_active_interviews > 1
+    FakeRepository.personas = None
 
 
 def test_generate_interview_questions_returns_canonical_shape():

@@ -72,7 +72,7 @@ def register_request_guards(app):
     @app.before_request
     def enforce_business_llm_quota():
         try:
-            if request.method == "OPTIONS":
+            if request.method in {"GET", "HEAD", "OPTIONS"}:
                 return None
             verify_jwt_in_request(optional=True)
             claims = get_jwt() or {}

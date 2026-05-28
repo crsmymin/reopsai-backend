@@ -174,6 +174,7 @@ echo "JWT_SECRET_KEY=your-secret-key
 OPENAI_API_KEY=your-openai-key
 GOOGLE_API_KEYS=your-google-key
 GOOGLE_CLIENT_ID=your-google-client-id
+SUPER_ADMIN_EMAILS=owner@example.com
 DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/smart_research
 ENVIRONMENT=development
 FLASK_ENV=development
@@ -202,6 +203,7 @@ curl http://localhost:5001/health
 | `OPENAI_API_KEY` | OpenAI API 키 | sk-... |
 | `GOOGLE_API_KEYS` | Google Gemini API 키 | AIzaSy... |
 | `GOOGLE_CLIENT_ID` | Google OAuth 클라이언트 ID | ...apps.googleusercontent.com |
+| `SUPER_ADMIN_EMAILS` | 최초 배포/복구 시 super로 승격할 Google 계정 이메일 (콤마 구분) | owner@example.com |
 | `DATABASE_URL` | PostgreSQL 연결 문자열 | postgresql+psycopg2://... |
 | `FLASK_ENV` | 환경 (development/production) | development |
 | `ENVIRONMENT` | 배포 환경 | development |
@@ -224,6 +226,17 @@ alembic downgrade -1
 # 마이그레이션 스크립트 생성
 alembic revision --autogenerate -m "description"
 ```
+
+## 최초 최고 관리자 계정 생성
+
+새 데이터베이스에는 super 계정이 없으므로 `/super/login`만으로는 최고 관리자 콘솔에 진입할 수 없습니다.
+운영 환경의 `SUPER_ADMIN_EMAILS`에 Google 로그인 이메일을 지정하면 배포 시작 시 `scripts/bootstrap_super_admin.py`가 해당 계정을 `tier=super`로 생성하거나 승격합니다.
+
+```bash
+SUPER_ADMIN_EMAILS=owner@example.com python scripts/bootstrap_super_admin.py
+```
+
+스크립트는 idempotent하게 동작하므로 반복 실행해도 같은 계정을 `tier=super`, `account_type=individual` 상태로 유지합니다.
 
 ## 릴리스 검증 체크리스트
 
