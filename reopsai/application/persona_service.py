@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 import mimetypes
 import re
+import threading
 import time
 import os
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from reopsai.domain.persona.generation import (
     generate_segment_suggestions_pipeline,
     generate_personas_pipeline,
     infer_persona_source_type,
+    resolve_persona_generation_max_concurrency,
     validate_generation_payload,
     validate_segment_suggestion_payload,
 )
@@ -45,6 +47,7 @@ class PersonaUrlCaptureError(RuntimeError):
 PERSONA_INTERVIEW_PACK_VERSION = "persona_interview_pack_v1"
 DEFAULT_PERSONA_PACK_MODEL = "gemini-2.5-pro"
 DEFAULT_INTERVIEW_MAX_CONCURRENCY = 4
+DEFAULT_INTERVIEW_RETRY_ATTEMPTS = 2
 
 
 def _dt(value):
@@ -68,6 +71,145 @@ def _first_text(*values):
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+TELECOM_BEHAVIOR_SCORE_CONFIG = (
+    {
+        "key": "brandRetention",
+        "label": "브랜드 유지 성향",
+        "positive": (
+            "브랜드", "유지", "장기", "신뢰", "안정", "안도", "검증", "대형", "프리미엄", "품질", "인프라", "결합",
+            "loyal", "retention", "premium", "trusted", "stable",
+        ),
+        "negative": ("알뜰폰", "번호이동", "변경", "이탈", "저가", "가격 우선", "brand switch", "switch"),
+    },
+    {
+        "key": "optimizationResource",
+        "label": "최적화 리소스 투입",
+        "positive": (
+            "직접 비교", "비교", "검토", "분석", "확인", "재검토", "후보", "시간을 쓰", "발품", "관리", "절감",
+            "compare", "review", "optimize", "manage",
+        ),
+        "negative": (
+            "위임", "맡기", "알아서", "귀찮", "번거", "시간이 아깝", "관심이 없다", "결론만", "헤매기보다", "추천에 전적",
+            "delegate", "hands off", "too much effort",
+        ),
+    },
+    {
+        "key": "informationControl",
+        "label": "정보탐색 및 통제 욕구",
+        "positive": (
+            "직접", "탐색", "검색", "검증", "근거", "비교표", "조건", "스스로", "자율", "통제", "확인", "대조",
+            "control", "verify", "evidence", "search",
+        ),
+        "negative": ("위임", "추천", "전문가", "결론만", "알아서", "관심이 없다", "해독하려 들지", "맡기", "delegate"),
+    },
+    {
+        "key": "digitalAiOpenness",
+        "label": "디지털 및 AI 개방성",
+        "positive": (
+            "AI", "인공지능", "디지털", "앱", "자동", "추천", "개인화", "데이터 제공", "데이터까지 허용", "구독", "ChatGPT",
+            "제미나이", "Gemini", "DX", "digital", "personalization",
+        ),
+        "negative": ("거부", "불신", "대면", "오프라인만", "정보 제공을 꺼", "데이터 제공 거부", "꺼림", "distrust"),
+    },
+)
+
+
+def _snake_key(value: str) -> str:
+    return re.sub(r"(?<!^)([A-Z])", r"_\1", value).lower()
+
+
+def _dimension_group(dimensions: dict, key: str) -> dict:
+    value = dimensions.get(key) or dimensions.get(_snake_key(key))
+    return value if isinstance(value, dict) else {}
+
+
+def _collect_text(*values) -> str:
+    parts = []
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+        elif isinstance(value, dict):
+            parts.extend(_collect_text(*value.values()).split("\n"))
+        elif isinstance(value, list):
+            parts.extend(_collect_text(*value).split("\n"))
+    return "\n".join(part for part in parts if part)
+
+
+def _keyword_hits(text: str, keywords: tuple[str, ...]) -> list[str]:
+    lowered = text.lower()
+    hits = []
+    for keyword in keywords:
+        if keyword and keyword.lower() in lowered:
+            hits.append(keyword)
+    return hits
+
+
+def _score_from_keywords(text: str, positive: tuple[str, ...], negative: tuple[str, ...]) -> tuple[int, list[str], list[str]]:
+    positive_hits = _keyword_hits(text, positive)
+    negative_hits = _keyword_hits(text, negative)
+    score = 3
+    if len(positive_hits) >= 4:
+        score += 2
+    elif len(positive_hits) >= 2:
+        score += 1
+    if len(negative_hits) >= 4:
+        score -= 2
+    elif len(negative_hits) >= 2:
+        score -= 1
+    return max(1, min(5, score)), positive_hits[:3], negative_hits[:3]
+
+
+def _build_telecom_behavior_scores(persona) -> list[dict]:
+    stored_scores = _clean_mapping(getattr(persona, "telecom_behavior_scores", None))
+    if isinstance(stored_scores, list):
+        return stored_scores
+    dimensions = _clean_mapping(getattr(persona, "telecom_behavior_dimensions", None)) or {}
+    profile = _clean_mapping(getattr(persona, "profile", None)) or {}
+    telecom_profile = _clean_mapping(getattr(persona, "telecom_profile", None)) or {}
+    telecom_life = _dimension_group(dimensions, "telecomLifeCharacteristics")
+    shared_context = _collect_text(
+        profile.get("preferences"),
+        profile.get("behaviours"),
+        profile.get("behavior_pattern"),
+        getattr(persona, "preferences", None),
+        getattr(persona, "behaviours", None),
+        getattr(persona, "personality", None),
+        getattr(persona, "motivation", None),
+        getattr(persona, "cultural_background", None),
+    )
+    if not dimensions and not shared_context:
+        return []
+    context_by_key = {
+        "brandRetention": _collect_text(_dimension_group(dimensions, "brandRetention"), telecom_life, shared_context),
+        "optimizationResource": _collect_text(_dimension_group(dimensions, "optimizationResource"), telecom_life, shared_context),
+        "informationControl": _collect_text(_dimension_group(dimensions, "informationControl"), telecom_life, shared_context),
+        "digitalAiOpenness": _collect_text(
+            _dimension_group(dimensions, "digitalAiOpenness"),
+            getattr(persona, "ux_interaction", None),
+            getattr(persona, "telecom_usage", None),
+            telecom_profile,
+            shared_context,
+        ),
+    }
+    scores = []
+    for config in TELECOM_BEHAVIOR_SCORE_CONFIG:
+        text = context_by_key.get(config["key"], "")
+        score, positive_hits, negative_hits = _score_from_keywords(text, config["positive"], config["negative"])
+        scores.append(
+            {
+                "key": config["key"],
+                "label": config["label"],
+                "score": score,
+                "maxScore": 5,
+                "basis": {
+                    "positiveSignals": positive_hits,
+                    "negativeSignals": negative_hits,
+                },
+            }
+        )
+    return scores
 
 
 def _compact_json(value, *, max_chars: int = 4000):
@@ -101,6 +243,21 @@ def _resolve_interview_max_concurrency(persona_count: int) -> int:
     if max_workers <= 0:
         max_workers = DEFAULT_INTERVIEW_MAX_CONCURRENCY
     return max(1, min(max(1, int(persona_count or 0)), max_workers))
+
+
+def _resolve_interview_retry_attempts() -> int:
+    configured = os.getenv("PERSONA_INTERVIEW_RETRY_ATTEMPTS") or os.getenv("INTERVIEW_RETRY_ATTEMPTS") or ""
+    try:
+        retries = int(configured)
+    except Exception:
+        retries = DEFAULT_INTERVIEW_RETRY_ATTEMPTS
+    return max(0, retries)
+
+
+def _log_persona_interview_event(message: str, **values):
+    details = " ".join(f"{key}={value}" for key, value in values.items() if value is not None)
+    suffix = f" | {details}" if details else ""
+    print(f"[persona-interview] {message}{suffix}", flush=True)
 
 
 def _normalize_marker_percent(value, fallback: int = 50):
@@ -158,6 +315,7 @@ def _camelize_result_aliases(payload: dict) -> dict:
         "persona_snapshot": "personaSnapshot",
         "evidence_ids": "evidenceIds",
         "screen_insights": "screenInsights",
+        "raw_response": "rawResponse",
         "error_message": "errorMessage",
         "created_at": "createdAt",
         "updated_at": "updatedAt",
@@ -294,7 +452,12 @@ class PersonaService:
         usage_context = build_llm_usage_context(company_id=company_id, user_id=user_id, feature_key=feature_key)
 
         def generate():
+            log_interview_stage = feature_key in {"persona_interview", "persona_interview_pack"}
+            if log_interview_stage:
+                _log_persona_interview_event("llm_start", feature=feature_key, thread=threading.current_thread().name)
             text, usage = self._generate_text(prompt, media_parts=media_parts)
+            if log_interview_stage:
+                _log_persona_interview_event("llm_end", feature=feature_key, thread=threading.current_thread().name)
             try:
                 return json.loads(text), usage
             except Exception:
@@ -1574,18 +1737,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 '[응답 JSON] {"summary":{"headline":"","key_needs":[],"pain_points":[],"opportunities":[]},"turns":[{"question":"","answer":""}]}',
             ]
         )
-        try:
-            parsed, usage = self._generate_json(prompt, feature_key="persona_interview", company_id=company_id, user_id=user_id)
-        except ValueError:
-            parsed, usage = {
-                "summary": {
-                    "headline": f"{persona.name}님은 목표와 신뢰 근거를 중심으로 답변했습니다.",
-                    "key_needs": ["근거가 명확한 정보"],
-                    "pain_points": ["판단 기준이 부족하면 망설임"],
-                    "opportunities": ["조건과 다음 행동을 더 구체적으로 제시"],
-                },
-                "turns": [{"question": question, "answer": "제 상황에서는 근거와 다음 행동이 명확해야 신뢰할 수 있습니다."} for question in questions],
-            }, {"model": "fallback"}
+        parsed, usage = self._generate_json(prompt, feature_key="persona_interview", company_id=company_id, user_id=user_id)
         turns = []
         if isinstance(parsed, dict):
             for item in _as_list(parsed.get("turns")):
@@ -1595,6 +1747,8 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 answer = _first_text(item.get("answer"))
                 if question and answer:
                     turns.append({"question": question, "answer": answer})
+        if len(turns) < len(questions):
+            raise ValueError(f"Interview response returned {len(turns)}/{len(questions)} valid turns")
         return {
             "status": "completed",
             "persona_snapshot": self._persona_snapshot_payload(persona),
@@ -1604,15 +1758,19 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             "raw_response": {"parsed": parsed, "usage": usage},
         }
 
-    def _failed_interview_result_data(self, *, persona_snapshot: dict | None, error: Exception):
+    def _failed_interview_result_data(self, *, persona_snapshot: dict | None, error: Exception, attempt_errors: list[str] | None = None):
+        retry_attempts = max(0, len(attempt_errors or []) - 1)
+        error_message = str(error)
+        if retry_attempts:
+            error_message = f"인터뷰 생성에 {retry_attempts}회 재시도했지만 실패했습니다: {error_message}"
         return {
             "status": "failed",
             "persona_snapshot": persona_snapshot or {},
             "summary": {},
             "turns": [],
             "pack": None,
-            "raw_response": None,
-            "error_message": str(error),
+            "raw_response": {"attemptErrors": attempt_errors} if attempt_errors else None,
+            "error_message": error_message,
         }
 
     def _run_interview_for_persona_id(
@@ -1624,19 +1782,62 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         persona_id: int,
         pack_model: str | None = None,
     ):
+        _log_persona_interview_event("worker_start", persona_id=persona_id, thread=threading.current_thread().name)
         with self.session_factory() as db_session:
             personas = self._resolve_run_personas(db_session, company_id=company_id, explicit_ids=[persona_id])
             persona = personas[0] if personas else None
             if not persona:
                 raise ValueError(f"Persona not found for interview: {persona_id}")
-            return self._run_interview_for_persona(
-                db_session=db_session,
-                company_id=company_id,
-                user_id=user_id,
-                interview=interview_context,
-                persona=persona,
-                pack_model=pack_model,
-            )
+            retry_attempts = _resolve_interview_retry_attempts()
+            total_attempts = retry_attempts + 1
+            attempt_errors = []
+            try:
+                for attempt in range(1, total_attempts + 1):
+                    _log_persona_interview_event(
+                        "attempt_start",
+                        persona_id=persona_id,
+                        attempt=attempt,
+                        max_attempts=total_attempts,
+                        thread=threading.current_thread().name,
+                    )
+                    try:
+                        result = self._run_interview_for_persona(
+                            db_session=db_session,
+                            company_id=company_id,
+                            user_id=user_id,
+                            interview=interview_context,
+                            persona=persona,
+                            pack_model=pack_model,
+                        )
+                        if attempt > 1:
+                            raw_response = result.get("raw_response") if isinstance(result.get("raw_response"), dict) else {}
+                            result["raw_response"] = {**raw_response, "retryAttempts": attempt - 1, "previousErrors": attempt_errors}
+                        _log_persona_interview_event(
+                            "attempt_success",
+                            persona_id=persona_id,
+                            attempt=attempt,
+                            thread=threading.current_thread().name,
+                        )
+                        return result
+                    except Exception as exc:
+                        attempt_errors.append(str(exc))
+                        _log_persona_interview_event(
+                            "attempt_failed",
+                            persona_id=persona_id,
+                            attempt=attempt,
+                            max_attempts=total_attempts,
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                            thread=threading.current_thread().name,
+                        )
+                        if attempt >= total_attempts:
+                            return self._failed_interview_result_data(
+                                persona_snapshot=self._persona_snapshot_payload(persona),
+                                error=exc,
+                                attempt_errors=attempt_errors,
+                            )
+            finally:
+                _log_persona_interview_event("worker_end", persona_id=persona_id, thread=threading.current_thread().name)
 
     def _run_interviews_for_personas(
         self,
@@ -1651,6 +1852,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         if not persona_ids:
             return []
         max_workers = _resolve_interview_max_concurrency(len(persona_ids))
+        _log_persona_interview_event("batch_start", personas=len(persona_ids), max_workers=max_workers, interview_id=getattr(interview_context, "id", None))
         results: list[tuple[int, dict] | None] = [None] * len(persona_ids)
 
         def run_one(persona_id: int):
@@ -1669,7 +1871,9 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 except Exception as exc:
                     result_data = self._failed_interview_result_data(persona_snapshot=persona_snapshots.get(persona_id), error=exc)
                 results[index] = (persona_id, result_data)
-            return [row for row in results if row is not None]
+            completed = [row for row in results if row is not None]
+            _log_persona_interview_event("batch_end", results=len(completed), interview_id=getattr(interview_context, "id", None))
+            return completed
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="persona-interview") as executor:
             future_to_index = {executor.submit(run_one, persona_id): index for index, persona_id in enumerate(persona_ids)}
@@ -1682,7 +1886,9 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                     result_data = self._failed_interview_result_data(persona_snapshot=persona_snapshots.get(persona_id), error=exc)
                 results[index] = (persona_id, result_data)
 
-        return [row for row in results if row is not None]
+        completed = [row for row in results if row is not None]
+        _log_persona_interview_event("batch_end", results=len(completed), interview_id=getattr(interview_context, "id", None))
+        return completed
 
     def _preview_image_timeout(self) -> int:
         try:
@@ -1695,6 +1901,33 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             return self.image_generator(persona, timeout=self._preview_image_timeout())
         except TypeError:
             return self.image_generator(persona)
+
+    def _prepare_generated_personas(self, generated_personas: list[dict], *, include_images: bool):
+        def prepare(persona: dict):
+            clean = dict(persona)
+            clean.pop("_sourceSeed", None)
+            if not include_images:
+                clean["imageUrl"] = None
+                return clean
+            try:
+                clean["imageUrl"] = self._generate_preview_image(clean)
+            except Exception:
+                clean["imageUrl"] = None
+            return clean
+
+        if not include_images:
+            return [prepare(persona) for persona in generated_personas]
+
+        max_workers = resolve_persona_generation_max_concurrency(len(generated_personas))
+        if max_workers == 1:
+            return [prepare(persona) for persona in generated_personas]
+
+        results = [None] * len(generated_personas)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="persona-image") as executor:
+            future_to_index = {executor.submit(prepare, persona): index for index, persona in enumerate(generated_personas)}
+            for future in concurrent.futures.as_completed(future_to_index):
+                results[future_to_index[future]] = future.result()
+        return [result for result in results if result is not None]
 
     def _merge_persona_summaries(self, *summary_groups):
         merged = []
@@ -1795,6 +2028,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             "telecomValues": _clean_mapping(persona.telecom_values),
             "uxInteraction": _clean_mapping(persona.ux_interaction),
             "telecomBehaviorDimensions": _clean_mapping(persona.telecom_behavior_dimensions),
+            "telecomBehaviorScores": _build_telecom_behavior_scores(persona),
             "generation_metadata": _clean_mapping(persona.generation_metadata),
             "created_at": _dt(persona.created_at),
             "createdAt": _dt(persona.created_at),
@@ -1897,6 +2131,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             "telecom_values": persona.get("telecomValues"),
             "ux_interaction": persona.get("uxInteraction"),
             "telecom_behavior_dimensions": persona.get("telecomBehaviorDimensions"),
+            "telecom_behavior_scores": persona.get("telecomBehaviorScores") or persona.get("telecom_behavior_scores"),
             "profile": None,
             "telecom_profile": None,
             "generation_metadata": persona.get("generationMetadata") or persona.get("generation_metadata"),
@@ -2236,11 +2471,14 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             existing_personas = self._merge_persona_summaries(db_existing_personas, payload_existing_personas)
         usage_context = build_llm_usage_context(company_id=company_id, user_id=user_id, feature_key="persona_generation")
 
+        def persona_text_generator(prompt: str):
+            return run_with_llm_usage_context(usage_context, self._generate_text, prompt)
+
         def generate():
             return generate_personas_pipeline(
                 validated,
                 existing_personas=existing_personas,
-                text_generator=self._generate_text,
+                text_generator=persona_text_generator,
             )
 
         try:
@@ -2253,18 +2491,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             return self._error("seed_invalid", str(exc), 500)
         except RuntimeError as exc:
             return self._error("generation_failed", str(exc), 502)
-        personas = []
-        for persona in generated["personas"]:
-            clean = dict(persona)
-            clean.pop("_sourceSeed", None)
-            if not validated.get("includeImages", True):
-                clean["imageUrl"] = None
-            else:
-                try:
-                    clean["imageUrl"] = self._generate_preview_image(clean)
-                except Exception:
-                    clean["imageUrl"] = None
-            personas.append(clean)
+        personas = self._prepare_generated_personas(generated["personas"], include_images=validated.get("includeImages", True))
         duration_ms = int((time.monotonic() - started_at) * 1000)
         generation_metadata = dict(generated["generation_metadata"])
         timings = dict(generation_metadata.get("timingsMs") or {})

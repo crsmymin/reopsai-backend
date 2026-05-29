@@ -27,6 +27,7 @@ def test_persona_models_register_in_metadata():
     assert "biography" in Base.metadata.tables["personas"].columns
     assert "current_city" in Base.metadata.tables["personas"].columns
     assert "telecom_behavior_dimensions" in Base.metadata.tables["personas"].columns
+    assert "telecom_behavior_scores" in Base.metadata.tables["personas"].columns
     assert "image_data" in Base.metadata.tables["personas"].columns
     assert "updated_by_user_id" in Base.metadata.tables["persona_assets"].columns
     assert "interview_pack" in Base.metadata.tables["personas"].columns

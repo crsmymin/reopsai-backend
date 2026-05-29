@@ -195,6 +195,27 @@ class FailingInterviewAdapter(FakeLlmAdapter):
         return super().generate_response(prompt, generation_config=generation_config, model_name=model_name)
 
 
+class MalformedInterviewAdapter(FakeLlmAdapter):
+    def generate_response(self, prompt, generation_config=None, model_name=None):
+        if "아래 인터뷰 설계" in prompt:
+            return {"success": True, "content": "not json", "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+        return super().generate_response(prompt, generation_config=generation_config, model_name=model_name)
+
+
+class TransientInterviewAdapter(FakeLlmAdapter):
+    def __init__(self, *, failures_before_success=2):
+        super().__init__()
+        self.failures_before_success = failures_before_success
+        self.interview_calls = 0
+
+    def generate_response(self, prompt, generation_config=None, model_name=None):
+        if "아래 인터뷰 설계" in prompt:
+            self.interview_calls += 1
+            if self.interview_calls <= self.failures_before_success:
+                raise RuntimeError(f"transient interview failure {self.interview_calls}")
+        return super().generate_response(prompt, generation_config=generation_config, model_name=model_name)
+
+
 class ConcurrentInterviewAdapter(FakeLlmAdapter):
     def __init__(self):
         super().__init__()
@@ -1042,8 +1063,76 @@ def test_interview_run_records_failed_persona_without_failing_request():
     assert result.status_code == 200
     assert result.data["data"]["status"] == "completed_with_errors"
     assert result.data["data"]["results"][0]["status"] == "failed"
-    assert result.data["data"]["results"][0]["error"] == "interview failed"
-    assert result.data["data"]["results"][0]["errorMessage"] == "interview failed"
+    assert "interview failed" in result.data["data"]["results"][0]["error"]
+    assert "2회 재시도했지만 실패했습니다" in result.data["data"]["results"][0]["errorMessage"]
+
+
+def test_interview_run_retries_failed_persona_before_recording_result(monkeypatch):
+    FakeRepository.interview = SimpleNamespace(
+        id=3,
+        company_id=100,
+        created_by_user_id=10,
+        name="가입 인터뷰",
+        goal="가입 반응 확인",
+        product_description="가입 서비스",
+        length="quick",
+        question_set={"opening": ["평소 기준은 무엇인가요?"], "tasks": [], "closing": [], "followup_strategies": []},
+        model=None,
+        pack_model=None,
+        status="draft",
+        progress=0,
+        persona_ids=[20],
+        summary=None,
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    monkeypatch.setenv("PERSONA_INTERVIEW_RETRY_ATTEMPTS", "2")
+    adapter = TransientInterviewAdapter(failures_before_success=2)
+
+    result = _service(llm_adapter=adapter).run_interview(company_id=100, user_id=10, interview_id=3, data={})
+
+    assert result.status_code == 200
+    assert result.data["data"]["status"] == "completed"
+    assert result.data["data"]["results"][0]["status"] == "completed"
+    assert result.data["data"]["results"][0]["turns"][0]["answer"] == "금액과 조건을 먼저 봅니다."
+    assert result.data["data"]["results"][0]["rawResponse"]["retryAttempts"] == 2
+    assert adapter.interview_calls == 3
+
+
+def test_interview_run_does_not_replace_malformed_response_with_generic_answers():
+    FakeRepository.interview = SimpleNamespace(
+        id=3,
+        company_id=100,
+        created_by_user_id=10,
+        name="가입 인터뷰",
+        goal="가입 반응 확인",
+        product_description="가입 서비스",
+        length="quick",
+        question_set={"opening": ["평소 기준은 무엇인가요?"], "tasks": [], "closing": [], "followup_strategies": []},
+        model=None,
+        pack_model=None,
+        status="draft",
+        progress=0,
+        persona_ids=[20],
+        summary=None,
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+
+    result = _service(llm_adapter=MalformedInterviewAdapter()).run_interview(company_id=100, user_id=10, interview_id=3, data={})
+
+    assert result.status_code == 200
+    assert result.data["data"]["status"] == "completed_with_errors"
+    assert result.data["data"]["results"][0]["status"] == "failed"
+    assert result.data["data"]["results"][0]["turns"] == []
+    assert "2회 재시도했지만 실패했습니다" in result.data["data"]["results"][0]["errorMessage"]
+    assert "제 상황에서는 근거와 다음 행동" not in json.dumps(result.data, ensure_ascii=False)
 
 
 def test_detail_payloads_embed_results_and_original_camel_case_aliases():

@@ -95,6 +95,7 @@ class Persona(Base):
     telecom_values: Mapped[JsonValue] = mapped_column(JSONB, nullable=True)
     ux_interaction: Mapped[JsonValue] = mapped_column(JSONB, nullable=True)
     telecom_behavior_dimensions: Mapped[JsonValue] = mapped_column(JSONB, nullable=True)
+    telecom_behavior_scores: Mapped[JsonValue] = mapped_column(JSONB, nullable=True)
     profile: Mapped[JsonValue] = mapped_column(JSONB, nullable=True)
     telecom_profile: Mapped[JsonValue] = mapped_column(JSONB, nullable=True)
     generation_metadata: Mapped[JsonValue] = mapped_column(JSONB, nullable=True)

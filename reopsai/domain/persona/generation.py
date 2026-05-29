@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import random
@@ -11,6 +12,7 @@ from typing import Callable, Iterable
 
 DEFAULT_SEED_PATH = Path(__file__).resolve().parents[3] / "data" / "nemotron-personas-korea-sample.jsonl"
 DEFAULT_TEXT_MODEL = os.getenv("PERSONA_GEMINI_TEXT_MODEL") or "gemini-2.5-pro"
+DEFAULT_PERSONA_GENERATION_MAX_CONCURRENCY = 3
 
 TELECOM_CONTEXT_PATTERN = re.compile(
     r"통신|요금제|번호이동|멤버십|결합|부가서비스|대리점|carrier|telecom|wireless|mobile plan|phone plan|subscription",
@@ -29,6 +31,38 @@ TOKEN_STOPWORDS = {
     "퍼소나",
     "대한민국",
 }
+
+
+def resolve_persona_generation_max_concurrency(persona_count: int) -> int:
+    configured = os.getenv("PERSONA_GENERATION_MAX_CONCURRENCY") or os.getenv("PERSONA_EMBODIMENT_CONCURRENCY") or ""
+    try:
+        max_workers = int(configured)
+    except Exception:
+        max_workers = DEFAULT_PERSONA_GENERATION_MAX_CONCURRENCY
+    if max_workers <= 0:
+        max_workers = DEFAULT_PERSONA_GENERATION_MAX_CONCURRENCY
+    return max(1, min(max(1, int(persona_count or 0)), max_workers))
+
+
+def _map_with_concurrency(items: list, concurrency: int, mapper: Callable[[object], object]) -> list:
+    if not items:
+        return []
+    max_workers = max(1, min(len(items), int(concurrency or 1)))
+    if max_workers == 1:
+        return [mapper(item) for item in items]
+
+    results = [None] * len(items)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="persona-generation") as executor:
+        future_to_index = {executor.submit(mapper, item): index for index, item in enumerate(items)}
+        for future in concurrent.futures.as_completed(future_to_index):
+            results[future_to_index[future]] = future.result()
+    return results
+
+
+def _log_persona_generation_event(message: str, **values):
+    details = " ".join(f"{key}={value}" for key, value in values.items() if value is not None)
+    suffix = f" | {details}" if details else ""
+    print(f"[persona-generation] {message}{suffix}", flush=True)
 TELECOM_DIMENSION_GROUPS = {
     "brandRetention": ("brandRetentionTendency", "premiumInfraBenefitOrientation"),
     "optimizationResource": ("optimizationResourceInvestment", "paymentResistanceLine"),
@@ -39,6 +73,12 @@ TELECOM_DIMENSION_GROUPS = {
         "productServiceUnderstanding",
         "telecomServiceUsageContext",
     ),
+}
+TELECOM_SCORE_GROUPS = {
+    "brandRetention": "브랜드 유지 성향",
+    "optimizationResource": "최적화 리소스 투입",
+    "informationControl": "정보탐색 및 통제 욕구",
+    "digitalAiOpenness": "디지털 및 AI 개방성",
 }
 TELECOM_INTERVIEW_REFERENCES = [
     {
@@ -1109,15 +1149,18 @@ STAGE: telecom_dimensions
 You are an expert telecom UX researcher.
 
 ## Task
-Generate only telecom behavior dimensions for a fixed persona.
+Generate telecom behavior dimensions and numeric behavior scores for a fixed persona.
 
 ## Critical Rules
 1. Do not rewrite the persona identity or narrative.
 2. Infer telecom behavior from the persona's life context, household situation, job habits, and service context.
 3. Make each field concrete and behavior-based.
-4. Avoid generic labels. Write 1-3 natural-language sentences per field.
-5. Generate all text in {target_language}.
-6. Respond with JSON only.
+4. Avoid generic labels. Write 1-3 natural-language sentences per dimension field.
+5. Score each of the four score groups from 1 to 5 based on the generated dimensions and fixed persona evidence.
+6. Score semantics: 1 = very low, 2 = low, 3 = moderate, 4 = high, 5 = very high.
+7. Each score must include a concise rationale and 1-3 evidence snippets grounded in the fixed persona or generated dimensions.
+8. Generate all text in {target_language}.
+9. Respond with JSON only.
 
 ## Output Format
 {{
@@ -1143,7 +1186,41 @@ Generate only telecom behavior dimensions for a fixed persona.
       "productServiceUnderstanding": "How well they understand telecom products and service conditions",
       "telecomServiceUsageContext": "Lived context of how they use, manage, and adjust telecom services"
     }}
-  }}
+  }},
+  "telecom_behavior_scores": [
+    {{
+      "key": "brandRetention",
+      "label": "브랜드 유지 성향",
+      "score": 4,
+      "maxScore": 5,
+      "rationale": "Why this persona scores this way",
+      "evidence": ["Specific supporting signal from persona or dimensions"]
+    }},
+    {{
+      "key": "optimizationResource",
+      "label": "최적화 리소스 투입",
+      "score": 2,
+      "maxScore": 5,
+      "rationale": "Why this persona scores this way",
+      "evidence": ["Specific supporting signal from persona or dimensions"]
+    }},
+    {{
+      "key": "informationControl",
+      "label": "정보탐색 및 통제 욕구",
+      "score": 3,
+      "maxScore": 5,
+      "rationale": "Why this persona scores this way",
+      "evidence": ["Specific supporting signal from persona or dimensions"]
+    }},
+    {{
+      "key": "digitalAiOpenness",
+      "label": "디지털 및 AI 개방성",
+      "score": 5,
+      "maxScore": 5,
+      "rationale": "Why this persona scores this way",
+      "evidence": ["Specific supporting signal from persona or dimensions"]
+    }}
+  ]
 }}
 
 ## Fixed Persona
@@ -1176,7 +1253,7 @@ Generate only telecom behavior dimensions for a fixed persona.
 ## Dataset Seed Context
 {json.dumps(seed, ensure_ascii=False, indent=2)}
 
-Generate the 11 telecom behavior variables only. Keep the fixed persona unchanged.
+Generate the 11 telecom behavior variables and the 4 telecom behavior scores. Keep the fixed persona unchanged.
 The telecomServiceUsageContext field should be experience-based and written in 4-5 sentences.
 """.strip()
 
@@ -1202,16 +1279,72 @@ def _validate_telecom_dimensions(value: dict):
         raise PersonaGenerationQualityError(f"telecom dimensions missing: {', '.join(missing)}")
 
 
+def _normalize_telecom_scores(value) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    by_key = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key")
+        if key not in TELECOM_SCORE_GROUPS:
+            continue
+        try:
+            score = int(item.get("score"))
+        except Exception:
+            continue
+        evidence = item.get("evidence")
+        if not isinstance(evidence, list):
+            evidence = item.get("evidenceSnippets") or item.get("evidence_snippets") or []
+        by_key[key] = {
+            "key": key,
+            "label": item.get("label") or TELECOM_SCORE_GROUPS[key],
+            "score": max(1, min(5, score)),
+            "maxScore": 5,
+            "rationale": str(item.get("rationale") or item.get("basis") or "").strip(),
+            "evidence": [str(entry).strip() for entry in evidence if str(entry).strip()][:3],
+        }
+    return [by_key[key] for key in TELECOM_SCORE_GROUPS if key in by_key]
+
+
+def _validate_telecom_scores(value: list[dict]):
+    by_key = {item.get("key"): item for item in value if isinstance(item, dict)}
+    missing = []
+    invalid = []
+    for key in TELECOM_SCORE_GROUPS:
+        item = by_key.get(key)
+        if not item:
+            missing.append(key)
+            continue
+        if not isinstance(item.get("score"), int) or not 1 <= item["score"] <= 5:
+            invalid.append(f"{key}.score")
+        if not _has_text(item.get("rationale"), min_length=8):
+            invalid.append(f"{key}.rationale")
+        if not item.get("evidence"):
+            invalid.append(f"{key}.evidence")
+    if missing or invalid:
+        details = []
+        if missing:
+            details.append(f"missing: {', '.join(missing)}")
+        if invalid:
+            details.append(f"invalid: {', '.join(invalid)}")
+        raise PersonaGenerationQualityError(f"telecom scores invalid: {'; '.join(details)}")
+
+
 def stage_nemotron_telecom_dimensions(persona: dict, payload: dict, segment: dict, seed: dict, text_generator: Callable[[str], tuple[str, dict]]) -> tuple[dict, dict]:
     def validate(parsed: dict):
         dimensions = _normalize_telecom_dimensions(parsed.get("telecomBehaviorDimensions") or parsed.get("telecom_behavior_dimensions"))
+        scores = _normalize_telecom_scores(parsed.get("telecomBehaviorScores") or parsed.get("telecom_behavior_scores"))
         _validate_telecom_dimensions(dimensions)
+        _validate_telecom_scores(scores)
 
     parsed, usage = _execute_json_stage(text_generator, _telecom_prompt(persona, payload, segment, seed), stage_name="telecom_dimensions", validator=validate)
     dimensions = _normalize_telecom_dimensions(parsed.get("telecomBehaviorDimensions") or parsed.get("telecom_behavior_dimensions"))
+    scores = _normalize_telecom_scores(parsed.get("telecomBehaviorScores") or parsed.get("telecom_behavior_scores"))
     return {
         **persona,
         "telecomBehaviorDimensions": dimensions,
+        "telecomBehaviorScores": scores,
     }, usage
 
 
@@ -1313,28 +1446,57 @@ def generate_personas_pipeline(
     )
     timings_ms["seedSelection"] = int((time.monotonic() - started) * 1000)
 
-    personas = []
-    seed_references = []
-    interview_references = []
     selected_names = []
     service_context = _service_context(payload)
-
-    started = time.monotonic()
+    seeded_drafts = []
     for selected in selected_seeds:
         persona = map_nemotron_seed_to_persona(selected, existing, selected_names)
         selected_names.append(persona["name"])
-        persona, usage = stage_nemotron_seed_narrative_polish(persona, payload, selected["segment"], selected["seed"], text_generator)
-        _add_usage(total_usage, usage)
-        persona, usage = stage_nemotron_telecom_dimensions(persona, payload, selected["segment"], selected["seed"], text_generator)
-        _add_usage(total_usage, usage)
-        if _is_likely_telecom_context(service_context, selected["segment"].get("name"), selected["segment"].get("description")):
-            persona, metadata, usage = regenerate_telecom_service_usage_context_from_interview_reference(persona, payload, text_generator)
-            _add_usage(total_usage, usage)
-            if metadata:
-                interview_references.append(metadata)
-        personas.append(persona)
-        seed_references.append(_seed_metadata(selected, persona["name"]))
+        seeded_drafts.append({"selected": selected, "persona": persona})
+
+    started = time.monotonic()
+    max_workers = resolve_persona_generation_max_concurrency(len(seeded_drafts))
+    _log_persona_generation_event("batch_start", personas=len(seeded_drafts), max_workers=max_workers)
+
+    def generate_one(item: dict):
+        selected = item["selected"]
+        persona = item["persona"]
+        _log_persona_generation_event("worker_start", persona=persona.get("name"))
+        try:
+            persona, usage = stage_nemotron_seed_narrative_polish(persona, payload, selected["segment"], selected["seed"], text_generator)
+            narrative_usage = usage
+            persona, usage = stage_nemotron_telecom_dimensions(persona, payload, selected["segment"], selected["seed"], text_generator)
+            telecom_usage = usage
+            metadata = None
+            interview_usage = None
+            if _is_likely_telecom_context(service_context, selected["segment"].get("name"), selected["segment"].get("description")):
+                persona, metadata, usage = regenerate_telecom_service_usage_context_from_interview_reference(persona, payload, text_generator)
+                interview_usage = usage
+            return {
+                "persona": persona,
+                "narrative_usage": narrative_usage,
+                "telecom_usage": telecom_usage,
+                "interview_usage": interview_usage,
+                "interview_reference": metadata,
+                "seed_reference": _seed_metadata(selected, persona["name"]),
+            }
+        finally:
+            _log_persona_generation_event("worker_end", persona=persona.get("name"))
+
+    persona_results = _map_with_concurrency(seeded_drafts, max_workers, generate_one)
+    personas = []
+    seed_references = []
+    interview_references = []
+    for result in persona_results:
+        _add_usage(total_usage, result.get("narrative_usage"))
+        _add_usage(total_usage, result.get("telecom_usage"))
+        _add_usage(total_usage, result.get("interview_usage"))
+        if result.get("interview_reference"):
+            interview_references.append(result["interview_reference"])
+        personas.append(result["persona"])
+        seed_references.append(result["seed_reference"])
     timings_ms["narrativeTelecomAndPostprocess"] = int((time.monotonic() - started) * 1000)
+    _log_persona_generation_event("batch_end", personas=len(personas), max_workers=max_workers)
     timings_ms["total"] = int((time.monotonic() - started_total) * 1000)
 
     return {

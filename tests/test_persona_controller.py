@@ -2,6 +2,8 @@ from flask import Flask
 from flask_jwt_extended import JWTManager, create_access_token
 
 import json
+import threading
+import time
 from contextlib import contextmanager
 from urllib.parse import parse_qs, urlparse
 
@@ -442,6 +444,40 @@ def _telecom_response():
                 "telecomServiceUsageContext": "앱에서 청구액과 사용량을 정기적으로 확인합니다.",
             },
         },
+        "telecom_behavior_scores": [
+            {
+                "key": "brandRetention",
+                "label": "브랜드 유지 성향",
+                "score": 2,
+                "maxScore": 5,
+                "rationale": "통신사를 유지하기보다 혜택 조건을 먼저 확인합니다.",
+                "evidence": ["낮은 편입니다.", "혜택이 명확하면 고려합니다."],
+            },
+            {
+                "key": "optimizationResource",
+                "label": "최적화 리소스 투입",
+                "score": 4,
+                "maxScore": 5,
+                "rationale": "요금제 비교와 재검토에 시간을 쓰는 편입니다.",
+                "evidence": ["비교에 시간을 쓰는 편입니다.", "월 납부액이 오르면 즉시 재검토합니다."],
+            },
+            {
+                "key": "informationControl",
+                "label": "정보탐색 및 통제 욕구",
+                "score": 4,
+                "maxScore": 5,
+                "rationale": "비교표를 보고 스스로 후보를 좁힙니다.",
+                "evidence": ["비교표를 확인합니다.", "스스로 후보를 좁힙니다."],
+            },
+            {
+                "key": "digitalAiOpenness",
+                "label": "디지털 및 AI 개방성",
+                "score": 4,
+                "maxScore": 5,
+                "rationale": "근거 기반 AI 추천과 사용량 데이터 제공을 수용합니다.",
+                "evidence": ["근거가 있으면 신뢰합니다.", "사용량 데이터까지 허용합니다."],
+            },
+        ],
     }
 
 
@@ -461,6 +497,69 @@ class FakeLlmAdapter:
             content = _segmentation_response()
         elif "STAGE: narrative_polish" in prompt:
             content = _narrative_response()
+        elif "STAGE: telecom_dimensions" in prompt:
+            content = _telecom_response()
+        elif "STAGE: interview_reference" in prompt:
+            content = _interview_response()
+        else:
+            content = {}
+        return {
+            "success": True,
+            "content": json.dumps(content, ensure_ascii=False),
+            "usage": _stage_usage(),
+        }
+
+
+class ConcurrentPersonaGenerationAdapter(FakeLlmAdapter):
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active_narratives = 0
+        self.max_active_narratives = 0
+
+    def generate_response(self, prompt, generation_config=None, model_name=None):
+        if "STAGE: segmentation_identity" in prompt:
+            content = _segmentation_response(
+                segments=[
+                    {
+                        "id": "service_based",
+                        "name": "Service based",
+                        "description": "통신 요금제 추천 서비스",
+                        "target_count": 3,
+                        "characteristics": {
+                            "key_traits": ["요금 비교"],
+                            "age_range_hint": "20대",
+                            "occupation_hint": ["직장인"],
+                        },
+                    }
+                ],
+                profiles=[
+                    {
+                        "segment_id": "service_based",
+                        "name": f"Persona {index}",
+                        "title": "직장인",
+                        "age": 29 + index,
+                        "gender": "여자",
+                        "generation": "millennial",
+                        "current_city": "서울",
+                        "current_country": "KR",
+                        "sector": "IT",
+                        "role_area": "서비스 기획",
+                    }
+                    for index in range(3)
+                ],
+            )
+        elif "STAGE: narrative_polish" in prompt:
+            with self._lock:
+                self._active_narratives += 1
+                self.max_active_narratives = max(self.max_active_narratives, self._active_narratives)
+            try:
+                time.sleep(0.05)
+                persona = _narrative_response()["persona"]
+                persona.pop("name", None)
+                content = {"persona": persona}
+            finally:
+                with self._lock:
+                    self._active_narratives -= 1
         elif "STAGE: telecom_dimensions" in prompt:
             content = _telecom_response()
         elif "STAGE: interview_reference" in prompt:
@@ -502,11 +601,37 @@ def test_persona_generation_service_matches_legacy_preview_contract():
     assert len(body["personas"]) == 1
     assert body["personas"][0]["schemaVersion"] == 3
     assert body["personas"][0]["imageUrl"].startswith("data:image/png;base64,")
+    assert body["personas"][0]["telecomBehaviorScores"][0]["key"] == "brandRetention"
+    assert body["personas"][0]["telecomBehaviorScores"][0]["rationale"]
     assert body["personas"][0]["telecomBehaviorDimensions"]["telecomLifeCharacteristics"]["telecomServiceUsageContext"].startswith("매달 앱")
     assert "segments" in body
     assert "generationMetadata" in body
     assert body["tokenUsage"] == {"inputTokens": 40, "outputTokens": 80, "totalTokens": 120, "model": "gemini-2.5-pro"}
     assert "data" not in body
+
+
+def test_persona_generation_processes_persona_stages_concurrently(monkeypatch):
+    monkeypatch.setenv("PERSONA_GENERATION_MAX_CONCURRENCY", "3")
+    adapter = ConcurrentPersonaGenerationAdapter()
+    service = PersonaService(llm_adapter=adapter, image_generator=lambda persona: None)
+
+    result = service.generate_personas(
+        company_id=100,
+        user_id=10,
+        data={
+            "sourceType": "service_based",
+            "serviceDescription": "통신 요금제 추천 서비스",
+            "targetAudience": "20대 직장인",
+            "totalCount": 3,
+            "locale": {"country": "KR", "language": "ko"},
+            "includeImages": False,
+            "skipExistingPersonas": True,
+        },
+    )
+
+    assert result.status_code == 200
+    assert len(result.data["personas"]) == 3
+    assert adapter.max_active_narratives > 1
 
 
 class SparseThenRichLlmAdapter:
