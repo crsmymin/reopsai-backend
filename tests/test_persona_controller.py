@@ -606,7 +606,7 @@ def test_persona_generation_service_matches_legacy_preview_contract():
     assert body["personas"][0]["telecomBehaviorDimensions"]["telecomLifeCharacteristics"]["telecomServiceUsageContext"].startswith("매달 앱")
     assert "segments" in body
     assert "generationMetadata" in body
-    assert body["tokenUsage"] == {"inputTokens": 40, "outputTokens": 80, "totalTokens": 120, "model": "gemini-2.5-pro"}
+    assert body["tokenUsage"] == {"inputTokens": 40, "outputTokens": 80, "totalTokens": 120, "model": "gemini-2.5-flash"}
     assert "data" not in body
 
 

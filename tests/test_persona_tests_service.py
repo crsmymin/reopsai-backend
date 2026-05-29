@@ -111,9 +111,11 @@ class FakeLlmAdapter:
     def __init__(self):
         self.prompts = []
         self.media_parts = []
+        self.model_names = []
 
     def generate_response(self, prompt, generation_config=None, model_name=None):
         self.prompts.append(prompt)
+        self.model_names.append(model_name)
         if "A/B UX variants" in prompt:
             content = {
                 "scores": {"winner": "A", "reasonForChoice": "A안이 더 명확합니다."},
@@ -642,6 +644,17 @@ def test_ui_test_run_generates_persona_result_shape_without_zero_dummy():
     assert row["evidence_ids"] == ["promptVersion:persona_test_v2"]
 
 
+def test_ui_test_uses_default_openai_persona_test_model():
+    FakeRepository.ui_test = _test_record()
+    adapter = FakeLlmAdapter()
+
+    result = _service(llm_adapter=adapter).run_ui_test(company_id=100, user_id=10, test_id=1, data={})
+
+    assert result.status_code == 200
+    assert adapter.model_names == ["gpt-5.4"]
+    assert result.data["results"][0]["confidence"]["model"] == "gpt-5.4"
+
+
 def test_ui_test_pin_coordinates_accept_ratio_and_percent_values():
     pins = _service()._normalize_ui_pin_comments(
         feedback={
@@ -899,6 +912,27 @@ def test_ab_test_run_generates_winner_summary():
     assert result.data["data"]["summary"]["winner"] == "A"
 
 
+def test_ab_test_uses_default_gemini_flash_model():
+    FakeRepository.ab_test = _test_record(
+        id=2,
+        purpose="가입 화면 비교",
+        service_context="가입",
+        mode="single",
+        screens=[{"version": "A", "name": "A안"}, {"version": "B", "name": "B안"}],
+        transitions=None,
+        context_data={"personaSelection": {"useAllPersonas": False, "selectedPersonaIds": [20]}},
+        enable_consistency_validation=False,
+        consistency_run_count=3,
+    )
+    adapter = FakeLlmAdapter()
+
+    result = _service(llm_adapter=adapter).run_ab_test(company_id=100, user_id=10, ab_test_id=2, data={})
+
+    assert result.status_code == 200
+    assert adapter.model_names == ["gemini-2.5-flash"]
+    assert result.data["results"][0]["confidence"]["model"] == "gemini-2.5-flash"
+
+
 def test_ab_flow_summary_skips_malformed_llm_journey_and_step_items():
     FakeRepository.ab_test = _test_record(
         id=2,
@@ -949,15 +983,20 @@ def test_interview_run_generates_turns():
     )
     FakeRepository.personas = None
     FakeRepository.pack_updates = []
+    adapter = FakeLlmAdapter()
 
-    result = _service().run_interview(company_id=100, user_id=10, interview_id=3, data={})
+    result = _service(llm_adapter=adapter).run_interview(company_id=100, user_id=10, interview_id=3, data={})
 
     assert result.status_code == 200
     assert result.data["data"]["status"] == "completed"
+    assert result.data["data"]["model"] == "gpt-5.4"
+    assert result.data["data"]["packModel"] == "gemini-2.5-flash"
     assert result.data["data"]["questionSet"]["tasks"][0]["questions"][0] == "무엇을 확인하나요?"
     assert result.data["data"]["results"][0]["turns"][0]["answer"] == "금액과 조건을 먼저 봅니다."
     assert result.data["results"][0]["pack"]["identity"]["name"] == "김민수"
     assert FakeRepository.pack_updates[0]["version"] == "persona_interview_pack_v1"
+    assert FakeRepository.pack_updates[0]["model"] == "gemini-2.5-flash"
+    assert adapter.model_names == ["gemini-2.5-flash", "gpt-5.4"]
 
 
 def test_interview_run_processes_personas_concurrently(monkeypatch):
@@ -1009,6 +1048,26 @@ def test_generate_interview_questions_returns_canonical_shape():
     assert questions["tasks"][0]["title"] == "판단 기준"
     assert questions["closing"][0] == "마지막으로 꼭 개선되었으면 하는 점은 무엇인가요?"
     assert questions["followup_strategies"][0] == "망설임이 드러난 답변을 더 깊게 묻습니다."
+
+
+def test_interview_questions_use_default_model_and_request_override():
+    default_adapter = FakeLlmAdapter()
+    default_result = _service(llm_adapter=default_adapter).generate_interview_questions(
+        company_id=100,
+        user_id=10,
+        data={"goal": "가입 반응 확인", "productDescription": "가입 서비스", "length": "standard"},
+    )
+    override_adapter = FakeLlmAdapter()
+    override_result = _service(llm_adapter=override_adapter).generate_interview_questions(
+        company_id=100,
+        user_id=10,
+        data={"goal": "가입 반응 확인", "productDescription": "가입 서비스", "length": "standard", "model": "gemini:gemini-2.5-flash"},
+    )
+
+    assert default_result.status_code == 200
+    assert override_result.status_code == 200
+    assert default_adapter.model_names == ["gpt-5.4"]
+    assert override_adapter.model_names == ["gemini-2.5-flash"]
 
 
 def test_interview_pack_cache_hit_reuses_cached_pack_without_llm_call():

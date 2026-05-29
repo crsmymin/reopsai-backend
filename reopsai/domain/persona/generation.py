@@ -11,7 +11,7 @@ from typing import Callable, Iterable
 
 
 DEFAULT_SEED_PATH = Path(__file__).resolve().parents[3] / "data" / "nemotron-personas-korea-sample.jsonl"
-DEFAULT_TEXT_MODEL = os.getenv("PERSONA_GEMINI_TEXT_MODEL") or "gemini-2.5-pro"
+DEFAULT_TEXT_MODEL = os.getenv("PERSONA_LLM_SEGMENTATION_IDENTITY_MODEL") or os.getenv("PERSONA_GEMINI_TEXT_MODEL") or "gemini-2.5-flash"
 DEFAULT_PERSONA_GENERATION_MAX_CONCURRENCY = 3
 
 TELECOM_CONTEXT_PATTERN = re.compile(
@@ -368,18 +368,65 @@ def validate_segment_suggestion_payload(payload: dict) -> tuple[dict | None, lis
     }, []
 
 
+def _repair_missing_json_commas(text: str) -> str:
+    repaired = text
+    for _ in range(3):
+        previous = repaired
+        repaired = re.sub(r'([}\]"])\s*\n\s*("[^"\n]+"\s*:)', r"\1,\n\2", repaired)
+        repaired = re.sub(r'([}\]"])\s*\n\s*([{\[])', r"\1,\n\2", repaired)
+        if repaired == previous:
+            break
+    return repaired
+
+
+def _json_loads_with_inserted_commas(text: str, *, max_repairs: int = 24) -> dict:
+    repaired = text
+    seen_positions: set[int] = set()
+    for _ in range(max_repairs):
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError as exc:
+            if "Expecting ',' delimiter" not in exc.msg:
+                raise
+            if exc.pos in seen_positions:
+                raise
+            seen_positions.add(exc.pos)
+            insert_at = exc.pos
+            if repaired[:insert_at].rstrip().endswith(","):
+                raise
+            repaired = f"{repaired[:insert_at]},{repaired[insert_at:]}"
+    return json.loads(repaired)
+
+
 def _json_extract(text: str) -> dict:
     stripped = (text or "").strip()
     if stripped.startswith("```"):
         stripped = re.sub(r"^```(?:json)?", "", stripped).strip()
         stripped = re.sub(r"```$", "", stripped).strip()
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        stripped = stripped[start:end + 1]
     try:
         return json.loads(stripped)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", stripped, re.DOTALL)
-        if not match:
-            raise
-        return json.loads(match.group(0))
+    except json.JSONDecodeError as exc:
+        escaped = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", stripped)
+        candidates = [
+            escaped,
+            _repair_missing_json_commas(stripped),
+            _repair_missing_json_commas(escaped),
+        ]
+        last_error = exc
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError as candidate_exc:
+                last_error = candidate_exc
+            try:
+                return _json_loads_with_inserted_commas(candidate)
+            except json.JSONDecodeError as candidate_exc:
+                last_error = candidate_exc
+        raise last_error
 
 
 def _trim_context(context: str, max_length: int) -> str:
@@ -1331,6 +1378,98 @@ def _validate_telecom_scores(value: list[dict]):
         raise PersonaGenerationQualityError(f"telecom scores invalid: {'; '.join(details)}")
 
 
+def _telecom_signal_score(context: str, positive_terms: Iterable[str], negative_terms: Iterable[str] = ()) -> int:
+    positive = sum(1 for term in positive_terms if term and term.lower() in context)
+    negative = sum(1 for term in negative_terms if term and term.lower() in context)
+    return max(1, min(5, 3 + min(2, positive) - min(2, negative)))
+
+
+def _fallback_telecom_dimensions_and_scores(persona: dict, payload: dict, segment: dict, seed: dict) -> tuple[dict, list[dict]]:
+    context = " ".join(
+        str(value or "")
+        for value in [
+            persona.get("name"),
+            persona.get("title"),
+            persona.get("biography"),
+            persona.get("attitudes"),
+            persona.get("behaviours"),
+            persona.get("motivation"),
+            persona.get("personality"),
+            persona.get("preferences"),
+            persona.get("socialContext"),
+            persona.get("culturalBackground"),
+            segment.get("name"),
+            segment.get("description"),
+            _service_context(payload),
+            json.dumps(seed, ensure_ascii=False),
+        ]
+    ).lower()
+    name = persona.get("name") or "이 퍼소나"
+    segment_name = segment.get("name") or "해당 세그먼트"
+    brand_score = _telecom_signal_score(context, ["장기", "결합", "가족", "멤버십", "프리미엄", "안정", "신뢰"], ["알뜰", "번호이동", "변경", "절약"])
+    optimization_score = _telecom_signal_score(context, ["비교", "절약", "최적화", "알뜰", "요금", "커뮤니티", "후기"], ["귀찮", "시간 부족", "복잡"])
+    information_score = _telecom_signal_score(context, ["검색", "비교", "리뷰", "후기", "커뮤니티", "앱", "직접"], ["대리점", "상담원에게 맡"])
+    ai_score = _telecom_signal_score(context, ["ai", "앱", "디지털", "추천", "자동", "개인화", "데이터"], ["불신", "개인정보", "꺼림"])
+    dimensions = {
+        "brandRetention": {
+            "brandRetentionTendency": f"{name}은 {segment_name} 맥락에서 현재 통신사의 안정성과 변경 비용을 함께 고려한다.",
+            "premiumInfraBenefitOrientation": "네트워크 품질, 멤버십, 결합 혜택이 실제 생활비나 편의로 연결될 때 프리미엄 혜택을 긍정적으로 본다.",
+        },
+        "optimizationResource": {
+            "optimizationResourceInvestment": "요금제와 혜택을 비교하되, 지나치게 복잡한 조건에는 많은 시간을 쓰지 않으려는 실용적 태도를 보인다.",
+            "paymentResistanceLine": "월 납부액이 체감 혜택보다 높거나 가족 및 생활비 관리 기준을 넘어서면 추가 지출에 저항한다.",
+        },
+        "informationControl": {
+            "informationExplorationStyle": "공식 앱, 요금제 안내, 주변 경험, 온라인 후기를 조합해 필요한 정보만 선별하려는 경향이 있다.",
+            "problemSolvingAutonomy": "기본적인 요금제 확인과 혜택 점검은 직접 처리하지만, 약정이나 결합처럼 복잡한 문제는 상담을 병행한다.",
+        },
+        "digitalAiOpenness": {
+            "aiProviderTrust": "개인 상황을 정확히 반영하고 근거를 설명하는 추천에는 개방적이지만, 불투명한 상향 판매성 추천은 경계한다.",
+            "personalizationDataSharingScope": "요금, 데이터 사용량, 결합 여부처럼 추천에 직접 필요한 범위의 데이터 공유를 선호한다.",
+        },
+        "telecomLifeCharacteristics": {
+            "householdDecisionLeadership": "본인의 회선뿐 아니라 생활 패턴과 가구 상황을 기준으로 통신 결정을 조율한다.",
+            "productServiceUnderstanding": "핵심 요금, 데이터 제공량, 약정 조건은 이해하지만 세부 할인 구조는 필요할 때 확인하는 수준이다.",
+            "telecomServiceUsageContext": f"{name}은 일상적인 모바일 데이터 사용과 통신비 관리를 생활 관리의 일부로 다룬다. 요금제 변경은 즉흥적으로 하기보다 현재 혜택, 데이터 사용량, 약정 조건을 확인한 뒤 판단한다. 불편이 생기면 먼저 앱이나 안내 페이지를 확인하고, 조건이 복잡하면 상담 채널을 활용한다. {segment_name}의 특성상 가격, 안정성, 편의성 사이의 균형을 중요하게 본다.",
+        },
+    }
+    scores = [
+        {
+            "key": "brandRetention",
+            "label": TELECOM_SCORE_GROUPS["brandRetention"],
+            "score": brand_score,
+            "maxScore": 5,
+            "rationale": "현재 이용 안정성과 변경 비용을 함께 고려하는 성향을 기준으로 산정했다.",
+            "evidence": [dimensions["brandRetention"]["brandRetentionTendency"]],
+        },
+        {
+            "key": "optimizationResource",
+            "label": TELECOM_SCORE_GROUPS["optimizationResource"],
+            "score": optimization_score,
+            "maxScore": 5,
+            "rationale": "요금, 혜택, 비교 행동에 투자하는 시간과 노력을 기준으로 산정했다.",
+            "evidence": [dimensions["optimizationResource"]["optimizationResourceInvestment"]],
+        },
+        {
+            "key": "informationControl",
+            "label": TELECOM_SCORE_GROUPS["informationControl"],
+            "score": information_score,
+            "maxScore": 5,
+            "rationale": "직접 탐색과 문제 해결 자율성의 강도를 기준으로 산정했다.",
+            "evidence": [dimensions["informationControl"]["informationExplorationStyle"]],
+        },
+        {
+            "key": "digitalAiOpenness",
+            "label": TELECOM_SCORE_GROUPS["digitalAiOpenness"],
+            "score": ai_score,
+            "maxScore": 5,
+            "rationale": "앱, AI 추천, 개인화 데이터 공유에 대한 개방성을 기준으로 산정했다.",
+            "evidence": [dimensions["digitalAiOpenness"]["aiProviderTrust"]],
+        },
+    ]
+    return dimensions, scores
+
+
 def stage_nemotron_telecom_dimensions(persona: dict, payload: dict, segment: dict, seed: dict, text_generator: Callable[[str], tuple[str, dict]]) -> tuple[dict, dict]:
     def validate(parsed: dict):
         dimensions = _normalize_telecom_dimensions(parsed.get("telecomBehaviorDimensions") or parsed.get("telecom_behavior_dimensions"))
@@ -1338,9 +1477,14 @@ def stage_nemotron_telecom_dimensions(persona: dict, payload: dict, segment: dic
         _validate_telecom_dimensions(dimensions)
         _validate_telecom_scores(scores)
 
-    parsed, usage = _execute_json_stage(text_generator, _telecom_prompt(persona, payload, segment, seed), stage_name="telecom_dimensions", validator=validate)
-    dimensions = _normalize_telecom_dimensions(parsed.get("telecomBehaviorDimensions") or parsed.get("telecom_behavior_dimensions"))
-    scores = _normalize_telecom_scores(parsed.get("telecomBehaviorScores") or parsed.get("telecom_behavior_scores"))
+    try:
+        parsed, usage = _execute_json_stage(text_generator, _telecom_prompt(persona, payload, segment, seed), stage_name="telecom_dimensions", validator=validate)
+        dimensions = _normalize_telecom_dimensions(parsed.get("telecomBehaviorDimensions") or parsed.get("telecom_behavior_dimensions"))
+        scores = _normalize_telecom_scores(parsed.get("telecomBehaviorScores") or parsed.get("telecom_behavior_scores"))
+    except PersonaGenerationQualityError as exc:
+        _log_persona_generation_event("telecom_dimensions_fallback", reason=str(exc))
+        dimensions, scores = _fallback_telecom_dimensions_and_scores(persona, payload, segment, seed)
+        usage = _usage_from({"inputTokens": 0, "outputTokens": 0, "totalTokens": 0, "fallback": True})
     return {
         **persona,
         "telecomBehaviorDimensions": dimensions,

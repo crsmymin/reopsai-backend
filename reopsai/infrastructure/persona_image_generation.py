@@ -57,7 +57,7 @@ def generate_persona_image_data_url(persona: dict, *, api_key: str | None = None
     api_key = resolve_google_api_key(api_key)
     if not api_key:
         raise RuntimeError("GOOGLE_API_KEY, GEMINI_API_KEY, GOOGLE_API_KEYS, or GEMINI_API_KEYS is required for persona image generation")
-    model = model or os.getenv("PERSONA_GEMINI_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL
+    model = model or os.getenv("PERSONA_LLM_IMAGE_MODEL") or os.getenv("PERSONA_GEMINI_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     response = requests.post(
         url,

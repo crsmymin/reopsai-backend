@@ -268,5 +268,113 @@ class OpenAIService:
             **pii_meta
         }
 
+    def generate_multimodal_response(self, prompt, *, media_parts=None, generation_config=None, model_name=None):
+        """텍스트 프롬프트와 이미지 파트를 함께 OpenAI chat completions에 전달합니다."""
+        if not media_parts:
+            return self.generate_response(prompt, generation_config=generation_config, model_name=model_name)
+
+        if not self.client:
+            return {'success': False, 'error': 'OpenAI 클라이언트가 초기화되지 않았습니다.'}
+
+        if not self.api_keys:
+            return {'success': False, 'error': '사용 가능한 API 키가 없습니다.'}
+
+        model = model_name or "gpt-4o-mini"
+        redaction_enabled = os.getenv("OPENAI_LLM_PII_REDACTION", "1") != "0"
+        pii_meta = {"pii_redacted": False, "pii_counts": {"email": 0, "phone": 0, "rrn": 0}}
+        prompt_to_send = prompt or ""
+        if redaction_enabled:
+            prompt_to_send, changed, counts = sanitize_prompt_for_llm(prompt_to_send)
+            pii_meta = {"pii_redacted": bool(changed), "pii_counts": counts}
+
+        content_parts = [{"type": "text", "text": prompt_to_send}]
+        for part in media_parts or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text" and part.get("text"):
+                text_part = str(part["text"])
+                if redaction_enabled:
+                    text_part, _, _ = sanitize_prompt_for_llm(text_part)
+                content_parts.append({"type": "text", "text": text_part})
+            elif part.get("type") == "image" and part.get("data_base64"):
+                mime_type = part.get("mime_type") or "image/png"
+                content_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{part['data_base64']}"},
+                    }
+                )
+
+        temperature = generation_config.get('temperature', 0.2) if generation_config else 0.7
+        max_output_tokens = generation_config.get('max_output_tokens', None) if generation_config else None
+        response_format = generation_config.get('response_format', None) if generation_config else None
+        uses_new_api = model.startswith('gpt-5') or model.startswith('o1') or 'o3' in model
+        supports_temperature = not (model.startswith('gpt-5'))
+
+        api_params = {
+            'model': model,
+            'messages': [
+                {"role": "user", "content": content_parts}
+            ],
+        }
+        if supports_temperature:
+            api_params['temperature'] = temperature
+        if max_output_tokens:
+            if uses_new_api:
+                api_params['max_completion_tokens'] = max_output_tokens
+            else:
+                api_params['max_tokens'] = max_output_tokens
+        if response_format:
+            api_params['response_format'] = response_format
+
+        max_retries = len(self.api_keys)
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                t0 = time.time()
+                response = self.client.chat.completions.create(**api_params)
+                duration = time.time() - t0
+
+                current_key = self.api_keys[self.current_key_index]
+                if current_key in self.key_cooldown:
+                    del self.key_cooldown[current_key]
+
+                content = response.choices[0].message.content
+                usage = {}
+                try:
+                    u = getattr(response, "usage", None)
+                    if u is not None:
+                        usage = extract_openai_usage(u)
+                except Exception:
+                    usage = {}
+
+                log_duration("LLM(OpenAI Vision)", duration, extra=f"model={model};media_parts={len(media_parts or [])}")
+                log_tokens("openai", usage, extra=f"model={model} vision")
+                record_llm_call(provider="openai", model=model, usage=usage)
+                return {'success': True, 'content': content, "usage": usage, **pii_meta}
+
+            except Exception as e:
+                last_error = e
+                current_key = self.api_keys[self.current_key_index]
+                if self._is_rate_limit_error(e):
+                    print(f"⚠️ Vision API Rate Limit 오류 감지 (시도 {attempt + 1}/{max_retries}): {str(e)[:100]}")
+                    self._mark_key_failed(current_key)
+                    if self._switch_to_next_key():
+                        continue
+                    return {
+                        'success': False,
+                        'error': f'모든 API 키가 쿨다운 중입니다. 마지막 오류: {str(e)}',
+                        **pii_meta,
+                    }
+                print(f"❌ Vision API 치명적 오류: {str(e)}")
+                return {'success': False, 'error': str(e), **pii_meta}
+
+        return {
+            'success': False,
+            'error': f'모든 API 키의 시도가 실패했습니다. 마지막 오류: {str(last_error)}',
+            **pii_meta,
+        }
+
 
 openai_service = OpenAIService()

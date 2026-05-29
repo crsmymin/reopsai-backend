@@ -45,9 +45,102 @@ class PersonaUrlCaptureError(RuntimeError):
 
 
 PERSONA_INTERVIEW_PACK_VERSION = "persona_interview_pack_v1"
-DEFAULT_PERSONA_PACK_MODEL = "gemini-2.5-pro"
+DEFAULT_PERSONA_PACK_MODEL = "gemini-2.5-flash"
+DEFAULT_PERSONA_INTERVIEW_MODEL = "gpt-5.4"
 DEFAULT_INTERVIEW_MAX_CONCURRENCY = 4
 DEFAULT_INTERVIEW_RETRY_ATTEMPTS = 2
+
+
+@dataclass(frozen=True)
+class PersonaLlmStageConfig:
+    provider: str
+    model: str
+    temperature: float = 0.7
+    max_output_tokens: int = 8192
+    response_format_json: bool = True
+    env_prefix: str = ""
+
+
+PERSONA_LLM_STAGE_CONFIGS = {
+    "persona_segment_suggestion": PersonaLlmStageConfig(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        temperature=0.4,
+        max_output_tokens=4096,
+        env_prefix="PERSONA_LLM_SEGMENT_SUGGESTION",
+    ),
+    "persona_generation_segmentation_identity": PersonaLlmStageConfig(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        temperature=0.7,
+        max_output_tokens=8192,
+        env_prefix="PERSONA_LLM_SEGMENTATION_IDENTITY",
+    ),
+    "persona_generation_narrative_polish": PersonaLlmStageConfig(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        temperature=0.7,
+        max_output_tokens=8192,
+        env_prefix="PERSONA_LLM_NARRATIVE_POLISH",
+    ),
+    "persona_generation_telecom_dimensions": PersonaLlmStageConfig(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        temperature=0.35,
+        max_output_tokens=4500,
+        env_prefix="PERSONA_LLM_TELECOM_DIMENSIONS",
+    ),
+    "persona_generation_interview_reference": PersonaLlmStageConfig(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        temperature=0.7,
+        max_output_tokens=8192,
+        env_prefix="PERSONA_LLM_INTERVIEW_REFERENCE",
+    ),
+    "persona_interview_pack": PersonaLlmStageConfig(
+        provider="gemini",
+        model=DEFAULT_PERSONA_PACK_MODEL,
+        temperature=0.7,
+        max_output_tokens=8192,
+        env_prefix="PERSONA_LLM_INTERVIEW_PACK",
+    ),
+    "persona_interview_question_generation": PersonaLlmStageConfig(
+        provider="openai",
+        model=DEFAULT_PERSONA_INTERVIEW_MODEL,
+        temperature=0.7,
+        max_output_tokens=8192,
+        env_prefix="PERSONA_LLM_INTERVIEW_QUESTION",
+    ),
+    "persona_interview": PersonaLlmStageConfig(
+        provider="openai",
+        model=DEFAULT_PERSONA_INTERVIEW_MODEL,
+        temperature=0.7,
+        max_output_tokens=8192,
+        env_prefix="PERSONA_LLM_INTERVIEW_RESULT",
+    ),
+    "persona_ui_test": PersonaLlmStageConfig(
+        provider="openai",
+        model=DEFAULT_PERSONA_INTERVIEW_MODEL,
+        temperature=0.7,
+        max_output_tokens=8192,
+        env_prefix="PERSONA_LLM_UI_TEST",
+    ),
+    "persona_ab_test": PersonaLlmStageConfig(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        temperature=0.7,
+        max_output_tokens=8192,
+        env_prefix="PERSONA_LLM_AB_TEST",
+    ),
+}
+
+PERSONA_LLM_PROMPT_STAGE_MARKERS = {
+    "STAGE: segment_suggestion": "persona_segment_suggestion",
+    "STAGE: segmentation_identity": "persona_generation_segmentation_identity",
+    "STAGE: narrative_polish": "persona_generation_narrative_polish",
+    "STAGE: telecom_dimensions": "persona_generation_telecom_dimensions",
+    "STAGE: interview_reference": "persona_generation_interview_reference",
+}
 
 
 def _dt(value):
@@ -71,6 +164,36 @@ def _first_text(*values):
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _clean_model_name(value):
+    model = str(value or "").strip()
+    return model or None
+
+
+def _infer_provider_from_model(model: str | None, fallback: str) -> str:
+    normalized = (model or "").strip().lower()
+    if normalized.startswith("openai:"):
+        return "openai"
+    if normalized.startswith("gemini:"):
+        return "gemini"
+    if normalized.startswith(("gpt-", "o1", "o3", "o4")):
+        return "openai"
+    if normalized.startswith("gemini-"):
+        return "gemini"
+    return fallback
+
+
+def _split_provider_model(value: str | None, fallback_provider: str) -> tuple[str, str | None]:
+    raw = _clean_model_name(value)
+    if not raw:
+        return fallback_provider, None
+    if ":" in raw:
+        provider, model = raw.split(":", 1)
+        provider = provider.strip().lower()
+        if provider in {"openai", "gemini"} and model.strip():
+            return provider, model.strip()
+    return _infer_provider_from_model(raw, fallback_provider), raw
 
 
 TELECOM_BEHAVIOR_SCORE_CONFIG = (
@@ -386,6 +509,7 @@ class PersonaService:
         figma_client=persona_figma_client,
         capture=persona_capture,
         llm_adapter=None,
+        openai_adapter=None,
         image_generator=generate_persona_image_data_url,
     ):
         self.repository = repository
@@ -394,6 +518,7 @@ class PersonaService:
         self.figma_client = figma_client
         self.capture = capture
         self.llm_adapter = llm_adapter
+        self.openai_adapter = openai_adapter if openai_adapter is not None else llm_adapter
         self.image_generator = image_generator
 
     def _ok(self, data=None, status_code=200):
@@ -419,43 +544,123 @@ class PersonaService:
             self.llm_adapter = GeminiService()
         return self.llm_adapter
 
-    def _generate_text(self, prompt: str, *, media_parts: Optional[list[dict]] = None) -> tuple[str, dict]:
-        model_name = os.getenv("PERSONA_GEMINI_TEXT_MODEL") or "gemini-2.5-pro"
-        generation_config = {"temperature": 0.7, "max_output_tokens": 8192}
-        if "STAGE: telecom_dimensions" in prompt:
-            generation_config = {"temperature": 0.35, "max_output_tokens": 4500}
-        elif "STAGE: segment_suggestion" in prompt:
-            generation_config = {"temperature": 0.4, "max_output_tokens": 4096}
-        adapter = self._get_llm_adapter()
+    def _get_openai_adapter(self):
+        if self.openai_adapter is None:
+            from reopsai.infrastructure.openai_service import OpenAIService
+
+            self.openai_adapter = OpenAIService()
+        return self.openai_adapter
+
+    def _infer_llm_stage(self, prompt: str, explicit_stage: str | None = None) -> str:
+        if explicit_stage:
+            return explicit_stage
+        for marker, stage in PERSONA_LLM_PROMPT_STAGE_MARKERS.items():
+            if marker in prompt:
+                return stage
+        return "persona_generation_segmentation_identity"
+
+    def _resolve_llm_stage_config(self, stage: str, *, model_override: str | None = None) -> PersonaLlmStageConfig:
+        base = PERSONA_LLM_STAGE_CONFIGS.get(stage) or PERSONA_LLM_STAGE_CONFIGS["persona_generation_segmentation_identity"]
+        provider = base.provider
+        model = base.model
+        if base.env_prefix:
+            env_provider = _clean_model_name(os.getenv(f"{base.env_prefix}_PROVIDER"))
+            env_model = _clean_model_name(os.getenv(f"{base.env_prefix}_MODEL"))
+            env_combined = _clean_model_name(os.getenv(base.env_prefix))
+            if env_combined:
+                provider, parsed_model = _split_provider_model(env_combined, provider)
+                model = parsed_model or model
+            if env_provider:
+                provider = env_provider.lower()
+            if env_model:
+                provider, parsed_model = _split_provider_model(env_model, provider)
+                model = parsed_model or model
+        if stage == "persona_interview_pack":
+            legacy_pack_model = _clean_model_name(os.getenv("PERSONA_INTERVIEW_PACK_MODEL"))
+            if legacy_pack_model:
+                provider, parsed_model = _split_provider_model(legacy_pack_model, provider)
+                model = parsed_model or model
+        elif provider == "gemini":
+            legacy_text_model = _clean_model_name(os.getenv("PERSONA_GEMINI_TEXT_MODEL"))
+            if legacy_text_model:
+                provider, parsed_model = _split_provider_model(legacy_text_model, provider)
+                model = parsed_model or model
+        if model_override:
+            provider, parsed_model = _split_provider_model(model_override, provider)
+            model = parsed_model or model
+        if provider not in {"openai", "gemini"}:
+            provider = base.provider
+        return PersonaLlmStageConfig(
+            provider=provider,
+            model=model,
+            temperature=base.temperature,
+            max_output_tokens=base.max_output_tokens,
+            response_format_json=base.response_format_json,
+            env_prefix=base.env_prefix,
+        )
+
+    def _default_model_for_stage(self, stage: str) -> str:
+        return self._resolve_llm_stage_config(stage).model
+
+    def _generate_text(
+        self,
+        prompt: str,
+        *,
+        media_parts: Optional[list[dict]] = None,
+        stage: str | None = None,
+        model_override: str | None = None,
+    ) -> tuple[str, dict]:
+        stage_key = self._infer_llm_stage(prompt, stage)
+        stage_config = self._resolve_llm_stage_config(stage_key, model_override=model_override)
+        generation_config = {
+            "temperature": stage_config.temperature,
+            "max_output_tokens": stage_config.max_output_tokens,
+        }
+        if stage_config.response_format_json and stage_config.provider == "openai":
+            generation_config["response_format"] = {"type": "json_object"}
+        elif stage_config.response_format_json and stage_config.provider == "gemini":
+            generation_config["response_mime_type"] = "application/json"
+        adapter = self._get_openai_adapter() if stage_config.provider == "openai" else self._get_llm_adapter()
         if media_parts and hasattr(adapter, "generate_multimodal_response"):
             result = adapter.generate_multimodal_response(
                 prompt,
                 media_parts=media_parts,
                 generation_config=generation_config,
-                model_name=model_name,
+                model_name=stage_config.model,
             )
         else:
             result = adapter.generate_response(
                 prompt,
                 generation_config=generation_config,
-                model_name=model_name,
+                model_name=stage_config.model,
             )
         if not result.get("success"):
-            raise RuntimeError(result.get("error") or "Persona Gemini generation failed")
+            raise RuntimeError(result.get("error") or "Persona LLM generation failed")
         usage = dict(result.get("usage") or {})
-        usage["model"] = model_name
+        usage["model"] = stage_config.model
+        usage["provider"] = stage_config.provider
+        usage["stage"] = stage_key
         if media_parts:
             usage["media_parts"] = len(media_parts)
         return result.get("content") or "", usage
 
-    def _generate_json(self, prompt: str, *, feature_key: str, company_id: int, user_id: int, media_parts: Optional[list[dict]] = None) -> tuple[dict, dict]:
+    def _generate_json(
+        self,
+        prompt: str,
+        *,
+        feature_key: str,
+        company_id: int,
+        user_id: int,
+        media_parts: Optional[list[dict]] = None,
+        model_override: str | None = None,
+    ) -> tuple[dict, dict]:
         usage_context = build_llm_usage_context(company_id=company_id, user_id=user_id, feature_key=feature_key)
 
         def generate():
             log_interview_stage = feature_key in {"persona_interview", "persona_interview_pack"}
             if log_interview_stage:
                 _log_persona_interview_event("llm_start", feature=feature_key, thread=threading.current_thread().name)
-            text, usage = self._generate_text(prompt, media_parts=media_parts)
+            text, usage = self._generate_text(prompt, media_parts=media_parts, stage=feature_key, model_override=model_override)
             if log_interview_stage:
                 _log_persona_interview_event("llm_end", feature=feature_key, thread=threading.current_thread().name)
             try:
@@ -1522,10 +1727,26 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
 }}
 """.strip()
 
-    def _generate_interview_question_set(self, *, company_id: int, user_id: int, name: str | None, goal: str, product_description: str | None, length: str):
+    def _generate_interview_question_set(
+        self,
+        *,
+        company_id: int,
+        user_id: int,
+        name: str | None,
+        goal: str,
+        product_description: str | None,
+        length: str,
+        model_override: str | None = None,
+    ):
         prompt = self._interview_question_prompt(name=name, goal=goal, product_description=product_description, length=length)
         try:
-            parsed, _usage = self._generate_json(prompt, feature_key="persona_interview_question_generation", company_id=company_id, user_id=user_id)
+            parsed, _usage = self._generate_json(
+                prompt,
+                feature_key="persona_interview_question_generation",
+                company_id=company_id,
+                user_id=user_id,
+                model_override=model_override,
+            )
         except ValueError:
             parsed = self._fallback_interview_question_set(goal=goal, product_description=product_description, length=length)
         return self._normalize_interview_question_set(parsed, goal=goal, product_description=product_description, length=length)
@@ -1636,7 +1857,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         return hasher.hexdigest()
 
     def _get_or_create_persona_interview_pack(self, db_session, *, company_id: int, user_id: int, persona, model: str | None = None, force_refresh: bool = False):
-        resolved_model = (model or os.getenv("PERSONA_INTERVIEW_PACK_MODEL") or DEFAULT_PERSONA_PACK_MODEL).strip()
+        resolved_model = (model or self._default_model_for_stage("persona_interview_pack")).strip()
         persona_text = self._persona_interview_source(db_session, company_id=company_id, persona=persona)
         source_hash = self._pack_source_hash(persona_text=persona_text, model=resolved_model)
         cached_pack = _clean_mapping(getattr(persona, "interview_pack", None))
@@ -1651,7 +1872,13 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
 
         prompt = self._persona_interview_pack_prompt(persona_text=persona_text)
         try:
-            pack, _usage = self._generate_json(prompt, feature_key="persona_interview_pack", company_id=company_id, user_id=user_id)
+            pack, _usage = self._generate_json(
+                prompt,
+                feature_key="persona_interview_pack",
+                company_id=company_id,
+                user_id=user_id,
+                model_override=resolved_model,
+            )
         except ValueError:
             pack = {
                 "identity": {
@@ -1687,7 +1914,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             )
         return pack
 
-    def _run_interview_for_persona(self, *, db_session, company_id: int, user_id: int, interview, persona, pack_model: str | None = None):
+    def _run_interview_for_persona(self, *, db_session, company_id: int, user_id: int, interview, persona, pack_model: str | None = None, model_override: str | None = None):
         question_set = self._normalize_interview_question_set(
             interview.question_set,
             goal=interview.goal,
@@ -1737,7 +1964,13 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 '[응답 JSON] {"summary":{"headline":"","key_needs":[],"pain_points":[],"opportunities":[]},"turns":[{"question":"","answer":""}]}',
             ]
         )
-        parsed, usage = self._generate_json(prompt, feature_key="persona_interview", company_id=company_id, user_id=user_id)
+        parsed, usage = self._generate_json(
+            prompt,
+            feature_key="persona_interview",
+            company_id=company_id,
+            user_id=user_id,
+            model_override=model_override,
+        )
         turns = []
         if isinstance(parsed, dict):
             for item in _as_list(parsed.get("turns")):
@@ -1781,6 +2014,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         interview_context,
         persona_id: int,
         pack_model: str | None = None,
+        model_override: str | None = None,
     ):
         _log_persona_interview_event("worker_start", persona_id=persona_id, thread=threading.current_thread().name)
         with self.session_factory() as db_session:
@@ -1808,6 +2042,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                             interview=interview_context,
                             persona=persona,
                             pack_model=pack_model,
+                            model_override=model_override,
                         )
                         if attempt > 1:
                             raw_response = result.get("raw_response") if isinstance(result.get("raw_response"), dict) else {}
@@ -1848,6 +2083,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         persona_ids: list[int],
         persona_snapshots: dict[int, dict],
         pack_model: str | None = None,
+        model_override: str | None = None,
     ) -> list[tuple[int, dict]]:
         if not persona_ids:
             return []
@@ -1862,6 +2098,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 interview_context=interview_context,
                 persona_id=persona_id,
                 pack_model=pack_model,
+                model_override=model_override,
             )
 
         if max_workers == 1:
@@ -2971,6 +3208,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         if not goal:
             return self._error("invalid", "goal is required", 400)
         length = data.get("length") or "quick"
+        model_override = data.get("question_model") or data.get("questionModel") or data.get("model")
         question_set = self._generate_interview_question_set(
             company_id=company_id,
             user_id=user_id,
@@ -2978,6 +3216,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             goal=goal,
             product_description=data.get("productDescription") or data.get("product_description"),
             length=length,
+            model_override=model_override,
         )
         return self._ok({"data": {"questions": question_set}})
 
@@ -3001,6 +3240,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 length=length,
             )
         else:
+            question_model = data.get("question_model") or data.get("questionModel") or data.get("model")
             question_set = self._generate_interview_question_set(
                 company_id=company_id,
                 user_id=user_id,
@@ -3008,13 +3248,22 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 goal=goal,
                 product_description=data.get("productDescription") or data.get("product_description"),
                 length=length,
+                model_override=question_model,
             )
+        interview_model = _clean_model_name(data.get("model")) or self._default_model_for_stage("persona_interview")
+        pack_model = (
+            _clean_model_name(data.get("pack_model"))
+            or _clean_model_name(data.get("packModel"))
+            or self._default_model_for_stage("persona_interview_pack")
+        )
         payload = {
             **data,
             "goal": goal,
             "product_description": data.get("productDescription") or data.get("product_description"),
             "length": length,
             "question_set": question_set,
+            "model": interview_model,
+            "pack_model": pack_model,
             "persona_ids": data.get("persona_ids") or data.get("personaIds") or [],
         }
         with self.session_factory() as db_session:
@@ -3061,8 +3310,13 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             if not personas:
                 self.repository.update_interview(db_session, interview, user_id=user_id, data={"status": "failed", "progress": 100, "error_message": "No personas available for interview"})
                 return self._error("invalid", "No personas available for interview", 400)
-            model = data.get("model") or interview.model
-            pack_model = data.get("pack_model") or data.get("packModel") or interview.pack_model or model
+            model = _clean_model_name(data.get("model")) or _clean_model_name(interview.model) or self._default_model_for_stage("persona_interview")
+            pack_model = (
+                _clean_model_name(data.get("pack_model"))
+                or _clean_model_name(data.get("packModel"))
+                or _clean_model_name(interview.pack_model)
+                or self._default_model_for_stage("persona_interview_pack")
+            )
             self.repository.update_interview(
                 db_session,
                 interview,
@@ -3104,6 +3358,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 persona_ids=persona_ids_to_run,
                 persona_snapshots=persona_snapshots,
                 pack_model=pack_model,
+                model_override=model,
             )
             results = []
             for persona_id, result_data in generated_results:

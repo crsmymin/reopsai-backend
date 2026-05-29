@@ -2,10 +2,12 @@ from pathlib import Path
 
 from reopsai.domain.persona.generation import (
     DEFAULT_SEED_PATH,
+    _json_extract,
     generate_segment_suggestions_pipeline,
     generate_seed_based_personas,
     load_seed_personas,
     select_nemotron_korea_seeds,
+    stage_nemotron_telecom_dimensions,
     stage_nemotron_seed_narrative_polish,
     validate_generation_payload,
     validate_segment_suggestion_payload,
@@ -35,10 +37,107 @@ def test_persona_generation_uses_packaged_nemotron_seed():
     assert result["seed_count"] >= 2
     assert len(result["personas"]) == 2
     assert result["generation_mode"] == "nemotron_seed_telecom_polished"
-    assert result["token_usage"] == {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0, "model": "gemini-2.5-pro"}
+    assert result["token_usage"] == {"inputTokens": 0, "outputTokens": 0, "totalTokens": 0, "model": "gemini-2.5-flash"}
     assert all(persona["schemaVersion"] == 3 for persona in result["personas"])
     assert all("source_type" not in persona for persona in result["personas"])
     assert all("profile" not in persona for persona in result["personas"])
+
+
+def test_json_extract_repairs_missing_comma_between_object_fields():
+    parsed = _json_extract(
+        """
+{
+  "telecom_behavior_dimensions": {
+    "brandRetention": {
+      "brandRetentionTendency": "높음"
+    }
+    "optimizationResource": {
+      "optimizationResourceInvestment": "보통"
+    }
+  },
+  "telecom_behavior_scores": []
+}
+"""
+    )
+
+    assert parsed["telecom_behavior_dimensions"]["brandRetention"]["brandRetentionTendency"] == "높음"
+    assert parsed["telecom_behavior_dimensions"]["optimizationResource"]["optimizationResourceInvestment"] == "보통"
+
+
+def test_json_extract_repairs_missing_comma_between_array_objects():
+    parsed = _json_extract(
+        """
+{
+  "telecom_behavior_scores": [
+    {
+      "key": "brandRetention",
+      "score": 4
+    }
+    {
+      "key": "optimizationResource",
+      "score": 2
+    }
+  ]
+}
+"""
+    )
+
+    assert parsed["telecom_behavior_scores"][0]["key"] == "brandRetention"
+    assert parsed["telecom_behavior_scores"][1]["key"] == "optimizationResource"
+
+
+def test_json_extract_inserts_missing_comma_at_parser_error_position():
+    parsed = _json_extract(
+        """
+{
+  "telecom_behavior_dimensions": {
+    "brandRetention": {"brandRetentionTendency": "높음", "premiumInfraBenefitOrientation": "보통"} "optimizationResource": {"optimizationResourceInvestment": "높음", "paymentResistanceLine": "월 7만원"}
+  },
+  "telecom_behavior_scores": [{"key": "brandRetention", "score": 4} {"key": "optimizationResource", "score": 3}]
+}
+"""
+    )
+
+    assert parsed["telecom_behavior_dimensions"]["optimizationResource"]["paymentResistanceLine"] == "월 7만원"
+    assert parsed["telecom_behavior_scores"][1]["key"] == "optimizationResource"
+
+
+def test_telecom_dimensions_falls_back_when_model_keeps_returning_invalid_json():
+    persona = {
+        "name": "김민수",
+        "biography": "가족 결합과 요금제 혜택을 주기적으로 확인하는 직장인입니다.",
+        "attitudes": "통신비와 멤버십 혜택을 실용적으로 비교합니다.",
+        "behaviours": "공식 앱과 커뮤니티 후기를 함께 확인합니다.",
+        "motivation": "불필요한 통신비를 줄이고 안정적인 서비스를 유지하고 싶습니다.",
+    }
+    payload = {
+        "locale": {"language": "ko", "country": "KR"},
+        "serviceDescription": "통신 요금제 추천 서비스",
+    }
+    segment = {"name": "실용 관리형", "description": "가족 통신비를 직접 관리합니다."}
+    seed = {"notes": "앱 추천과 결합 혜택을 확인함"}
+    calls = {"count": 0}
+
+    def invalid_text_generator(prompt):
+        calls["count"] += 1
+        return '{"telecom_behavior_dimensions": {"brandRetention": {"brandRetentionTendency": "높음"}', {
+            "inputTokens": 1,
+            "outputTokens": 1,
+            "totalTokens": 2,
+            "model": "gemini-2.5-flash",
+        }
+
+    updated, usage = stage_nemotron_telecom_dimensions(persona, payload, segment, seed, invalid_text_generator)
+
+    assert calls["count"] == 3
+    assert updated["telecomBehaviorDimensions"]["telecomLifeCharacteristics"]["telecomServiceUsageContext"]
+    assert [score["key"] for score in updated["telecomBehaviorScores"]] == [
+        "brandRetention",
+        "optimizationResource",
+        "informationControl",
+        "digitalAiOpenness",
+    ]
+    assert usage["model"] == "gemini-2.5-flash"
 
 
 def test_generation_payload_normalizes_source_and_nemotron_options():
