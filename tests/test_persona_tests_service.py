@@ -240,6 +240,28 @@ class ConcurrentInterviewAdapter(FakeLlmAdapter):
                 self._active_interviews -= 1
 
 
+class ConcurrentUiTestAdapter(FakeLlmAdapter):
+    def __init__(self):
+        super().__init__()
+        self._lock = threading.Lock()
+        self._active_ui_tests = 0
+        self.max_active_ui_tests = 0
+
+    def generate_response(self, prompt, generation_config=None, model_name=None):
+        if "evaluating a UI" not in prompt:
+            return super().generate_response(prompt, generation_config=generation_config, model_name=model_name)
+
+        with self._lock:
+            self._active_ui_tests += 1
+            self.max_active_ui_tests = max(self.max_active_ui_tests, self._active_ui_tests)
+        try:
+            time.sleep(0.05)
+            return super().generate_response(prompt, generation_config=generation_config, model_name=model_name)
+        finally:
+            with self._lock:
+                self._active_ui_tests -= 1
+
+
 class FakeRepository:
     ui_test = _test_record()
     asset = None
@@ -655,6 +677,28 @@ def test_ui_test_uses_default_openai_persona_test_model():
     assert result.data["results"][0]["confidence"]["model"] == "gpt-5.4"
 
 
+def test_ui_test_run_processes_personas_concurrently(monkeypatch):
+    persona_ids = [20, 21, 22, 23]
+    FakeRepository.personas = [_persona_record(id=persona_id, name=f"김민수{persona_id}") for persona_id in persona_ids]
+    FakeRepository.ui_test = _test_record(
+        source_data={
+            "imageEntries": [{"id": "screen-1", "name": "가입 화면", "imageUrl": "/asset.png"}],
+            "personaSelection": {"useAllPersonas": False, "selectedPersonaIds": persona_ids},
+        },
+    )
+    monkeypatch.setenv("PERSONA_UI_TEST_MAX_CONCURRENCY", "3")
+    adapter = ConcurrentUiTestAdapter()
+
+    try:
+        result = _service(llm_adapter=adapter).run_ui_test(company_id=100, user_id=10, test_id=1, data={})
+
+        assert result.status_code == 200
+        assert len(result.data["results"]) == 4
+        assert adapter.max_active_ui_tests > 1
+    finally:
+        FakeRepository.personas = None
+
+
 def test_ui_test_pin_coordinates_accept_ratio_and_percent_values():
     pins = _service()._normalize_ui_pin_comments(
         feedback={
@@ -687,6 +731,47 @@ def test_ui_test_pin_coordinates_mark_generated_fallbacks():
     assert pins[0]["x"] == 42
     assert pins[0]["y"] == 38
     assert pins[0]["hasMarkerCoordinates"] is False
+
+
+def test_ui_test_pin_coordinates_use_figma_control_bounds_when_missing():
+    service = _service()
+    screens = service._screen_manifest(
+        {
+            "figmaScreens": [
+                {
+                    "id": "screen_12:34",
+                    "name": "가입 화면",
+                    "figmaNodeId": "12:34",
+                    "imageUrl": "/api/persona/storage/88",
+                    "width": 400,
+                    "height": 800,
+                }
+            ],
+            "figmaPreview": {
+                "transitions": [
+                    {
+                        "fromScreenId": "screen_12:34",
+                        "toScreenId": "screen_56:78",
+                        "controlNodeId": "button-1",
+                        "controlNodeName": "Primary CTA",
+                        "controlText": "시작하기",
+                        "controlBounds": {"x": 300, "y": 640, "width": 80, "height": 50},
+                    }
+                ]
+            },
+        }
+    )
+
+    pins = service._normalize_ui_pin_comments(
+        feedback={"pinComments": [{"screenIndex": 0, "type": "improvement", "content": "시작하기 버튼의 근거를 강화합니다."}]},
+        screens=screens,
+    )
+    pins = service._apply_ui_pin_coordinate_hints(pin_comments=pins, screens=screens)
+
+    assert pins[0]["x"] == 85
+    assert pins[0]["y"] == 83
+    assert pins[0]["coordinateSource"] == "figmaControlBounds"
+    assert pins[0]["controlNodeId"] == "button-1"
 
 
 def test_ui_test_run_repairs_missing_screen_feedback_for_every_flow_screen():

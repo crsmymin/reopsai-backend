@@ -49,6 +49,7 @@ DEFAULT_PERSONA_PACK_MODEL = "gemini-2.5-flash"
 DEFAULT_PERSONA_INTERVIEW_MODEL = "gpt-5.4"
 DEFAULT_INTERVIEW_MAX_CONCURRENCY = 4
 DEFAULT_INTERVIEW_RETRY_ATTEMPTS = 2
+DEFAULT_UI_TEST_MAX_CONCURRENCY = 4
 
 
 @dataclass(frozen=True)
@@ -365,6 +366,17 @@ def _resolve_interview_max_concurrency(persona_count: int) -> int:
         max_workers = DEFAULT_INTERVIEW_MAX_CONCURRENCY
     if max_workers <= 0:
         max_workers = DEFAULT_INTERVIEW_MAX_CONCURRENCY
+    return max(1, min(max(1, int(persona_count or 0)), max_workers))
+
+
+def _resolve_ui_test_max_concurrency(persona_count: int) -> int:
+    configured = os.getenv("PERSONA_UI_TEST_MAX_CONCURRENCY") or os.getenv("UI_TEST_MAX_CONCURRENCY") or ""
+    try:
+        max_workers = int(configured)
+    except Exception:
+        max_workers = DEFAULT_UI_TEST_MAX_CONCURRENCY
+    if max_workers <= 0:
+        max_workers = DEFAULT_UI_TEST_MAX_CONCURRENCY
     return max(1, min(max(1, int(persona_count or 0)), max_workers))
 
 
@@ -749,6 +761,43 @@ class PersonaService:
         if not isinstance(source_data, dict):
             source_data = {}
         screens = []
+        figma_preview = _as_dict(source_data.get("figmaPreview") or source_data.get("figma_preview"))
+        figma_transitions = _as_list(figma_preview.get("transitions"))
+
+        def interaction_hints_for(screen: dict) -> list[dict]:
+            screen_id = str(screen.get("id") or "")
+            figma_node_id = str(screen.get("figmaNodeId") or screen.get("figma_node_id") or "")
+            match_ids = {item for item in (screen_id, f"screen_{figma_node_id}" if figma_node_id else "") if item}
+            width = screen.get("width") or screen.get("imageWidth") or screen.get("image_width")
+            height = screen.get("height") or screen.get("imageHeight") or screen.get("image_height")
+            try:
+                width = float(width or 0)
+                height = float(height or 0)
+            except (TypeError, ValueError):
+                width, height = 0, 0
+            hints = []
+            for transition in figma_transitions:
+                if not isinstance(transition, dict) or str(transition.get("fromScreenId") or "") not in match_ids:
+                    continue
+                bounds = _as_dict(transition.get("controlBounds") or transition.get("control_bounds"))
+                center_x = center_y = None
+                if bounds and width > 0 and height > 0:
+                    center_x = _normalize_marker_percent(((bounds.get("x") or 0) + (bounds.get("width") or 0) / 2) / width)
+                    center_y = _normalize_marker_percent(((bounds.get("y") or 0) + (bounds.get("height") or 0) / 2) / height)
+                hints.append(
+                    {
+                        "controlNodeId": transition.get("controlNodeId") or transition.get("control_node_id"),
+                        "controlNodeName": transition.get("controlNodeName") or transition.get("control_node_name"),
+                        "controlText": transition.get("controlText") or transition.get("control_text"),
+                        "navigationType": transition.get("navigationType") or transition.get("navigation_type"),
+                        "toScreenId": transition.get("toScreenId") or transition.get("to_screen_id"),
+                        "controlBounds": bounds or None,
+                        "centerX": center_x,
+                        "centerY": center_y,
+                    }
+                )
+            return hints
+
         for entry in _as_list(source_data.get("imageEntries") or source_data.get("image_entries")):
             screens.append(
                 {
@@ -772,15 +821,20 @@ class PersonaService:
                 }
             )
         for entry in _as_list(source_data.get("figmaScreens") or source_data.get("figma_screens")):
-            screens.append(
-                {
-                    "id": entry.get("id") or entry.get("figmaNodeId") or entry.get("figma_node_id"),
-                    "name": entry.get("name"),
-                    "source": entry.get("imageUrl") or entry.get("image_url"),
-                    "sourceType": "figma",
-                    "figmaNodeId": entry.get("figmaNodeId") or entry.get("figma_node_id"),
-                }
-            )
+            if not isinstance(entry, dict):
+                continue
+            screen = {
+                **entry,
+                "id": entry.get("id") or entry.get("figmaNodeId") or entry.get("figma_node_id"),
+                "name": entry.get("name"),
+                "source": entry.get("imageUrl") or entry.get("image_url"),
+                "sourceType": "figma",
+                "figmaNodeId": entry.get("figmaNodeId") or entry.get("figma_node_id"),
+            }
+            hints = interaction_hints_for(screen)
+            if hints:
+                screen["interactionHints"] = hints
+            screens.append(screen)
         if not screens:
             for entry in _as_list(source_data.get("screens")):
                 if not isinstance(entry, dict):
@@ -1007,6 +1061,7 @@ class PersonaService:
             "Use praise for positive comments and problem/improvement for negative comments. screenInsights positives/issues must align with the same evidence used in pinComments.",
             "For each screen, provide at least one positive evidence point and one risk/improvement point when possible.",
             "Attached images follow the same order as [Screens]. x and y must point to the actual UI element in the attached image as 0-100 percentage coordinates, where x is left-to-right and y is top-to-bottom.",
+            "When a screen includes interactionHints with centerX/centerY, use those coordinates for pinComments about the same control and include controlNodeId/controlNodeName/controlText when available.",
             "Do not use generic center coordinates unless the target element is genuinely centered. If exact location is uncertain, choose the most plausible visible element area and name that element in content.",
             is_flow
             and "This is a flow test. Evaluate whether the persona can keep moving toward the task goal across screens; include flowAnalysis for every screenIndex with confusionScore, dropoffRisk, frictionPoints, suggestions, transitionFromPrevious, expectedNextAction, bottleneckRisk.",
@@ -1102,6 +1157,67 @@ class PersonaService:
         if value == "improvement":
             return "improvement"
         return "improvement"
+
+    def _pin_matches_interaction_hint(self, pin: dict, hint: dict) -> bool:
+        if not isinstance(pin, dict) or not isinstance(hint, dict):
+            return False
+        pin_control_id = _first_text(pin.get("controlNodeId"), pin.get("control_node_id"), pin.get("targetNodeId"), pin.get("target_node_id"))
+        hint_control_id = _first_text(hint.get("controlNodeId"), hint.get("control_node_id"))
+        if pin_control_id and hint_control_id and pin_control_id == hint_control_id:
+            return True
+        content = str(pin.get("content") or pin.get("comment") or pin.get("targetElement") or pin.get("target_element") or "").strip().lower()
+        if not content:
+            return False
+        for value in (
+            hint.get("controlText"),
+            hint.get("control_text"),
+            hint.get("controlNodeName"),
+            hint.get("control_node_name"),
+        ):
+            candidate = str(value or "").strip().lower()
+            if len(candidate) >= 2 and (candidate in content or content in candidate):
+                return True
+        return False
+
+    def _apply_ui_pin_coordinate_hints(self, *, pin_comments, screens):
+        updated = []
+        for pin in _as_list(pin_comments):
+            if not isinstance(pin, dict):
+                continue
+            try:
+                screen_index = int(pin.get("screenIndex", pin.get("screen_index", 0)))
+            except (TypeError, ValueError):
+                screen_index = 0
+            screen = screens[screen_index] if 0 <= screen_index < len(screens) else {}
+            hints = [
+                hint
+                for hint in _as_list(screen.get("interactionHints") or screen.get("interaction_hints"))
+                if isinstance(hint, dict) and hint.get("centerX") is not None and hint.get("centerY") is not None
+            ]
+            if not hints:
+                updated.append(pin)
+                continue
+            matched_hint = next((hint for hint in hints if self._pin_matches_interaction_hint(pin, hint)), None)
+            should_use_hint = matched_hint is not None or not bool(pin.get("hasMarkerCoordinates") or pin.get("has_marker_coordinates"))
+            if not should_use_hint:
+                updated.append(pin)
+                continue
+            hint = matched_hint or hints[0]
+            updated.append(
+                {
+                    **pin,
+                    "x": _normalize_marker_percent(hint.get("centerX"), pin.get("x", 50)),
+                    "y": _normalize_marker_percent(hint.get("centerY"), pin.get("y", 50)),
+                    "hasMarkerCoordinates": True,
+                    "has_marker_coordinates": True,
+                    "coordinateSource": "figmaControlBounds",
+                    "coordinate_source": "figma_control_bounds",
+                    "controlNodeId": pin.get("controlNodeId") or hint.get("controlNodeId"),
+                    "controlNodeName": pin.get("controlNodeName") or hint.get("controlNodeName"),
+                    "controlText": pin.get("controlText") or hint.get("controlText"),
+                }
+            )
+        return updated
 
     def _normalize_ui_pin_comments(self, *, feedback: dict, screens):
         pins = []
@@ -1405,6 +1521,7 @@ class PersonaService:
         flow_analysis = self._normalize_ui_flow_analysis(feedback=feedback, screens=screens, is_flow=is_flow)
         if is_flow:
             pin_comments = self._merge_ui_flow_friction_pin_comments(pin_comments=pin_comments, flow_analysis=flow_analysis)
+        pin_comments = self._apply_ui_pin_coordinate_hints(pin_comments=pin_comments, screens=screens)
         screen_scores = self._normalize_ui_screen_scores(
             feedback=feedback,
             screens=screens,
@@ -1457,6 +1574,42 @@ class PersonaService:
             "screen_insights": screen_insights,
             "raw_response": {"parsed": feedback, "usage": usage},
         }
+
+    def _run_ui_evaluations_for_personas(self, *, company_id: int, user_id: int, test, personas, screens, media_parts):
+        personas = list(personas or [])
+        if not personas:
+            return []
+        max_workers = _resolve_ui_test_max_concurrency(len(personas))
+        if max_workers == 1:
+            return [
+                self._run_ui_persona_evaluation(
+                    company_id=company_id,
+                    user_id=user_id,
+                    test=test,
+                    persona=persona,
+                    screens=screens,
+                    media_parts=media_parts,
+                )
+                for persona in personas
+            ]
+
+        results = [None] * len(personas)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="persona-ui-test") as executor:
+            future_to_index = {
+                executor.submit(
+                    self._run_ui_persona_evaluation,
+                    company_id=company_id,
+                    user_id=user_id,
+                    test=test,
+                    persona=persona,
+                    screens=screens,
+                    media_parts=media_parts,
+                ): index
+                for index, persona in enumerate(personas)
+            }
+            for future in concurrent.futures.as_completed(future_to_index):
+                results[future_to_index[future]] = future.result()
+        return results
 
     def _build_ab_prompt(self, *, test, persona):
         return "\n".join(
@@ -3011,8 +3164,15 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             try:
                 self.repository.delete_ui_test_results(db_session, company_id=company_id, test_id=test.id)
                 results = []
-                for persona in personas:
-                    result_data = self._run_ui_persona_evaluation(company_id=company_id, user_id=user_id, test=test, persona=persona, screens=screens, media_parts=media_parts)
+                result_data_by_persona = self._run_ui_evaluations_for_personas(
+                    company_id=company_id,
+                    user_id=user_id,
+                    test=test,
+                    personas=personas,
+                    screens=screens,
+                    media_parts=media_parts,
+                )
+                for persona, result_data in zip(personas, result_data_by_persona):
                     result = self.repository.create_ui_test_result(db_session, company_id=company_id, test_id=test.id, persona_id=persona.id, data=result_data)
                     self.repository.create_activity(
                         db_session,
