@@ -138,7 +138,7 @@ def _flow_comment_guidance():
             "- pinComments에는 이전 행동 이후 왜 불필요하거나 헷갈리는지, 다음 단계 확신에 어떤 영향을 주는지, 또는 완료 가능성을 어떻게 높이는지 중 최소 하나를 포함하세요.",
             "- '현재 화면의 정보가 부족하다', '버튼이 헷갈린다'처럼 짧은 단정으로 끝내지 말고, 퍼소나의 판단 근거나 사용 맥락을 덧붙이세요.",
             "- 첫 단계는 task 진입 관점에서, 이후 단계는 이전 단계에서 기대한 결과와 현재 단계의 연결 관점에서 작성하세요.",
-            "- flowAnalysis의 transitionFromPrevious, expectedNextAction, frictionPoints, suggestions는 각각 1문장으로 짧게 작성하되, 가능한 한 단계명을 포함하세요.",
+            "- flowAnalysis의 transitionFromPrevious, expectedNextAction, suggestions는 각각 1문장으로 짧게 작성하되, 가능한 한 단계명을 포함하세요.",
         ]
     )
 
@@ -172,12 +172,11 @@ def build_ui_test_prompt(*, test_name, test_description, scope_type, flow_goal, 
         "For each screen, provide at least one positive evidence point and one risk/improvement point when possible.",
         "Attached images follow the same order as [Screens]. x and y must point to the actual UI element in the attached image as 0-100 percentage coordinates, where x is left-to-right and y is top-to-bottom.",
         "Do not use generic center coordinates unless the target element is genuinely centered. If exact location is uncertain, choose the most plausible visible element area and name that element in content.",
-        is_flow and "This is a flow test. Evaluate whether the persona can keep moving toward the task goal across screens; include flowAnalysis for every screenIndex with confusionScore, dropoffRisk, frictionPoints, suggestions, transitionFromPrevious, expectedNextAction, bottleneckRisk.",
-        is_flow and "For flow tests, frictionPoints are the primary comments shown in the result-side friction panel. Each frictionPoint must explain why the persona may hesitate, become confused, or lose motivation at that step.",
+        is_flow and "This is a flow test. Evaluate whether the persona can keep moving toward the task goal across screens; include flowAnalysis for every screenIndex with confusionScore, dropoffRisk, suggestions, transitionFromPrevious, expectedNextAction, bottleneckRisk.",
         is_flow and "For flow tests, pinComments should focus on friction/improvement evidence for visible UI elements; use praise only when it is genuinely important evidence.",
         is_flow and "type은 praise, problem, improvement 중 하나입니다. Flow에서 praise는 일반 칭찬이 아니라 다음 행동 안내, 결과 피드백, 입력 부담 감소처럼 완료 가능성을 높이는 근거가 명확할 때만 사용하세요.",
         not is_flow and "type은 praise, problem, improvement 중 하나입니다.",
-        is_flow and "flowAnalysis에는 각 단계의 confusionScore, dropoffRisk, frictionPoints, suggestions, transitionFromPrevious, expectedNextAction, bottleneckRisk, uiClarity, visualHierarchy를 포함하세요.",
+        is_flow and "flowAnalysis에는 각 단계의 confusionScore, dropoffRisk, suggestions, transitionFromPrevious, expectedNextAction, bottleneckRisk, uiClarity, visualHierarchy를 포함하세요.",
         not is_flow and "flowAnalysis는 빈 배열로 반환하세요.",
         is_flow and "flowAnalysis의 confusionScore/dropoffRisk/uiClarity/visualHierarchy는 0~100 정수로 쓰세요. confusionScore/dropoffRisk는 높을수록 부정, 나머지는 높을수록 긍정입니다.",
         is_flow and _flow_comment_guidance(),
@@ -239,7 +238,7 @@ def build_ui_chunk_prompt(
             "이 호출은 누락된 화면 커버리지를 보완하기 위한 것입니다. 지정된 screenIndex를 반드시 모두 커버하세요."
             if repair_mode
             else "지정된 screenIndex를 모두 커버하세요.",
-            "flowAnalysis에는 각 단계의 confusionScore, dropoffRisk, frictionPoints, suggestions, transitionFromPrevious, expectedNextAction, bottleneckRisk, uiClarity, visualHierarchy를 포함하세요."
+            "flowAnalysis에는 각 단계의 confusionScore, dropoffRisk, suggestions, transitionFromPrevious, expectedNextAction, bottleneckRisk, uiClarity, visualHierarchy를 포함하세요."
             if is_flow
             else "flowAnalysis는 빈 배열로 반환하세요.",
             "flowAnalysis의 confusionScore/dropoffRisk/uiClarity/visualHierarchy는 0~100 정수로 쓰세요. confusionScore/dropoffRisk는 높을수록 부정, 나머지는 높을수록 긍정입니다."
@@ -261,7 +260,7 @@ def build_ui_chunk_prompt(
             step_context,
             "",
             "[반환 JSON]",
-            '{"screenFeedbacks":[{"screenIndex":0,"feedback":"string"}],"pinComments":[{"screenIndex":0,"x":50,"y":50,"type":"problem","content":"string"}],"flowAnalysis":[{"screenIndex":0,"confusionScore":50,"dropoffRisk":50,"frictionPoints":["string"],"suggestions":["string"],"transitionFromPrevious":null,"expectedNextAction":"string","bottleneckRisk":"medium","uiClarity":50,"visualHierarchy":50}]}',
+            '{"screenFeedbacks":[{"screenIndex":0,"feedback":"string"}],"pinComments":[{"screenIndex":0,"x":50,"y":50,"type":"problem","content":"string"}],"flowAnalysis":[{"screenIndex":0,"confusionScore":50,"dropoffRisk":50,"suggestions":["string"],"transitionFromPrevious":null,"expectedNextAction":"string","bottleneckRisk":"medium","uiClarity":50,"visualHierarchy":50}]}',
         ]
         if part
     )
@@ -294,7 +293,6 @@ def build_generated_feedback_evidence(*, screens, screen_feedbacks, pin_comments
             continue
         screen_index = item.get("screenIndex", 0)
         screen_name = screens[screen_index].get("name") if isinstance(screen_index, int) and screen_index < len(screens) else f"화면 {screen_index + 1}"
-        friction = " / ".join(str(point) for point in _as_list(item.get("frictionPoints") or item.get("friction_points")) if str(point).strip()) or "없음"
         suggestions = " / ".join(str(point) for point in _as_list(item.get("suggestions")) if str(point).strip()) or "없음"
         flow_analysis_lines.append(
             " / ".join(
@@ -303,7 +301,6 @@ def build_generated_feedback_evidence(*, screens, screen_feedbacks, pin_comments
                     f"- screenIndex {screen_index} ({screen_name})",
                     f"confusionScore={item.get('confusionScore')}",
                     f"dropoffRisk={item.get('dropoffRisk')}",
-                    f"frictionPoints={friction}",
                     f"suggestions={suggestions}",
                     f"transitionFromPrevious={item.get('transitionFromPrevious')}" if item.get("transitionFromPrevious") else None,
                     f"expectedNextAction={item.get('expectedNextAction')}" if item.get("expectedNextAction") else None,
@@ -376,7 +373,7 @@ def build_ui_summary_prompt(
             "화면 감상보다, 목표를 완료하기 위해 각 단계가 자연스럽게 이어지는지와 어디에서 멈칫하는지를 경험 중심으로 평가하세요."
             if is_flow
             else "개선안을 새로 쓰기보다, 먼저 생성된 하단 코멘트의 긍정/부정 근거를 취합해 요약하세요.",
-            "종합 반응은 먼저 생성된 flowAnalysis를 최우선 근거로 삼아, 단계별 task 수행 판단과 같은 방향으로 작성하세요."
+            "종합 반응은 먼저 생성된 flowAnalysis를 최우선 근거로 삼되, 단계별 내용을 순서대로 다시 쓰지 말고 전체 task를 수행한 뒤 남는 하나의 판단으로 작성하세요."
             if generated_evidence_context and is_flow
             else None,
             "종합 반응은 먼저 생성된 화면별 반응과 코멘트를 바탕으로, 화면별 코멘트와 같은 방향으로 작성하세요."
@@ -385,25 +382,19 @@ def build_ui_summary_prompt(
             _persona_response_guidance(True) if is_flow else _single_screen_summary_guidance(persona_name),
             _good_utterance_guidance(),
             None if is_flow else _evaluation_criteria(False),
-            "scores는 이 퍼소나가 실제로 느낀 정도를 0~100 정수로 평가하세요." if not is_flow else None,
-            "모든 점수를 50으로 두지 말고, 화면과 퍼소나 반응에 따라 차이를 주세요." if not is_flow else None,
-            "점수 기준:" if not is_flow else None,
-            "- clarity: 정보가 명확하게 전달됐는가" if not is_flow else None,
-            "- usability: 사용하기 쉽다고 느꼈는가" if not is_flow else None,
-            "- appeal: 시각적으로 매력적이라고 느꼈는가" if not is_flow else None,
-            "점수 해석: 0~39는 심각한 문제, 40~59는 혼재/보통 이하, 60~79는 수용 가능, 80~100은 강한 긍정입니다."
-            if not is_flow
-            else None,
-            "overallFeedback는 3문장 이내, flowSummary는 2문장 이내로 짧게 작성하세요. 둘 다 task 수행 흐름, 단계 간 연결성, 다음 행동 판단을 중심으로 써야 합니다."
+            "overallFeedback와 flowSummary는 각각 3~5문장으로 작성하세요. 단, 단계별 코멘트를 합치거나 첫 번째/두 번째/마지막 단계 순서로 나열하지 말고 전체 플로우에 대한 하나의 총평으로 써야 합니다."
             if is_flow
-            else "overallFeedback는 3문장 이내로 작성하세요.",
-            "overallFeedback와 flowSummary에는 screenIndex, 화면 id, 괄호형 내부 참조를 쓰지 마세요. 단계를 언급할 때는 '첫 번째 단계', '두 번째 단계', '마지막 단계'처럼 자연어 순서로 표현하세요."
+            else "overallFeedback는 3~5문장으로 작성하세요.",
+            "overallFeedback는 반드시 '저는' 또는 '제가'가 자연스럽게 포함된 1인칭 task 수행 총평으로 작성하세요."
+            if is_flow
+            else f"overallFeedback는 반드시 '{persona_name}님은'으로 시작하는 3인칭 요약 리포트 문장으로 작성하세요.",
+            "overallFeedback와 flowSummary에는 screenIndex, 화면 id, 괄호형 내부 참조를 쓰지 마세요. '첫 번째 단계', '두 번째 단계', '마지막 단계'처럼 단계를 순서대로 열거하지 마세요."
             if is_flow
             else "overallFeedback에는 하단 코멘트의 핵심 부정 의견과 긍정 의견을 취합해 쓰고, 개별 발화처럼 따옴표로 말하지 마세요.",
             "반환 JSON 구조:",
             '{"overallFeedback":"string","flowSummary":"string"}'
             if is_flow
-            else '{"scores":{"clarity":number,"usability":number,"appeal":number},"overallFeedback":"string"}',
+            else '{"overallFeedback":"string"}',
             "",
             f"테스트명: {test_name}",
             f"테스트 설명: {test_description}" if test_description else None,
@@ -420,7 +411,7 @@ def build_ui_summary_prompt(
             "",
             generated_evidence_context,
             "",
-            "플로우 전체 반응과 flowSummary를 task 수행 흐름, 단계 간 연결성, 다음 행동 명확성을 중심으로 작성하세요."
+            "플로우 전체 반응과 flowSummary는 가장 큰 진행 동기, 가장 큰 망설임, 실행 전 확인하고 싶은 조건을 중심으로 하나의 총평으로 작성하세요."
             if is_flow
             else "단일 화면 기준으로 평가하세요.",
         ]
@@ -457,14 +448,12 @@ def build_ui_scoring_evidence_context(*, screens, screen_feedbacks, pin_comments
             continue
         screen_index = item.get("screenIndex", 0)
         screen_name = screens[screen_index].get("name") if isinstance(screen_index, int) and screen_index < len(screens) else f"화면 {screen_index + 1}"
-        friction = " / ".join(str(point) for point in _as_list(item.get("frictionPoints") or item.get("friction_points")) if str(point).strip()) or "없음"
         suggestions = " / ".join(str(point) for point in _as_list(item.get("suggestions")) if str(point).strip()) or "없음"
         flow_analysis_lines.append(
             " / ".join(
                 part
                 for part in [
                     f"- screenIndex {screen_index} ({screen_name})",
-                    f"frictionPoints={friction}",
                     f"suggestions={suggestions}",
                     f"transitionFromPrevious={item.get('transitionFromPrevious')}" if item.get("transitionFromPrevious") else None,
                     f"expectedNextAction={item.get('expectedNextAction')}" if item.get("expectedNextAction") else None,

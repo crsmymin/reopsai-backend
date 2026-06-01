@@ -407,6 +407,19 @@ def _read_number(value, fallback):
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else fallback
 
 
+def _read_index(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return max(0, round(value))
+    if isinstance(value, str):
+        try:
+            return max(0, round(float(value.strip())))
+        except ValueError:
+            return None
+    return None
+
+
 def _read_string_array(value):
     return [_read_string(item) for item in value if _read_string(item)] if isinstance(value, list) else []
 
@@ -488,8 +501,8 @@ def _normalize_ui_scoring_analysis(raw_value):
                     1,
                     0.6 if mapping_role == "secondary" else 1,
                 ),
-                "screenIndex": max(0, round(screen_index)) if isinstance(screen_index, (int, float)) and not isinstance(screen_index, bool) else None,
-                "stepIndex": max(0, round(step_index)) if isinstance(step_index, (int, float)) and not isinstance(step_index, bool) else None,
+                "screenIndex": _read_index(screen_index),
+                "stepIndex": _read_index(step_index),
                 "reason": _read_string(entry.get("reason")),
                 "sourceComment": source_comment,
             }
@@ -681,6 +694,67 @@ def _score_flow_completion_metric(events, screen_index=None, total_step_count=No
 
 def _score_metric(events, metric):
     return _weighted_event_score([event for event in events if event.get("metric") == metric])
+
+
+def _score_metric_for_screen(events, metric, screen_index, *, include_unscoped=False):
+    return _weighted_event_score(
+        [
+            event
+            for event in events
+            if event.get("metric") == metric
+            and (event.get("screenIndex") == screen_index or (include_unscoped and event.get("screenIndex") is None))
+        ]
+    )
+
+
+def _apply_structured_flow_analysis_scores(*, flow_analysis, analysis_events):
+    if not flow_analysis:
+        return flow_analysis
+    updated = []
+    for item in flow_analysis:
+        screen_index = item.get("screenIndex")
+        confusion_score = _score_flow_risk_metric(analysis_events, "혼란도", screen_index)
+        dropoff_risk = _score_flow_risk_metric(analysis_events, "이탈 위험", screen_index)
+        ui_clarity = _score_metric_for_screen(analysis_events, "명확성", screen_index)
+        visual_hierarchy = _score_metric_for_screen(analysis_events, "만족도", screen_index)
+        updated.append(
+            {
+                **item,
+                "confusionScore": confusion_score if isinstance(confusion_score, (int, float)) else item.get("confusionScore"),
+                "dropoffRisk": dropoff_risk if isinstance(dropoff_risk, (int, float)) else item.get("dropoffRisk"),
+                "uiClarity": ui_clarity if isinstance(ui_clarity, (int, float)) else item.get("uiClarity"),
+                "visualHierarchy": visual_hierarchy if isinstance(visual_hierarchy, (int, float)) else item.get("visualHierarchy"),
+            }
+        )
+    return updated
+
+
+def _apply_structured_screen_scores(*, screen_scores, analysis_events):
+    include_unscoped = len(_as_list(screen_scores)) == 1
+    updated = []
+    for item in _as_list(screen_scores):
+        if not isinstance(item, dict):
+            continue
+        screen_index = item.get("screenIndex")
+        clarity = _score_metric_for_screen(analysis_events, "명확성", screen_index, include_unscoped=include_unscoped)
+        usability = _score_metric_for_screen(analysis_events, "사용성", screen_index, include_unscoped=include_unscoped)
+        satisfaction = _score_metric_for_screen(analysis_events, "만족도", screen_index, include_unscoped=include_unscoped)
+        next_clarity = clarity if isinstance(clarity, (int, float)) else item.get("clarity")
+        next_usability = usability if isinstance(usability, (int, float)) else item.get("usability")
+        next_appeal = satisfaction if isinstance(satisfaction, (int, float)) else item.get("appeal")
+        updated.append(
+            {
+                **item,
+                "clarity": next_clarity,
+                "usability": next_usability,
+                "appeal": next_appeal,
+                "satisfaction": next_appeal,
+                "overall": round((next_clarity + next_usability + next_appeal) / 3)
+                if all(isinstance(value, (int, float)) for value in (next_clarity, next_usability, next_appeal))
+                else item.get("overall"),
+            }
+        )
+    return updated
 
 
 def _build_ui_screen_chunks(total_screens: int, chunk_size: int, overlap: int):
@@ -1103,6 +1177,75 @@ class PersonaService:
             "language": payload.get("language"),
         }
 
+    def _detach_persona_for_ui_test(self, persona):
+        return SimpleNamespace(
+            id=persona.id,
+            schema_version=persona.schema_version,
+            company_id=persona.company_id,
+            team_id=persona.team_id,
+            folder_id=persona.folder_id,
+            created_by_user_id=persona.created_by_user_id,
+            name=persona.name,
+            tag=persona.tag,
+            gender=persona.gender,
+            title=persona.title,
+            personality=persona.personality,
+            language=persona.language,
+            source_type=persona.source_type,
+            source_data=_clean_mapping(persona.source_data),
+            image_asset_id=persona.image_asset_id,
+            image_url=persona.image_url,
+            image_mime_type=persona.image_mime_type,
+            image_prompt=persona.image_prompt,
+            locale=persona.locale,
+            age=persona.age,
+            profile=_clean_mapping(persona.profile),
+            telecom_profile=_clean_mapping(persona.telecom_profile),
+            income=persona.income,
+            sector=persona.sector,
+            generation=persona.generation,
+            ethnicity=persona.ethnicity,
+            current_city=persona.current_city,
+            current_country=persona.current_country,
+            locations=_clean_mapping(persona.locations),
+            organisation=persona.organisation,
+            role_area=persona.role_area,
+            role_level=persona.role_level,
+            attitudes=persona.attitudes,
+            biography=persona.biography,
+            demeanour=persona.demeanour,
+            interests=persona.interests,
+            behaviours=persona.behaviours,
+            motivation=persona.motivation,
+            upbringing=persona.upbringing,
+            preferences=persona.preferences,
+            social_context=persona.social_context,
+            cultural_background=persona.cultural_background,
+            quote=persona.quote,
+            additional_info=persona.additional_info,
+            telecom_usage=_clean_mapping(persona.telecom_usage),
+            telecom_values=_clean_mapping(persona.telecom_values),
+            ux_interaction=_clean_mapping(persona.ux_interaction),
+            telecom_behavior_dimensions=_clean_mapping(persona.telecom_behavior_dimensions),
+            telecom_behavior_scores=_clean_mapping(getattr(persona, "telecom_behavior_scores", None)),
+            generation_metadata=_clean_mapping(persona.generation_metadata),
+            created_at=persona.created_at,
+            updated_at=persona.updated_at,
+            interview_pack=_clean_mapping(getattr(persona, "interview_pack", None)),
+        )
+
+    def _detach_ui_test_for_parallel(self, test):
+        return SimpleNamespace(
+            id=test.id,
+            name=test.name,
+            description=test.description,
+            scope_type=test.scope_type,
+            source_type=test.source_type,
+            device_type=test.device_type,
+            validation_type=test.validation_type,
+            source_data=_clean_mapping(test.source_data),
+        )
+
     def _persona_context(self, persona, persona_pack: Optional[dict] = None):
         payload = self.persona_payload(persona)
         field_labels = [
@@ -1523,7 +1666,6 @@ class PersonaService:
                         "screenIndex": screen_index,
                         "confusionScore": 55,
                         "dropoffRisk": 45,
-                        "frictionPoints": [f"{screen_name}에서 다음 행동을 바로 확신하기 어려울 수 있어요."],
                         "suggestions": ["현재 단계와 다음 행동을 더 명확하게 보여주면 흐름을 따라가기 쉬워요."],
                         "transitionFromPrevious": None
                         if screen_index == 0
@@ -1588,7 +1730,6 @@ class PersonaService:
                         "screenIndex": max(0, min(screen_index, max_screen_index)),
                         "confusionScore": _clamp_percent(item.get("confusionScore", item.get("confusion_score", 35)), 35),
                         "dropoffRisk": _clamp_percent(item.get("dropoffRisk", item.get("dropoff_risk", 30)), 30),
-                        "frictionPoints": [str(point).strip() for point in _as_list(item.get("frictionPoints") or item.get("friction_points")) if str(point).strip()][:5],
                         "suggestions": [str(point).strip() for point in _as_list(item.get("suggestions")) if str(point).strip()][:5],
                         "transitionFromPrevious": item.get("transitionFromPrevious") or item.get("transition_from_previous"),
                         "expectedNextAction": item.get("expectedNextAction") or item.get("expected_next_action"),
@@ -1658,7 +1799,6 @@ class PersonaService:
                 "screenIndex": index,
                 "confusionScore": 35,
                 "dropoffRisk": 30,
-                "frictionPoints": [],
                 "suggestions": ["다음 행동을 더 명확히 표시합니다."],
                 "expectedNextAction": "다음 단계로 이동",
                 "bottleneckRisk": "low",
@@ -1880,7 +2020,6 @@ class PersonaService:
                     "screenIndex": screen_index,
                     "confusionScore": int(item.get("confusionScore", item.get("confusion_score", 35)) or 35),
                     "dropoffRisk": int(item.get("dropoffRisk", item.get("dropoff_risk", 30)) or 30),
-                    "frictionPoints": _as_list(item.get("frictionPoints") or item.get("friction_points")),
                     "suggestions": _as_list(item.get("suggestions")),
                     "transitionFromPrevious": item.get("transitionFromPrevious") or item.get("transition_from_previous"),
                     "expectedNextAction": item.get("expectedNextAction") or item.get("expected_next_action"),
@@ -1897,7 +2036,6 @@ class PersonaService:
                     "screenIndex": screen_index,
                     "confusionScore": 35,
                     "dropoffRisk": 30,
-                    "frictionPoints": [f"{screen_name}에서 다음 행동을 확신할 근거가 부족할 수 있습니다."],
                     "suggestions": [f"{screen_name}에서 목표 수행에 필요한 다음 행동과 상태 변화를 더 분명히 보여줍니다."],
                     "transitionFromPrevious": None if screen_index == 0 else f"이전 단계의 선택 결과가 {screen_name}에 이어지는지 확인해야 합니다.",
                     "expectedNextAction": f"{screen_name}의 핵심 CTA 또는 탐색 경로를 확인합니다.",
@@ -1905,34 +2043,6 @@ class PersonaService:
                 }
             )
         return sorted(normalized, key=lambda item: item["screenIndex"])
-
-    def _merge_ui_flow_friction_pin_comments(self, *, pin_comments, flow_analysis):
-        pins = list(_as_list(pin_comments))
-        existing = {
-            (pin.get("screenIndex"), str(pin.get("content") or "").strip())
-            for pin in pins
-            if isinstance(pin, dict) and str(pin.get("content") or "").strip()
-        }
-        for flow_item in _as_list(flow_analysis):
-            if not isinstance(flow_item, dict):
-                continue
-            screen_index = flow_item.get("screenIndex")
-            for point in _as_list(flow_item.get("frictionPoints") or flow_item.get("friction_points")):
-                content = str(point or "").strip()
-                if not content or (screen_index, content) in existing:
-                    continue
-                pins.append(
-                    {
-                        "screenIndex": screen_index,
-                        "type": "improvement",
-                        "content": content,
-                        "source": "flowAnalysis.frictionPoints",
-                        "hasMarkerCoordinates": False,
-                        "has_marker_coordinates": False,
-                    }
-                )
-                existing.add((screen_index, content))
-        return pins
 
     def _resolve_ui_screen_reference_index(self, item: dict, screens, fallback_index: int = 0):
         screen_id = item.get("screenId") or item.get("screen_id")
@@ -1962,10 +2072,10 @@ class PersonaService:
 
     def _normalize_ui_screen_scores(self, *, feedback: dict, screens, scores: dict, flow_analysis):
         base = {
-            "clarity": self._score_value(scores, ("clarity", "clear", "readability"), 70),
-            "usability": self._score_value(scores, ("usability", "ease", "overall"), 70),
-            "appeal": self._score_value(scores, ("appeal", "satisfaction", "score"), 65),
-            "overall": self._score_value(scores, ("overall", "overallFlowScore", "overall_flow_score"), 68),
+            "clarity": 50,
+            "usability": 50,
+            "appeal": 50,
+            "overall": 50,
         }
         existing = _as_list(
             scores.get("screenScores")
@@ -2057,18 +2167,11 @@ class PersonaService:
     def _fallback_ui_summary_feedback(self, *, persona, screens, screen_feedbacks, pin_comments, flow_analysis, is_flow: bool):
         persona_name = getattr(persona, "name", None) or "이 퍼소나"
         if is_flow:
-            friction_items = []
-            for item in _as_list(flow_analysis):
-                screen_index = item.get("screenIndex", 0) if isinstance(item, dict) else 0
-                screen_name = screens[screen_index].get("name") if isinstance(screen_index, int) and screen_index < len(screens) else f"화면 {screen_index + 1}"
-                for point in _as_list(_as_dict(item).get("frictionPoints") or _as_dict(item).get("friction_points")):
-                    text = str(point).strip()
-                    if text:
-                        friction_items.append(f"{screen_name} 단계에서 {text}")
-            overall = " ".join(friction_items[:2]) or "저는 전체 흐름에서 다음 단계로 넘어가야 하는 이유와 버튼의 역할이 더 분명해야 목표를 끝까지 수행할 수 있을 것 같아요."
+            pin_items = [str(comment.get("content") or "").strip() for comment in _as_list(pin_comments) if isinstance(comment, dict) and comment.get("type") != "praise"]
+            overall = " ".join([item for item in pin_items if item][:2]) or "저는 전체 흐름에서 다음 단계로 넘어가야 하는 이유와 버튼의 역할이 더 분명해야 목표를 끝까지 수행할 수 있을 것 같아요."
             flow_summary = (
-                f"{' '.join(friction_items[:2])} 이런 지점 때문에 흐름을 따라가는 과정에서 잠깐 멈칫할 수 있어요."
-                if friction_items
+                f"{' '.join([item for item in pin_items if item][:2])} 이런 지점 때문에 흐름을 따라가는 과정에서 잠깐 멈칫할 수 있어요."
+                if any(pin_items)
                 else "전체 플로우에서 사용자가 다음 행동을 바로 이해할 수 있는지 추가로 확인해야 해요."
             )
             return {"scores": {}, "overallFeedback": overall, "flowSummary": flow_summary, "overallFlowScore": None}
@@ -2217,8 +2320,8 @@ class PersonaService:
         is_flow = test.scope_type == "flow" and len(screens) > 1
         chunk_config = {"size": 2, "overlap": 1} if is_flow else {"size": 2, "overlap": 0}
         screen_chunks = _build_ui_screen_chunks(len(screens), chunk_config["size"], chunk_config["overlap"])
-        chunk_results = [
-            self._run_ui_chunk_feedback(
+        def run_chunk(screen_indices):
+            return self._run_ui_chunk_feedback(
                 company_id=company_id,
                 user_id=user_id,
                 test=test,
@@ -2228,8 +2331,17 @@ class PersonaService:
                 media_parts=media_parts,
                 persona_pack=persona_pack,
             )
-            for screen_indices in screen_chunks
-        ]
+
+        if len(screen_chunks) <= 1:
+            chunk_results = [run_chunk(screen_indices) for screen_indices in screen_chunks]
+        else:
+            max_workers = min(len(screen_chunks), 2 if is_flow else 3)
+            chunk_results = [None] * len(screen_chunks)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ui-test-chunk") as executor:
+                future_to_index = {executor.submit(run_chunk, screen_indices): index for index, screen_indices in enumerate(screen_chunks)}
+                for future in concurrent.futures.as_completed(future_to_index):
+                    chunk_results[future_to_index[future]] = future.result()
+            chunk_results = [result for result in chunk_results if result is not None]
         screen_feedbacks = _merge_ui_screen_feedbacks([], [item for result in chunk_results for item in _as_list(_as_dict(result.get("feedback")).get("screenFeedbacks"))])
         pin_comments = _merge_ui_pin_comments([], [item for result in chunk_results for item in _as_list(_as_dict(result.get("feedback")).get("pinComments"))])
         flow_analysis = _merge_ui_flow_analysis([], [item for result in chunk_results for item in _as_list(_as_dict(result.get("feedback")).get("flowAnalysis"))])
@@ -2310,20 +2422,34 @@ class PersonaService:
             if remaining_flow_indices:
                 fallback = self._fallback_ui_chunk_feedback(screens=screens, screen_indices=remaining_flow_indices, is_flow=True)
                 flow_analysis = _merge_ui_flow_analysis(flow_analysis, fallback.get("flowAnalysis"))
-        if is_flow:
-            pin_comments = self._merge_ui_flow_friction_pin_comments(pin_comments=pin_comments, flow_analysis=flow_analysis)
         pin_comments = self._apply_ui_pin_coordinate_hints(pin_comments=pin_comments, screens=screens)
-        summary_result = self._run_ui_summary_feedback(
-            company_id=company_id,
-            user_id=user_id,
-            test=test,
-            persona=persona,
-            screens=screens,
-            screen_feedbacks=screen_feedbacks,
-            pin_comments=pin_comments,
-            flow_analysis=flow_analysis,
-            persona_pack=persona_pack,
-        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="ui-test-summary") as executor:
+            summary_future = executor.submit(
+                self._run_ui_summary_feedback,
+                company_id=company_id,
+                user_id=user_id,
+                test=test,
+                persona=persona,
+                screens=screens,
+                screen_feedbacks=screen_feedbacks,
+                pin_comments=pin_comments,
+                flow_analysis=flow_analysis,
+                persona_pack=persona_pack,
+            )
+            scoring_future = executor.submit(
+                self._run_ui_scoring_analysis,
+                company_id=company_id,
+                user_id=user_id,
+                test=test,
+                persona=persona,
+                screens=screens,
+                screen_feedbacks=screen_feedbacks,
+                pin_comments=pin_comments,
+                flow_analysis=flow_analysis,
+                persona_pack=persona_pack,
+            )
+            summary_result = summary_future.result()
+            scoring_analysis = scoring_future.result()
         summary_feedback = _as_dict(summary_result.get("feedback"))
         scores = _as_dict(summary_feedback.get("scores"))
         summary = summary_feedback.get("overallFeedback") or "UI test run completed"
@@ -2339,16 +2465,14 @@ class PersonaService:
             scores=scores,
             flow_analysis=flow_analysis,
         )
-        scoring_analysis = self._run_ui_scoring_analysis(
-            company_id=company_id,
-            user_id=user_id,
-            test=test,
-            persona=persona,
-            screens=screens,
-            screen_feedbacks=screen_feedbacks,
-            pin_comments=pin_comments,
+        analysis_events = scoring_analysis.get("analysisEvents") or []
+        flow_analysis = _apply_structured_flow_analysis_scores(
             flow_analysis=flow_analysis,
-            persona_pack=persona_pack,
+            analysis_events=analysis_events,
+        )
+        screen_scores = _apply_structured_screen_scores(
+            screen_scores=screen_scores,
+            analysis_events=analysis_events,
         )
         structured_scores = _apply_structured_scoring(
             fallback_scores={
@@ -2358,7 +2482,7 @@ class PersonaService:
                 "overall": self._score_value(scores, ("overall", "overallFlowScore", "overall_flow_score"), 68),
                 "overallFlowScore": scores.get("overallFlowScore"),
             },
-            analysis_events=scoring_analysis.get("analysisEvents") or [],
+            analysis_events=analysis_events,
             is_flow_test=is_flow,
             flow_step_count=len(screens),
         )
@@ -2432,34 +2556,36 @@ class PersonaService:
         if not personas:
             return []
         max_workers = _resolve_ui_test_max_concurrency(len(personas))
+        detached_test = self._detach_ui_test_for_parallel(test)
+        detached_personas = [self._detach_persona_for_ui_test(persona) for persona in personas]
         if max_workers == 1:
             return [
                 self._run_ui_persona_evaluation(
                     company_id=company_id,
                     user_id=user_id,
-                    test=test,
-                    persona=persona,
+                    test=detached_test,
+                    persona=detached_persona,
                     screens=screens,
                     media_parts=media_parts,
                     persona_pack=persona_packs[index] if index < len(persona_packs) else None,
                 )
-                for index, persona in enumerate(personas)
+                for index, detached_persona in enumerate(detached_personas)
             ]
 
-        results = [None] * len(personas)
+        results = [None] * len(detached_personas)
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="persona-ui-test") as executor:
             future_to_index = {
                 executor.submit(
                     self._run_ui_persona_evaluation,
                     company_id=company_id,
                     user_id=user_id,
-                    test=test,
-                    persona=persona,
+                    test=detached_test,
+                    persona=detached_persona,
                     screens=screens,
                     media_parts=media_parts,
                     persona_pack=persona_packs[index] if index < len(persona_packs) else None,
                 ): index
-                for index, persona in enumerate(personas)
+                for index, detached_persona in enumerate(detached_personas)
             }
             for future in concurrent.futures.as_completed(future_to_index):
                 results[future_to_index[future]] = future.result()
