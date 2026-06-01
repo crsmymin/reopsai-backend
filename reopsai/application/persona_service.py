@@ -23,6 +23,7 @@ from reopsai.domain.persona.generation import (
     validate_generation_payload,
     validate_segment_suggestion_payload,
 )
+from reopsai.domain.persona.ui_test_prompts import build_ui_chunk_prompt, build_ui_scoring_prompt, build_ui_summary_prompt, build_ui_test_prompt
 from reopsai.infrastructure.persistence.engine import session_scope
 from reopsai.infrastructure.persistence.repositories.persona_repository import PersonaRepository
 from reopsai.infrastructure.persona_capture import persona_capture
@@ -44,12 +45,14 @@ class PersonaUrlCaptureError(RuntimeError):
     pass
 
 
-PERSONA_INTERVIEW_PACK_VERSION = "persona_interview_pack_v1"
+PERSONA_INTERVIEW_PACK_VERSION = "persona_interview_pack_v2"
 DEFAULT_PERSONA_PACK_MODEL = "gemini-2.5-flash"
 DEFAULT_PERSONA_INTERVIEW_MODEL = "gpt-5.4"
+DEFAULT_PERSONA_UI_TEST_SCORING_MODEL = "gpt-5.4-mini"
 DEFAULT_INTERVIEW_MAX_CONCURRENCY = 4
 DEFAULT_INTERVIEW_RETRY_ATTEMPTS = 2
 DEFAULT_UI_TEST_MAX_CONCURRENCY = 4
+PERSONA_TAG_MAX_LENGTH = 20
 
 
 @dataclass(frozen=True)
@@ -126,6 +129,13 @@ PERSONA_LLM_STAGE_CONFIGS = {
         max_output_tokens=8192,
         env_prefix="PERSONA_LLM_UI_TEST",
     ),
+    "persona_ui_test_scoring": PersonaLlmStageConfig(
+        provider="openai",
+        model=DEFAULT_PERSONA_UI_TEST_SCORING_MODEL,
+        temperature=0.2,
+        max_output_tokens=8192,
+        env_prefix="PERSONA_LLM_UI_TEST_SCORING",
+    ),
     "persona_ab_test": PersonaLlmStageConfig(
         provider="gemini",
         model="gemini-2.5-flash",
@@ -170,6 +180,11 @@ def _first_text(*values):
 def _clean_model_name(value):
     model = str(value or "").strip()
     return model or None
+
+
+def _normalize_persona_tag(value):
+    tag = str(value or "").strip()
+    return tag[:PERSONA_TAG_MAX_LENGTH] if tag else None
 
 
 def _infer_provider_from_model(model: str | None, fallback: str) -> str:
@@ -356,6 +371,388 @@ def _clamp_percent(value, fallback: int = 50):
     if not isinstance(value, (int, float)):
         return fallback
     return max(0, min(100, round(value)))
+
+
+SCORING_METRICS = ("명확성", "사용성", "만족도", "혼란도", "이탈 위험", "효율성")
+SCORING_SUB_METRICS = (
+    "직관성",
+    "인지 용이성",
+    "유용성",
+    "유연성",
+    "행동 유도성",
+    "디자인 매력도",
+    "서비스 신뢰도",
+    "맥락 관계성",
+    "관심/동기 적합성",
+    "효율성",
+)
+POSITIVE_SCORING_METRICS = {"명확성", "사용성", "만족도", "효율성"}
+NEGATIVE_SCORING_METRICS = {"혼란도", "이탈 위험"}
+FLOW_STEP_AVERAGE_WEIGHT = 0.45
+FLOW_STEP_MAX_WEIGHT = 0.45
+FLOW_STEP_COVERAGE_WEIGHT = 0.1
+FLOW_FAILURE_RISK_SLOPE = 0.65
+FLOW_COMPLETION_DIRECT_WEIGHT = 0.45
+FLOW_COMPLETION_CONFUSION_WEIGHT = 0.2
+FLOW_COMPLETION_DROPOFF_WEIGHT = 0.35
+FLOW_RISK_SEVERITY_EXPONENT = 1.2
+FLOW_RISK_SEVERITY_BASE = 5.8
+
+
+def _read_string(value):
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _read_number(value, fallback):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else fallback
+
+
+def _read_string_array(value):
+    return [_read_string(item) for item in value if _read_string(item)] if isinstance(value, list) else []
+
+
+def _read_nullable_string(value):
+    text = _read_string(value)
+    return text or None
+
+
+def _clamp_range(value, minimum, maximum, fallback):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return fallback
+    return max(minimum, min(maximum, value))
+
+
+def _read_scoring_metric(value):
+    if value == "예상 완료율":
+        return "효율성"
+    return value if isinstance(value, str) and value in SCORING_METRICS else None
+
+
+def _read_scoring_sub_metric(value):
+    return value if isinstance(value, str) and value in SCORING_SUB_METRICS else None
+
+
+def _normalize_ui_scoring_analysis(raw_value):
+    source = _as_dict(raw_value)
+    if not source:
+        return {"keyElements": [], "analysisEvents": []}
+
+    key_elements = []
+    for item in _as_list(source.get("keyElements") or source.get("key_elements")):
+        entry = _as_dict(item)
+        name = _read_string(entry.get("name"))
+        if not name:
+            continue
+        key_elements.append(
+            {
+                "name": name,
+                "importance": _clamp_range(_read_number(entry.get("importance"), 1), 0.5, 1.5, 1),
+                "relatedMetrics": [
+                    metric
+                    for metric in (_read_scoring_metric(value) for value in _read_string_array(entry.get("relatedMetrics") or entry.get("related_metrics")))
+                    if metric
+                ],
+                "reason": _read_string(entry.get("reason")),
+            }
+        )
+
+    analysis_events = []
+    for item in _as_list(source.get("analysisEvents") or source.get("analysis_events")):
+        entry = _as_dict(item)
+        metric = _read_scoring_metric(entry.get("metric"))
+        sub_metric = _read_scoring_sub_metric(entry.get("subMetric") or entry.get("sub_metric"))
+        polarity = entry.get("polarity") if entry.get("polarity") in {"positive", "negative"} else None
+        mapping_role = "secondary" if entry.get("mappingRole") == "secondary" or entry.get("mapping_role") == "secondary" else "primary"
+        source_comment = _read_string(entry.get("sourceComment") or entry.get("source_comment"))
+        target_element = _read_string(entry.get("targetElement") or entry.get("target_element"))
+        if not metric or not sub_metric or not polarity or not source_comment or not target_element:
+            continue
+        screen_index = entry.get("screenIndex", entry.get("screen_index"))
+        step_index = entry.get("stepIndex", entry.get("step_index"))
+        analysis_events.append(
+            {
+                "testType": "flow" if entry.get("testType") == "flow" or entry.get("test_type") == "flow" else "screen",
+                "metric": metric,
+                "subMetric": sub_metric,
+                "targetElement": target_element,
+                "matchedKeyElement": _read_nullable_string(entry.get("matchedKeyElement") or entry.get("matched_key_element")),
+                "polarity": polarity,
+                "severity": _clamp_range(_read_number(entry.get("severity"), 3), 1, 5, 3),
+                "elementImportance": _clamp_range(_read_number(entry.get("elementImportance") or entry.get("element_importance"), 1), 0.5, 1.5, 1),
+                "personaRelevance": _clamp_range(_read_number(entry.get("personaRelevance") or entry.get("persona_relevance"), 3), 1, 5, 3),
+                "confidence": _clamp_range(_read_number(entry.get("confidence"), 0.7), 0, 1, 0.7),
+                "mappingRole": mapping_role,
+                "impactMultiplier": _clamp_range(
+                    _read_number(entry.get("impactMultiplier") or entry.get("impact_multiplier"), 0.6 if mapping_role == "secondary" else 1),
+                    0.2,
+                    1,
+                    0.6 if mapping_role == "secondary" else 1,
+                ),
+                "screenIndex": max(0, round(screen_index)) if isinstance(screen_index, (int, float)) and not isinstance(screen_index, bool) else None,
+                "stepIndex": max(0, round(step_index)) if isinstance(step_index, (int, float)) and not isinstance(step_index, bool) else None,
+                "reason": _read_string(entry.get("reason")),
+                "sourceComment": source_comment,
+            }
+        )
+
+    return {"keyElements": key_elements, "analysisEvents": analysis_events}
+
+
+def _cap_flow_completion_by_risk(completion_rate, flow_failure_risk):
+    risk_ceiling = _clamp_range(
+        100 - flow_failure_risk * FLOW_FAILURE_RISK_SLOPE,
+        0,
+        99 if flow_failure_risk > 0 else 100,
+        100,
+    )
+    return _clamp_percent(min(completion_rate, risk_ceiling), 0)
+
+
+def _get_comment_score(event):
+    severity = _clamp_range(event.get("severity"), 1, 5, 3)
+    is_positive_metric = event.get("metric") in POSITIVE_SCORING_METRICS
+    positive_spread = 12 if event.get("testType") == "screen" else 9
+    negative_spread = 8
+    direction_score = 50 + severity * positive_spread if event.get("polarity") == "positive" else 50 - severity * negative_spread
+    risk_score = 50 + severity * negative_spread if event.get("polarity") == "negative" else 50 - severity * positive_spread
+    return _clamp_percent(direction_score if is_positive_metric else risk_score, 0)
+
+
+def _get_comment_weight(event):
+    severity = _clamp_range(event.get("severity"), 1, 5, 3)
+    element_importance = _clamp_range(event.get("elementImportance"), 0.5, 1.5, 1)
+    confidence = _clamp_range(event.get("confidence"), 0, 1, 0.8)
+    persona_relevance = _clamp_range(event.get("personaRelevance"), 1, 5, 3)
+    impact_multiplier = _clamp_range(event.get("impactMultiplier"), 0.2, 1, 1)
+    severity_weight = severity**1.35
+    element_weight = element_importance**1.2
+    persona_weight = 0.7 + ((persona_relevance - 1) / 4) * 0.8
+    confidence_weight = 0.55 + confidence * 0.45
+    polarity_weight = 1.12 if event.get("polarity") == "negative" else 1
+    return max(0.01, severity_weight * element_weight * confidence_weight * persona_weight * polarity_weight * impact_multiplier)
+
+
+def _weighted_event_score(events):
+    value = 0
+    weight = 0
+    for event in events:
+        event_weight = _get_comment_weight(event)
+        value += _get_comment_score(event) * event_weight
+        weight += event_weight
+    if weight <= 0:
+        return None
+    return _clamp_percent(value / weight, 0)
+
+
+def _get_flow_risk_impact(event):
+    severity = _clamp_range(event.get("severity"), 1, 5, 3)
+    element_importance = _clamp_range(event.get("elementImportance"), 0.5, 1.5, 1)
+    confidence = _clamp_range(event.get("confidence"), 0, 1, 0.8)
+    persona_relevance = _clamp_range(event.get("personaRelevance"), 1, 5, 3)
+    impact_multiplier = _clamp_range(event.get("impactMultiplier"), 0.2, 1, 1)
+    persona_factor = 0.85 + ((persona_relevance - 1) / 4) * 0.35
+    confidence_factor = 0.65 + confidence * 0.35
+    return (severity**FLOW_RISK_SEVERITY_EXPONENT) * FLOW_RISK_SEVERITY_BASE * element_importance * persona_factor * confidence_factor * impact_multiplier
+
+
+def _accumulated_flow_risk_score(events):
+    if not events:
+        return None
+    risk = 0
+    for event in events:
+        impact = _get_flow_risk_impact(event)
+        risk += impact if event.get("polarity") == "negative" else -impact * 0.7
+    return _clamp_percent(risk, 0)
+
+
+def _collect_flow_step_indices(events, total_step_count=None):
+    if isinstance(total_step_count, int) and total_step_count > 0:
+        return list(range(total_step_count))
+    return sorted({event.get("screenIndex") for event in events if event.get("testType") == "flow" and isinstance(event.get("screenIndex"), int)})
+
+
+def _aggregate_flow_step_risk(scores):
+    if not scores:
+        return None
+    average_score = sum(scores) / len(scores)
+    max_score = max(scores)
+    coverage_score = (len([score for score in scores if score > 0]) / len(scores)) * 100
+    return _clamp_percent(
+        average_score * FLOW_STEP_AVERAGE_WEIGHT + max_score * FLOW_STEP_MAX_WEIGHT + coverage_score * FLOW_STEP_COVERAGE_WEIGHT,
+        0,
+    )
+
+
+def _score_flow_risk_metric(events, metric, screen_index=None):
+    return _accumulated_flow_risk_score(
+        [
+            event
+            for event in events
+            if event.get("testType") == "flow"
+            and event.get("metric") == metric
+            and (screen_index is None or event.get("screenIndex") == screen_index)
+        ]
+    )
+
+
+def _weighted_available_scores(entries):
+    value = 0
+    weight = 0
+    for entry in entries:
+        entry_value = entry.get("value")
+        entry_weight = entry.get("weight", 0)
+        if not isinstance(entry_value, (int, float)) or isinstance(entry_value, bool):
+            continue
+        value += entry_value * entry_weight
+        weight += entry_weight
+    if weight <= 0:
+        return None
+    return _clamp_percent(value / weight, 0)
+
+
+def _score_flow_completion_metric(events, screen_index=None, total_step_count=None):
+    scoped_events = [
+        event
+        for event in events
+        if event.get("testType") == "flow" and (screen_index is None or event.get("screenIndex") == screen_index)
+    ]
+    if not scoped_events:
+        return None
+    completion_events = [event for event in scoped_events if event.get("metric") == "효율성"]
+    if isinstance(screen_index, int):
+        completion_risk = _accumulated_flow_risk_score(completion_events)
+        direct_completion = _clamp_percent(100 - completion_risk, 0) if isinstance(completion_risk, (int, float)) else None
+        confusion_score = _score_flow_risk_metric(events, "혼란도", screen_index)
+        dropoff_risk = _score_flow_risk_metric(events, "이탈 위험", screen_index)
+        raw_completion_rate = _weighted_available_scores(
+            [
+                {"value": direct_completion, "weight": FLOW_COMPLETION_DIRECT_WEIGHT},
+                {"value": 100 - confusion_score if isinstance(confusion_score, (int, float)) else None, "weight": FLOW_COMPLETION_CONFUSION_WEIGHT},
+                {"value": 100 - dropoff_risk if isinstance(dropoff_risk, (int, float)) else None, "weight": FLOW_COMPLETION_DROPOFF_WEIGHT},
+            ]
+        )
+        flow_failure_risk = _weighted_available_scores(
+            [
+                {"value": confusion_score, "weight": 0.45},
+                {"value": dropoff_risk, "weight": 0.55},
+            ]
+        )
+        if not isinstance(raw_completion_rate, (int, float)):
+            return None
+        return raw_completion_rate if not isinstance(flow_failure_risk, (int, float)) else _cap_flow_completion_by_risk(raw_completion_rate, flow_failure_risk)
+
+    step_indices = _collect_flow_step_indices(scoped_events, total_step_count)
+    if not step_indices:
+        return None
+    step_confusion_scores = [_score_flow_risk_metric(events, "혼란도", step_index) or 0 for step_index in step_indices]
+    step_dropoff_risks = [_score_flow_risk_metric(events, "이탈 위험", step_index) or 0 for step_index in step_indices]
+    step_efficiency_penalties = (
+        [
+            _accumulated_flow_risk_score(
+                [event for event in scoped_events if event.get("metric") == "효율성" and event.get("screenIndex") == step_index]
+            )
+            or 0
+            for step_index in step_indices
+        ]
+        if completion_events
+        else []
+    )
+    overall_confusion_score = _aggregate_flow_step_risk(step_confusion_scores)
+    overall_dropoff_risk = _aggregate_flow_step_risk(step_dropoff_risks)
+    overall_efficiency_penalty = _aggregate_flow_step_risk(step_efficiency_penalties)
+    direct_completion = _clamp_percent(100 - overall_efficiency_penalty, 0) if isinstance(overall_efficiency_penalty, (int, float)) else None
+    raw_completion_rate = _weighted_available_scores(
+        [
+            {"value": direct_completion, "weight": FLOW_COMPLETION_DIRECT_WEIGHT},
+            {"value": 100 - overall_confusion_score if isinstance(overall_confusion_score, (int, float)) else None, "weight": FLOW_COMPLETION_CONFUSION_WEIGHT},
+            {"value": 100 - overall_dropoff_risk if isinstance(overall_dropoff_risk, (int, float)) else None, "weight": FLOW_COMPLETION_DROPOFF_WEIGHT},
+        ]
+    )
+    flow_failure_risk = _weighted_available_scores(
+        [
+            {"value": overall_confusion_score, "weight": 0.45},
+            {"value": overall_dropoff_risk, "weight": 0.55},
+        ]
+    )
+    if not isinstance(raw_completion_rate, (int, float)):
+        return None
+    return raw_completion_rate if not isinstance(flow_failure_risk, (int, float)) else _cap_flow_completion_by_risk(raw_completion_rate, flow_failure_risk)
+
+
+def _score_metric(events, metric):
+    return _weighted_event_score([event for event in events if event.get("metric") == metric])
+
+
+def _build_ui_screen_chunks(total_screens: int, chunk_size: int, overlap: int):
+    safe_chunk_size = max(1, int(chunk_size))
+    safe_overlap = max(0, min(int(overlap), safe_chunk_size - 1))
+    step = max(1, safe_chunk_size - safe_overlap)
+    chunks = []
+    for start in range(0, total_screens, step):
+        chunk = list(range(start, min(start + safe_chunk_size, total_screens)))
+        if not chunk:
+            continue
+        if chunks and len(chunk) < safe_chunk_size:
+            break
+        chunks.append(chunk)
+    return chunks or [list(range(total_screens))]
+
+
+def _merge_ui_screen_feedbacks(current, incoming):
+    merged = list(_as_list(current))
+    covered = {item.get("screenIndex") for item in merged if isinstance(item, dict)}
+    for item in _as_list(incoming):
+        if not isinstance(item, dict):
+            continue
+        if item.get("screenIndex") in covered:
+            continue
+        merged.append(item)
+        covered.add(item.get("screenIndex"))
+    return sorted(merged, key=lambda item: item.get("screenIndex", 0))
+
+
+def _merge_ui_pin_comments(current, incoming):
+    merged = list(_as_list(current))
+    existing = {
+        (item.get("screenIndex"), item.get("type"), item.get("x"), item.get("y"), str(item.get("content") or ""))
+        for item in merged
+        if isinstance(item, dict)
+    }
+    for item in _as_list(incoming):
+        if not isinstance(item, dict):
+            continue
+        key = (item.get("screenIndex"), item.get("type"), item.get("x"), item.get("y"), str(item.get("content") or ""))
+        if key in existing:
+            continue
+        merged.append(item)
+        existing.add(key)
+    return sorted(merged, key=lambda item: item.get("screenIndex", 0))
+
+
+def _merge_ui_flow_analysis(current, incoming):
+    by_index = {}
+    for item in [*_as_list(current), *_as_list(incoming)]:
+        if not isinstance(item, dict):
+            continue
+        screen_index = item.get("screenIndex")
+        if screen_index not in by_index:
+            by_index[screen_index] = item
+    return [by_index[index] for index in sorted(index for index in by_index if index is not None)]
+
+
+def _apply_structured_scoring(*, fallback_scores: dict, analysis_events, is_flow_test: bool, flow_step_count=None):
+    clarity = _score_metric(analysis_events, "명확성")
+    usability = _score_metric(analysis_events, "사용성")
+    satisfaction = _score_metric(analysis_events, "만족도")
+    overall_flow_score = _score_flow_completion_metric(analysis_events, total_step_count=flow_step_count) if is_flow_test else None
+    scored = {
+        "clarity": clarity if isinstance(clarity, (int, float)) else _clamp_percent(fallback_scores.get("clarity"), 70),
+        "usability": usability if isinstance(usability, (int, float)) else _clamp_percent(fallback_scores.get("usability"), 70),
+        "appeal": satisfaction if isinstance(satisfaction, (int, float)) else _clamp_percent(fallback_scores.get("appeal"), 65),
+    }
+    scored["overall"] = round((scored["clarity"] + scored["usability"] + scored["appeal"]) / 3)
+    scored["overallFlowScore"] = overall_flow_score if isinstance(overall_flow_score, (int, float)) else fallback_scores.get("overallFlowScore")
+    return scored
 
 
 def _resolve_interview_max_concurrency(persona_count: int) -> int:
@@ -706,10 +1103,11 @@ class PersonaService:
             "language": payload.get("language"),
         }
 
-    def _persona_context(self, persona):
+    def _persona_context(self, persona, persona_pack: Optional[dict] = None):
         payload = self.persona_payload(persona)
         field_labels = [
             ("Name", payload.get("name")),
+            ("Tag", payload.get("tag")),
             ("Age", f"{payload.get('age')}세" if payload.get("age") else None),
             ("Generation", payload.get("generation")),
             ("Gender", payload.get("gender")),
@@ -742,7 +1140,7 @@ class PersonaService:
             text = _compact_json(payload.get(key), max_chars=1600)
             if text:
                 parts.append(f"{label}:\n{text}")
-        interview_pack = _compact_json(getattr(persona, "interview_pack", None), max_chars=2600)
+        interview_pack = _compact_json(persona_pack or getattr(persona, "interview_pack", None), max_chars=6000)
         if interview_pack:
             parts.append(f"Persona Interview Pack:\n{interview_pack}")
         return "\n".join(part for part in parts if part)
@@ -877,7 +1275,7 @@ class PersonaService:
             screen_label = f"screenIndex {screen_index} / 화면 {screen_index + 1} / id={screen.get('id')} / name={screen.get('name') or f'화면 {screen_index + 1}'}"
             if isinstance(source, str) and source.startswith("data:") and ";base64," in source:
                 header, data_base64 = source.split(";base64,", 1)
-                media_parts.append({"type": "text", "text": screen_label})
+                media_parts.append({"type": "text", "text": screen_label, "screenIndex": screen_index})
                 media_parts.append(
                     {
                         "type": "image",
@@ -899,7 +1297,7 @@ class PersonaService:
                 if not path.exists() or not path.is_file():
                     continue
                 mime_type = asset.mime_type or mimetypes.guess_type(str(path))[0] or "image/png"
-                media_parts.append({"type": "text", "text": screen_label})
+                media_parts.append({"type": "text", "text": screen_label, "screenIndex": screen_index})
                 media_parts.append(
                     {
                         "type": "image",
@@ -1044,42 +1442,197 @@ class PersonaService:
             "url_entries": updated_entries,
         }
 
-    def _build_ui_prompt(self, *, test, persona, screens):
-        is_flow = test.scope_type == "flow" and len(screens) > 1
+    def _build_ui_prompt(self, *, test, persona, screens, persona_pack: Optional[dict] = None):
         source_data = _as_dict(getattr(test, "source_data", None))
         flow_goal = _first_text(source_data.get("flow_goal"), source_data.get("flowGoal"), test.description)
-        parts = [
-            "You are evaluating a UI from the perspective of the given persona, not as a generic UX reviewer.",
-            "Return only valid JSON with keys: summary, personaGoalFit, scores, feedback, pinComments, flowAnalysis, strengths, risks, recommendations, screenInsights.",
-            "Every comment must be grounded in this persona's profile, needs, worries, habits, decision rules, or past context. Do not write generic comments that any user could say.",
-            "Use natural Korean. Write screenFeedbacks as persona reactions, and write summary/personaGoalFit as a researcher-style synthesis.",
-            "Do not invent hard facts outside the persona. Reason from the persona context when the profile is incomplete.",
-            "scores must include clarity, usability, appeal, overall as 0-100 integers.",
-            "scores must also include screenScores: one item for every screenIndex with screenId, clarity, usability, appeal, satisfaction, overall as 0-100 integers.",
-            "feedback must include overallFeedback and screenFeedbacks. screenFeedbacks must include at least one item for every screenIndex.",
-            "pinComments must be an array of concrete image markers with screenIndex, x, y, type, content. type must be one of praise, problem, improvement.",
-            "Use praise for positive comments and problem/improvement for negative comments. screenInsights positives/issues must align with the same evidence used in pinComments.",
-            "For each screen, provide at least one positive evidence point and one risk/improvement point when possible.",
-            "Attached images follow the same order as [Screens]. x and y must point to the actual UI element in the attached image as 0-100 percentage coordinates, where x is left-to-right and y is top-to-bottom.",
-            "When a screen includes interactionHints with centerX/centerY, use those coordinates for pinComments about the same control and include controlNodeId/controlNodeName/controlText when available.",
-            "Do not use generic center coordinates unless the target element is genuinely centered. If exact location is uncertain, choose the most plausible visible element area and name that element in content.",
-            is_flow
-            and "This is a flow test. Evaluate whether the persona can keep moving toward the task goal across screens; include flowAnalysis for every screenIndex with confusionScore, dropoffRisk, frictionPoints, suggestions, transitionFromPrevious, expectedNextAction, bottleneckRisk.",
-            is_flow
-            and "For flow tests, frictionPoints are the primary comments shown in the result-side friction panel. Each frictionPoint must explain why the persona may hesitate, become confused, or lose motivation at that step.",
-            is_flow
-            and "For flow tests, pinComments should focus on friction/improvement evidence for visible UI elements; use praise only when it is genuinely important evidence.",
-            not is_flow and "This is a single-screen test. Do not include flowAnalysis unless it is directly useful.",
-            f"Test: {test.name}",
-            f"Description: {test.description or ''}",
-            f"Scope: {test.scope_type}",
-            f"Task/Flow Goal: {flow_goal or ''}",
-            "[Persona]",
-            self._persona_context(persona),
-            "[Screens]",
-            json.dumps(screens, ensure_ascii=False),
+        persona_name = getattr(persona, "name", None) or "이 퍼소나"
+        return build_ui_test_prompt(
+            test_name=test.name,
+            test_description=test.description,
+            scope_type=test.scope_type,
+            flow_goal=flow_goal,
+            persona_name=persona_name,
+            persona_context=self._persona_context(persona, persona_pack=persona_pack),
+            screens=screens,
+        )
+
+    def _ui_test_source_context(self, test):
+        source_data = _as_dict(getattr(test, "source_data", None))
+        return {
+            "source_type": getattr(test, "source_type", None) or source_data.get("sourceType") or source_data.get("source_type") or "",
+            "device_type": source_data.get("deviceType") or source_data.get("device_type") or "desktop",
+        }
+
+    def _filter_ui_media_parts(self, media_parts, screen_indices):
+        allowed = set(screen_indices)
+        return [
+            part
+            for part in _as_list(media_parts)
+            if not isinstance(part, dict) or part.get("screenIndex") in allowed or part.get("screen_index") in allowed
         ]
-        return "\n".join(part for part in parts if part)
+
+    def _build_ui_chunk_prompt(self, *, test, persona, screens, screen_indices, persona_pack: Optional[dict] = None, repair_mode: bool = False):
+        context = self._ui_test_source_context(test)
+        return build_ui_chunk_prompt(
+            test_name=test.name,
+            test_description=test.description,
+            scope_type=test.scope_type,
+            source_type=context["source_type"],
+            device_type=context["device_type"],
+            persona_context=self._persona_context(persona, persona_pack=persona_pack),
+            screens=screens,
+            screen_indices=screen_indices,
+            repair_mode=repair_mode,
+        )
+
+    def _fallback_ui_chunk_feedback(self, *, screens, screen_indices, is_flow: bool):
+        safe_indices = [index for index in screen_indices if isinstance(index, int) and 0 <= index < len(screens)]
+        screen_feedbacks = []
+        pin_comments = []
+        flow_analysis = []
+        for screen_index in safe_indices:
+            screen_name = screens[screen_index].get("name") or f"화면 {screen_index + 1}"
+            screen_feedbacks.append(
+                {
+                    "screenIndex": screen_index,
+                    "feedback": (
+                        f"{screen_name} 단계에서는 목표를 계속 수행하려고 할 때 다음 행동이 바로 이어지는지가 중요해요. 현재 단계와 다음 단계의 연결이 더 분명하면 덜 망설이고 진행할 수 있을 것 같아요."
+                        if is_flow
+                        else f"{screen_name}에서는 먼저 핵심 정보와 다음 행동이 얼마나 또렷한지 확인하게 돼요. 버튼 이름과 현재 위치가 더 분명하면 처음 쓰는 사람도 덜 망설일 것 같아요."
+                    ),
+                }
+            )
+            pin_comments.append(
+                {
+                    "screenIndex": screen_index,
+                    "x": 50,
+                    "y": 50,
+                    "type": "improvement",
+                    "content": (
+                        f"{screen_name} 단계에서 이전 행동의 결과와 다음으로 눌러야 할 동선이 함께 보이면 task를 계속 진행하기 쉬워요."
+                        if is_flow
+                        else f"{screen_name}의 핵심 행동 영역이 더 눈에 띄면 다음 단계를 더 쉽게 판단할 수 있어요."
+                    ),
+                    "hasMarkerCoordinates": False,
+                    "has_marker_coordinates": False,
+                }
+            )
+            if is_flow:
+                flow_analysis.append(
+                    {
+                        "screenIndex": screen_index,
+                        "confusionScore": 55,
+                        "dropoffRisk": 45,
+                        "frictionPoints": [f"{screen_name}에서 다음 행동을 바로 확신하기 어려울 수 있어요."],
+                        "suggestions": ["현재 단계와 다음 행동을 더 명확하게 보여주면 흐름을 따라가기 쉬워요."],
+                        "transitionFromPrevious": None
+                        if screen_index == 0
+                        else f"{screen_name} 단계에서 이전 단계의 선택 결과가 이어졌는지 더 분명하게 보여야 해요.",
+                        "expectedNextAction": f"{screen_name} 단계의 핵심 버튼이나 탐색 경로를 확인하고 다음 단계로 이동해요.",
+                        "bottleneckRisk": "medium",
+                        "uiClarity": 50,
+                        "visualHierarchy": 50,
+                    }
+                )
+        return {"screenFeedbacks": screen_feedbacks, "pinComments": pin_comments, "flowAnalysis": flow_analysis}
+
+    def _normalize_ui_chunk_feedback(self, *, parsed, screens, screen_indices, is_flow: bool):
+        allowed = set(screen_indices)
+        max_screen_index = max(len(screens) - 1, 0)
+        screen_feedbacks = []
+        for item in _as_list(_as_dict(parsed).get("screenFeedbacks") or _as_dict(parsed).get("screen_feedbacks")):
+            if not isinstance(item, dict):
+                continue
+            screen_index = self._resolve_ui_screen_reference_index(item, screens)
+            if screen_index not in allowed:
+                continue
+            text = _first_text(item.get("feedback"), item.get("content"), item.get("comment"))
+            if text:
+                screen_feedbacks.append({**item, "screenIndex": screen_index, "feedback": text})
+
+        pin_comments = []
+        for index, item in enumerate(_as_list(_as_dict(parsed).get("pinComments") or _as_dict(parsed).get("pin_comments"))):
+            if not isinstance(item, dict):
+                continue
+            screen_index = self._resolve_ui_screen_reference_index(item, screens)
+            if screen_index not in allowed:
+                continue
+            content = str(item.get("content") or item.get("comment") or "").strip()
+            if not content:
+                continue
+            has_marker_coordinates = _has_marker_percent(item.get("x")) and _has_marker_percent(item.get("y"))
+            pin_comments.append(
+                {
+                    **item,
+                    "screenIndex": max(0, min(screen_index, max_screen_index)),
+                    "x": _normalize_marker_percent(item.get("x"), 42 + (index % 3) * 8),
+                    "y": _normalize_marker_percent(item.get("y"), 38 + (index % 3) * 10),
+                    "hasMarkerCoordinates": has_marker_coordinates,
+                    "has_marker_coordinates": has_marker_coordinates,
+                    "type": self._normalize_ui_pin_type(item.get("type")),
+                    "content": content,
+                }
+            )
+
+        flow_analysis = []
+        if is_flow:
+            for item in _as_list(_as_dict(parsed).get("flowAnalysis") or _as_dict(parsed).get("flow_analysis")):
+                if not isinstance(item, dict):
+                    continue
+                screen_index = self._resolve_ui_screen_reference_index(item, screens)
+                if screen_index not in allowed:
+                    continue
+                flow_analysis.append(
+                    {
+                        **item,
+                        "screenIndex": max(0, min(screen_index, max_screen_index)),
+                        "confusionScore": _clamp_percent(item.get("confusionScore", item.get("confusion_score", 35)), 35),
+                        "dropoffRisk": _clamp_percent(item.get("dropoffRisk", item.get("dropoff_risk", 30)), 30),
+                        "frictionPoints": [str(point).strip() for point in _as_list(item.get("frictionPoints") or item.get("friction_points")) if str(point).strip()][:5],
+                        "suggestions": [str(point).strip() for point in _as_list(item.get("suggestions")) if str(point).strip()][:5],
+                        "transitionFromPrevious": item.get("transitionFromPrevious") or item.get("transition_from_previous"),
+                        "expectedNextAction": item.get("expectedNextAction") or item.get("expected_next_action"),
+                        "bottleneckRisk": item.get("bottleneckRisk") or item.get("bottleneck_risk") or "low",
+                        "uiClarity": _clamp_percent(item.get("uiClarity", item.get("ui_clarity", 50)), 50),
+                        "visualHierarchy": _clamp_percent(item.get("visualHierarchy", item.get("visual_hierarchy", 50)), 50),
+                    }
+                )
+        return {"screenFeedbacks": screen_feedbacks, "pinComments": pin_comments, "flowAnalysis": flow_analysis}
+
+    def _run_ui_chunk_feedback(self, *, company_id: int, user_id: int, test, persona, screens, screen_indices, media_parts=None, persona_pack: Optional[dict] = None, repair_mode: bool = False):
+        is_flow = test.scope_type == "flow" and len(screens) > 1
+        prompt = self._build_ui_chunk_prompt(
+            test=test,
+            persona=persona,
+            screens=screens,
+            screen_indices=screen_indices,
+            persona_pack=persona_pack,
+            repair_mode=repair_mode,
+        )
+        try:
+            parsed, usage = self._generate_json(
+                prompt,
+                feature_key="persona_ui_test",
+                company_id=company_id,
+                user_id=user_id,
+                media_parts=self._filter_ui_media_parts(media_parts, screen_indices),
+            )
+            feedback = self._normalize_ui_chunk_feedback(parsed=parsed, screens=screens, screen_indices=screen_indices, is_flow=is_flow)
+            raw_text = json.dumps(parsed, ensure_ascii=False)
+        except ValueError as exc:
+            feedback = self._fallback_ui_chunk_feedback(screens=screens, screen_indices=screen_indices, is_flow=is_flow)
+            raw_text = json.dumps(
+                {
+                    "promptVersion": "persona_test_v2",
+                    "error": str(exc),
+                    "stage": "chunk",
+                    "screenIndices": screen_indices,
+                    "repairMode": repair_mode,
+                },
+                ensure_ascii=False,
+            )
+            usage = {"model": "fallback", "stage": "persona_ui_test"}
+        return {"feedback": feedback, "rawText": raw_text, "usage": usage}
 
     def _fallback_ui_feedback(self, *, test, persona, screens):
         persona_name = getattr(persona, "name", "Persona")
@@ -1501,32 +2054,313 @@ class PersonaService:
             )
         return insights
 
-    def _run_ui_persona_evaluation(self, *, company_id: int, user_id: int, test, persona, screens, media_parts: Optional[list[dict]] = None):
+    def _fallback_ui_summary_feedback(self, *, persona, screens, screen_feedbacks, pin_comments, flow_analysis, is_flow: bool):
+        persona_name = getattr(persona, "name", None) or "이 퍼소나"
+        if is_flow:
+            friction_items = []
+            for item in _as_list(flow_analysis):
+                screen_index = item.get("screenIndex", 0) if isinstance(item, dict) else 0
+                screen_name = screens[screen_index].get("name") if isinstance(screen_index, int) and screen_index < len(screens) else f"화면 {screen_index + 1}"
+                for point in _as_list(_as_dict(item).get("frictionPoints") or _as_dict(item).get("friction_points")):
+                    text = str(point).strip()
+                    if text:
+                        friction_items.append(f"{screen_name} 단계에서 {text}")
+            overall = " ".join(friction_items[:2]) or "저는 전체 흐름에서 다음 단계로 넘어가야 하는 이유와 버튼의 역할이 더 분명해야 목표를 끝까지 수행할 수 있을 것 같아요."
+            flow_summary = (
+                f"{' '.join(friction_items[:2])} 이런 지점 때문에 흐름을 따라가는 과정에서 잠깐 멈칫할 수 있어요."
+                if friction_items
+                else "전체 플로우에서 사용자가 다음 행동을 바로 이해할 수 있는지 추가로 확인해야 해요."
+            )
+            return {"scores": {}, "overallFeedback": overall, "flowSummary": flow_summary, "overallFlowScore": None}
+
+        negative = [str(comment.get("content") or "").strip() for comment in _as_list(pin_comments) if isinstance(comment, dict) and comment.get("type") != "praise"]
+        positive = [str(comment.get("content") or "").strip() for comment in _as_list(pin_comments) if isinstance(comment, dict) and comment.get("type") == "praise"]
+        feedback = [str(entry.get("feedback") or "").strip() for entry in _as_list(screen_feedbacks) if isinstance(entry, dict)]
+        negative_summary = (
+            f"{' '.join([item for item in negative if item][:2])}라는 점에서 부정적으로 평가했습니다."
+            if any(negative)
+            else f"{' '.join([item for item in feedback if item][:1])}라는 반응을 보였습니다."
+            if any(feedback)
+            else "핵심 정보와 다음 행동이 더 분명해야 한다고 평가했습니다."
+        )
+        positive_summary = (
+            f"반면 {' '.join([item for item in positive if item][:1])}라는 점은 긍정적으로 봤습니다."
+            if any(positive)
+            else "긍정 근거는 하단 코멘트에서 충분히 확인되지 않았습니다."
+        )
+        return {
+            "scores": {"clarity": 50, "usability": 50, "appeal": 50},
+            "overallFeedback": f"{persona_name}님은 {negative_summary} {positive_summary}",
+            "flowSummary": None,
+            "overallFlowScore": None,
+        }
+
+    def _build_ui_summary_prompt(self, *, test, persona, screens, screen_feedbacks, pin_comments, flow_analysis, persona_pack: Optional[dict] = None):
+        context = self._ui_test_source_context(test)
+        persona_name = getattr(persona, "name", None) or "이 퍼소나"
+        return build_ui_summary_prompt(
+            test_name=test.name,
+            test_description=test.description,
+            scope_type=test.scope_type,
+            source_type=context["source_type"],
+            device_type=context["device_type"],
+            persona_name=persona_name,
+            persona_context=self._persona_context(persona, persona_pack=persona_pack),
+            screens=screens,
+            screen_feedbacks=screen_feedbacks,
+            pin_comments=pin_comments,
+            flow_analysis=flow_analysis,
+        )
+
+    def _run_ui_summary_feedback(self, *, company_id: int, user_id: int, test, persona, screens, screen_feedbacks, pin_comments, flow_analysis, persona_pack: Optional[dict] = None):
+        is_flow = test.scope_type == "flow" and len(screens) > 1
+        fallback = self._fallback_ui_summary_feedback(
+            persona=persona,
+            screens=screens,
+            screen_feedbacks=screen_feedbacks,
+            pin_comments=pin_comments,
+            flow_analysis=flow_analysis,
+            is_flow=is_flow,
+        )
+        prompt = self._build_ui_summary_prompt(
+            test=test,
+            persona=persona,
+            screens=screens,
+            screen_feedbacks=screen_feedbacks,
+            pin_comments=pin_comments,
+            flow_analysis=flow_analysis,
+            persona_pack=persona_pack,
+        )
         try:
             parsed, usage = self._generate_json(
-                self._build_ui_prompt(test=test, persona=persona, screens=screens),
+                prompt,
                 feature_key="persona_ui_test",
                 company_id=company_id,
                 user_id=user_id,
-                media_parts=media_parts,
             )
-        except ValueError:
-            parsed, usage = self._fallback_ui_feedback(test=test, persona=persona, screens=screens), {"model": "fallback"}
-        feedback = parsed if isinstance(parsed, dict) else self._fallback_ui_feedback(test=test, persona=persona, screens=screens)
-        scores = feedback.get("scores") if isinstance(feedback.get("scores"), dict) else {}
-        summary = feedback.get("summary") or feedback.get("overallFeedback") or "UI test run completed"
+        except ValueError as exc:
+            return {
+                "feedback": fallback,
+                "rawText": json.dumps({"promptVersion": "persona_test_v2", "error": str(exc), "stage": "summary"}, ensure_ascii=False),
+                "usage": {"model": "fallback", "stage": "persona_ui_test"},
+            }
+
+        source = _as_dict(parsed)
+        scores = _as_dict(source.get("scores"))
+        normalized = {
+            "scores": {
+                "clarity": self._score_value(scores, ("clarity",), fallback["scores"].get("clarity", 50)),
+                "usability": self._score_value(scores, ("usability",), fallback["scores"].get("usability", 50)),
+                "appeal": self._score_value(scores, ("appeal",), fallback["scores"].get("appeal", 50)),
+            }
+            if not is_flow
+            else {},
+            "overallFeedback": _first_text(source.get("overallFeedback"), source.get("overall_feedback"), source.get("summary"), fallback["overallFeedback"]),
+            "flowSummary": _first_text(source.get("flowSummary"), source.get("flow_summary"), fallback.get("flowSummary")) if is_flow else None,
+            "overallFlowScore": _clamp_percent(source.get("overallFlowScore"), fallback.get("overallFlowScore") or 0)
+            if is_flow and source.get("overallFlowScore") is not None
+            else fallback.get("overallFlowScore"),
+        }
+        return {"feedback": normalized, "rawText": json.dumps(parsed, ensure_ascii=False), "usage": usage}
+
+    def _build_ui_scoring_prompt(self, *, test, persona, screens, screen_feedbacks, pin_comments, flow_analysis, persona_pack: Optional[dict] = None):
+        return build_ui_scoring_prompt(
+            test_name=test.name,
+            test_description=test.description,
+            scope_type=test.scope_type,
+            persona_context=self._persona_context(persona, persona_pack=persona_pack),
+            screens=screens,
+            screen_feedbacks=screen_feedbacks,
+            pin_comments=pin_comments,
+            flow_analysis=flow_analysis,
+        )
+
+    def _run_ui_scoring_analysis(self, *, company_id: int, user_id: int, test, persona, screens, screen_feedbacks, pin_comments, flow_analysis, persona_pack: Optional[dict] = None):
+        prompt = self._build_ui_scoring_prompt(
+            test=test,
+            persona=persona,
+            screens=screens,
+            screen_feedbacks=screen_feedbacks,
+            pin_comments=pin_comments,
+            flow_analysis=flow_analysis,
+            persona_pack=persona_pack,
+        )
+        try:
+            parsed, usage = self._generate_json(
+                prompt,
+                feature_key="persona_ui_test_scoring",
+                company_id=company_id,
+                user_id=user_id,
+            )
+        except ValueError as exc:
+            return {
+                "keyElements": [],
+                "analysisEvents": [],
+                "rawText": json.dumps(
+                    {
+                        "promptVersion": "persona_test_v2",
+                        "error": str(exc),
+                        "stage": "scoring_analysis",
+                    },
+                    ensure_ascii=False,
+                ),
+                "usage": {"model": "fallback", "stage": "persona_ui_test_scoring"},
+            }
+        normalized = _normalize_ui_scoring_analysis(parsed)
+        return {
+            **normalized,
+            "rawText": json.dumps(parsed, ensure_ascii=False),
+            "usage": usage,
+        }
+
+    def _run_ui_persona_evaluation(self, *, company_id: int, user_id: int, test, persona, screens, media_parts: Optional[list[dict]] = None, persona_pack: Optional[dict] = None):
         is_flow = test.scope_type == "flow" and len(screens) > 1
-        screen_feedbacks = self._normalize_ui_screen_feedbacks(feedback=feedback, persona=persona, screens=screens)
-        pin_comments = self._normalize_ui_pin_comments(feedback=feedback, screens=screens)
-        flow_analysis = self._normalize_ui_flow_analysis(feedback=feedback, screens=screens, is_flow=is_flow)
+        chunk_config = {"size": 2, "overlap": 1} if is_flow else {"size": 2, "overlap": 0}
+        screen_chunks = _build_ui_screen_chunks(len(screens), chunk_config["size"], chunk_config["overlap"])
+        chunk_results = [
+            self._run_ui_chunk_feedback(
+                company_id=company_id,
+                user_id=user_id,
+                test=test,
+                persona=persona,
+                screens=screens,
+                screen_indices=screen_indices,
+                media_parts=media_parts,
+                persona_pack=persona_pack,
+            )
+            for screen_indices in screen_chunks
+        ]
+        screen_feedbacks = _merge_ui_screen_feedbacks([], [item for result in chunk_results for item in _as_list(_as_dict(result.get("feedback")).get("screenFeedbacks"))])
+        pin_comments = _merge_ui_pin_comments([], [item for result in chunk_results for item in _as_list(_as_dict(result.get("feedback")).get("pinComments"))])
+        flow_analysis = _merge_ui_flow_analysis([], [item for result in chunk_results for item in _as_list(_as_dict(result.get("feedback")).get("flowAnalysis"))])
+
+        repair_raw_texts = []
+        all_screen_indices = list(range(len(screens)))
+        missing_feedback_indices = [index for index in all_screen_indices if not any(item.get("screenIndex") == index for item in screen_feedbacks)]
+        if missing_feedback_indices:
+            repair = self._run_ui_chunk_feedback(
+                company_id=company_id,
+                user_id=user_id,
+                test=test,
+                persona=persona,
+                screens=screens,
+                screen_indices=missing_feedback_indices,
+                media_parts=media_parts,
+                persona_pack=persona_pack,
+                repair_mode=True,
+            )
+            repair_raw_texts.append(repair.get("rawText"))
+            repair_feedback = _as_dict(repair.get("feedback"))
+            screen_feedbacks = _merge_ui_screen_feedbacks(screen_feedbacks, repair_feedback.get("screenFeedbacks"))
+            pin_comments = _merge_ui_pin_comments(pin_comments, repair_feedback.get("pinComments"))
+            flow_analysis = _merge_ui_flow_analysis(flow_analysis, repair_feedback.get("flowAnalysis"))
+
+        missing_pin_indices = [index for index in all_screen_indices if not any(item.get("screenIndex") == index for item in pin_comments)]
+        if not is_flow and missing_pin_indices:
+            repair = self._run_ui_chunk_feedback(
+                company_id=company_id,
+                user_id=user_id,
+                test=test,
+                persona=persona,
+                screens=screens,
+                screen_indices=missing_pin_indices,
+                media_parts=media_parts,
+                persona_pack=persona_pack,
+                repair_mode=True,
+            )
+            repair_raw_texts.append(repair.get("rawText"))
+            repair_feedback = _as_dict(repair.get("feedback"))
+            screen_feedbacks = _merge_ui_screen_feedbacks(screen_feedbacks, repair_feedback.get("screenFeedbacks"))
+            pin_comments = _merge_ui_pin_comments(pin_comments, repair_feedback.get("pinComments"))
+
+        if is_flow:
+            missing_flow_indices = [index for index in all_screen_indices if not any(item.get("screenIndex") == index for item in flow_analysis)]
+            if missing_flow_indices:
+                repair = self._run_ui_chunk_feedback(
+                    company_id=company_id,
+                    user_id=user_id,
+                    test=test,
+                    persona=persona,
+                    screens=screens,
+                    screen_indices=missing_flow_indices,
+                    media_parts=media_parts,
+                    persona_pack=persona_pack,
+                    repair_mode=True,
+                )
+                repair_raw_texts.append(repair.get("rawText"))
+                repair_feedback = _as_dict(repair.get("feedback"))
+                screen_feedbacks = _merge_ui_screen_feedbacks(screen_feedbacks, repair_feedback.get("screenFeedbacks"))
+                pin_comments = _merge_ui_pin_comments(pin_comments, repair_feedback.get("pinComments"))
+                flow_analysis = _merge_ui_flow_analysis(flow_analysis, repair_feedback.get("flowAnalysis"))
+        else:
+            flow_analysis = []
+
+        remaining_feedback_indices = [index for index in all_screen_indices if not any(item.get("screenIndex") == index for item in screen_feedbacks)]
+        if remaining_feedback_indices:
+            fallback = self._fallback_ui_chunk_feedback(screens=screens, screen_indices=remaining_feedback_indices, is_flow=is_flow)
+            screen_feedbacks = _merge_ui_screen_feedbacks(screen_feedbacks, fallback.get("screenFeedbacks"))
+
+        remaining_pin_indices = [index for index in all_screen_indices if not any(item.get("screenIndex") == index for item in pin_comments)]
+        if not is_flow and remaining_pin_indices:
+            fallback = self._fallback_ui_chunk_feedback(screens=screens, screen_indices=remaining_pin_indices, is_flow=False)
+            pin_comments = _merge_ui_pin_comments(pin_comments, fallback.get("pinComments"))
+
+        if is_flow:
+            remaining_flow_indices = [index for index in all_screen_indices if not any(item.get("screenIndex") == index for item in flow_analysis)]
+            if remaining_flow_indices:
+                fallback = self._fallback_ui_chunk_feedback(screens=screens, screen_indices=remaining_flow_indices, is_flow=True)
+                flow_analysis = _merge_ui_flow_analysis(flow_analysis, fallback.get("flowAnalysis"))
         if is_flow:
             pin_comments = self._merge_ui_flow_friction_pin_comments(pin_comments=pin_comments, flow_analysis=flow_analysis)
         pin_comments = self._apply_ui_pin_coordinate_hints(pin_comments=pin_comments, screens=screens)
+        summary_result = self._run_ui_summary_feedback(
+            company_id=company_id,
+            user_id=user_id,
+            test=test,
+            persona=persona,
+            screens=screens,
+            screen_feedbacks=screen_feedbacks,
+            pin_comments=pin_comments,
+            flow_analysis=flow_analysis,
+            persona_pack=persona_pack,
+        )
+        summary_feedback = _as_dict(summary_result.get("feedback"))
+        scores = _as_dict(summary_feedback.get("scores"))
+        summary = summary_feedback.get("overallFeedback") or "UI test run completed"
+        feedback = {
+            "feedback": {"overallFeedback": summary, "screenFeedbacks": screen_feedbacks},
+            "pinComments": pin_comments,
+            "flowAnalysis": flow_analysis,
+            "screenInsights": [],
+        }
         screen_scores = self._normalize_ui_screen_scores(
             feedback=feedback,
             screens=screens,
             scores=scores,
             flow_analysis=flow_analysis,
+        )
+        scoring_analysis = self._run_ui_scoring_analysis(
+            company_id=company_id,
+            user_id=user_id,
+            test=test,
+            persona=persona,
+            screens=screens,
+            screen_feedbacks=screen_feedbacks,
+            pin_comments=pin_comments,
+            flow_analysis=flow_analysis,
+            persona_pack=persona_pack,
+        )
+        structured_scores = _apply_structured_scoring(
+            fallback_scores={
+                "clarity": self._score_value(scores, ("clarity", "clear", "readability"), 70),
+                "usability": self._score_value(scores, ("usability", "ease"), 70),
+                "appeal": self._score_value(scores, ("appeal", "satisfaction", "score"), 65),
+                "overall": self._score_value(scores, ("overall", "overallFlowScore", "overall_flow_score"), 68),
+                "overallFlowScore": scores.get("overallFlowScore"),
+            },
+            analysis_events=scoring_analysis.get("analysisEvents") or [],
+            is_flow_test=is_flow,
+            flow_step_count=len(screens),
         )
         screen_insights = self._normalize_ui_screen_insights(
             feedback=feedback,
@@ -1544,12 +2378,12 @@ class PersonaService:
             "summary": summary,
             "persona_goal_fit": feedback.get("personaGoalFit") or feedback.get("persona_goal_fit"),
             "scores": {
-                "clarity": self._score_value(scores, ("clarity", "clear", "readability"), 70),
-                "usability": self._score_value(scores, ("usability", "ease"), 70),
-                "appeal": self._score_value(scores, ("appeal", "satisfaction", "score"), 65),
-                "overall": self._score_value(scores, ("overall", "overallFlowScore", "overall_flow_score"), 68),
-                "overallFlowScore": scores.get("overallFlowScore"),
-                "flowSummary": scores.get("flowSummary"),
+                "clarity": structured_scores["clarity"],
+                "usability": structured_scores["usability"],
+                "appeal": structured_scores["appeal"],
+                "overall": structured_scores["overall"],
+                "overallFlowScore": structured_scores.get("overallFlowScore"),
+                "flowSummary": summary_feedback.get("flowSummary"),
                 "screenScores": screen_scores,
             },
             "feedback": feedback_payload,
@@ -1557,8 +2391,15 @@ class PersonaService:
             "flow_analysis": flow_analysis,
             "persona_snapshot": self._persona_snapshot_payload(persona),
             "confidence": {
-                "model": usage.get("model"),
+                "model": _as_dict(summary_result.get("usage")).get("model"),
                 "promptVersion": "persona_test_v2",
+                "personaPackVersion": PERSONA_INTERVIEW_PACK_VERSION if persona_pack else None,
+                "scoreVersion": "comment_weighted_v1",
+                "scoringModel": _as_dict(scoring_analysis.get("usage")).get("model") if isinstance(scoring_analysis, dict) else None,
+                "scoringEventCounts": {
+                    metric: len([event for event in _as_list(scoring_analysis.get("analysisEvents")) if isinstance(event, dict) and event.get("metric") == metric])
+                    for metric in SCORING_METRICS
+                },
                 "screenCoverage": {
                     "screens": len(screens),
                     "screenFeedbacks": len({item.get("screenIndex") for item in screen_feedbacks}),
@@ -1572,11 +2413,22 @@ class PersonaService:
             "risks": _as_list(feedback.get("risks")),
             "recommendations": _as_list(feedback.get("recommendations")),
             "screen_insights": screen_insights,
-            "raw_response": {"parsed": feedback, "usage": usage},
+            "raw_response": {
+                "parsed": feedback,
+                "summary": summary_result.get("rawText"),
+                "chunks": [item.get("rawText") for item in chunk_results],
+                "repairs": [item for item in repair_raw_texts if item],
+                "usage": {
+                    "chunks": [item.get("usage") for item in chunk_results],
+                    "summary": summary_result.get("usage"),
+                },
+                "scoringAnalysis": scoring_analysis,
+            },
         }
 
-    def _run_ui_evaluations_for_personas(self, *, company_id: int, user_id: int, test, personas, screens, media_parts):
+    def _run_ui_evaluations_for_personas(self, *, company_id: int, user_id: int, test, personas, screens, media_parts, persona_packs=None):
         personas = list(personas or [])
+        persona_packs = list(persona_packs or [])
         if not personas:
             return []
         max_workers = _resolve_ui_test_max_concurrency(len(personas))
@@ -1589,8 +2441,9 @@ class PersonaService:
                     persona=persona,
                     screens=screens,
                     media_parts=media_parts,
+                    persona_pack=persona_packs[index] if index < len(persona_packs) else None,
                 )
-                for persona in personas
+                for index, persona in enumerate(personas)
             ]
 
         results = [None] * len(personas)
@@ -1604,6 +2457,7 @@ class PersonaService:
                     persona=persona,
                     screens=screens,
                     media_parts=media_parts,
+                    persona_pack=persona_packs[index] if index < len(persona_packs) else None,
                 ): index
                 for index, persona in enumerate(personas)
             }
@@ -1913,6 +2767,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         for label, value in (
             ("ID", payload.get("id")),
             ("이름", payload.get("name")),
+            ("태그", payload.get("tag")),
             ("나이", payload.get("age")),
             ("성별", payload.get("gender")),
             ("직함/역할", payload.get("title") or payload.get("roleArea")),
@@ -1945,6 +2800,8 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 lines.append(f"- {label}: {value}")
         lines.append("\n[통신/UX 맥락]")
         for label, key in (
+            ("프로필 JSON", "profile"),
+            ("통신 프로필 JSON", "telecom_profile"),
             ("통신 이용 프로필", "telecomUsage"),
             ("통신 가치관", "telecomValues"),
             ("UX 상호작용 프로필", "uxInteraction"),
@@ -1969,29 +2826,65 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
 
     def _persona_interview_pack_prompt(self, *, persona_text: str):
         return f"""
-당신은 생성된 퍼소나 프로필을 인터뷰 응답에 적합한 메모리로 정제하는 UX 리서치 어시스턴트입니다.
-원문에 없는 사실을 만들지 말고, 인터뷰에서 답변 근거로 쓸 수 있는 정보만 구조화하세요.
-단순 요약보다, 이후 인터뷰 답변에서 1인칭 경험 회고로 재현할 수 있는 생활 장면, 판단 맥락, 감정 단서를 우선 보존하세요.
+아래 퍼소나 원문은 통신 DNA를 포함한 여러 변수로 구성되어 있습니다.
+이 원문을 사용자가 직접 읽는 프로필이 아니라, 인터뷰 응답자가 답변할 때 참고할 "Persona Interview Pack"으로 정제하세요.
 
 [정제 원칙]
 - 원문 변수 전체를 복사하지 말고, 인터뷰 답변에 필요한 핵심 근거를 추립니다.
 - 통신 DNA는 평가 축이 아니라 이 인물의 판단 기준, 반복 행동, 경험 맥락으로 반영합니다.
 - 이름/나이/직업 등 명시된 기본 정보는 보존합니다.
+- 말투/스타일이 있으면 답변 스타일로 쓸 수 있게 정리합니다.
 - 원문에 없는 과거 경험, 직업, 가족관계, 선호를 새로 만들지 마세요.
 - 실제 경험은 짧게 뭉개지 말고, 답변에서 다시 꺼내 쓸 수 있도록 장면/맥락/행동/감정/니즈/UX 접점을 분리해 보존합니다.
+- 원문 속 경험이 여러 개면 가능한 한 모두 experience_library에 남기고, 중요 경험은 experience_memory에도 압축해 연결합니다.
+- 좋은 답변을 만들기 위해 아래 세 축의 단서를 반드시 분리해 보존합니다.
+  1. 정합성/재현성: 프로필의 어떤 정보가 답변 근거가 되는가
+  2. 경험회고/내적일관성: 어떤 생활 장면, 감정, 반복 행동으로 회고할 수 있는가
+  3. 참여자 퀄리티: 어떤 니즈, 망설임, 발산적 생각, UX 맥락을 말할 수 있는가
 - 직접 확인되는 사실과 합리적 추론을 구분하세요. 추론은 "inference"에 명시합니다.
 
-[응답 JSON]
+[JSON 형식]
 {{
-  "identity": {{"name": "", "age": "", "gender": "", "job": "", "life_context": ""}},
+  "identity": {{
+    "name": "",
+    "age": "",
+    "gender": "",
+    "job": "",
+    "life_context": ""
+  }},
   "core_traits": ["성격, 가치관, 태도 핵심 5~8개"],
   "decision_rules": ["상품/서비스/상황 판단 시 반복적으로 쓰는 기준 5~8개"],
-  "experience_memory": [{{"scene": "", "context": "", "behavior": "", "emotion_or_tension": "", "profile_basis": "", "inference": ""}}],
-  "experience_library": [{{"source_excerpt": "", "when_where": "", "trigger": "", "action": "", "result": "", "emotion_or_tension": "", "need_signal": "", "ux_ui_context": "", "reuse_guidance": ""}}],
+  "experience_memory": [
+    {{
+      "scene": "답변에서 회고할 수 있는 구체적 생활 장면",
+      "context": "그 장면이 발생하는 상황/조건",
+      "behavior": "그 사람이 실제로 할 법한 행동",
+      "emotion_or_tension": "그때의 감정, 망설임, 불편, 기대",
+      "profile_basis": "원문에서 근거가 되는 정보",
+      "inference": "직접 사실이 아니라면 어떤 추론인지"
+    }}
+  ],
+  "experience_library": [
+    {{
+      "source_excerpt": "원문에 있는 실제 경험/에피소드/행동 단서의 핵심 원문 표현",
+      "when_where": "언제/어디서/어떤 상황인지",
+      "trigger": "경험을 발생시킨 계기나 문제",
+      "action": "그 사람이 실제로 한 행동",
+      "result": "결과, 만족, 실패, 변화",
+      "emotion_or_tension": "감정, 망설임, 불안, 기대",
+      "need_signal": "드러난 니즈나 페인포인트",
+      "ux_ui_context": "화면, 기능, 접점, 사용 흐름, 정보 구조 등 UX/UI 맥락",
+      "reuse_guidance": "어떤 질문에서 이 경험을 답변 근거로 재사용하면 좋은지"
+    }}
+  ],
   "needs_and_painpoints": ["니즈, 불편, 우려, 기대 5~8개"],
   "ux_context_clues": ["서비스/상품 경험을 이야기할 때 참고할 사용 맥락, 선택 기준, 접점 5~8개"],
   "generative_thought_seeds": ["새 아이디어, 대안, 조건부 니즈로 발산할 수 있는 생각의 씨앗 3~5개"],
-  "communication_style": {{"tone": "", "typical_phrases": ["이 사람이 쓸 법한 표현 3~5개"], "avoid": ["피해야 할 말투/행동 3~5개"]}},
+  "communication_style": {{
+    "tone": "",
+    "typical_phrases": ["이 사람이 쓸 법한 표현 3~5개"],
+    "avoid": ["피해야 할 말투/행동 3~5개"]
+  }},
   "consistency_rules": ["이후 모든 답변에서 유지해야 할 내적 일관성 규칙 5~8개"],
   "grounding_notes": ["답변 시 반드시 유지해야 할 중요한 사실/제약 5~8개"]
 }}
@@ -2333,6 +3226,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 merged.append(
                     {
                         "name": name,
+                        "tag": _normalize_persona_tag(item.get("tag")),
                         "age": item.get("age"),
                         "generation": item.get("generation"),
                         "title": item.get("title"),
@@ -2372,6 +3266,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             "folderId": str(persona.folder_id) if persona.folder_id is not None else None,
             "created_by_user_id": persona.created_by_user_id,
             "name": persona.name,
+            "tag": persona.tag,
             "gender": persona.gender,
             "title": persona.title,
             "personality": persona.personality,
@@ -2484,6 +3379,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         return {
             "folder_id": int(folder_id) if folder_id else None,
             "name": persona.get("name"),
+            "tag": _normalize_persona_tag(persona.get("tag")),
             "gender": persona.get("gender"),
             "title": persona.get("title"),
             "personality": persona.get("personality"),
@@ -3164,6 +4060,23 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             try:
                 self.repository.delete_ui_test_results(db_session, company_id=company_id, test_id=test.id)
                 results = []
+                persona_packs = []
+                for persona in personas:
+                    try:
+                        persona_pack = self._get_or_create_persona_interview_pack(
+                            db_session,
+                            company_id=company_id,
+                            user_id=user_id,
+                            persona=persona,
+                        )
+                    except Exception as exc:
+                        _log_persona_interview_event(
+                            "ui_test_pack_fallback",
+                            persona_id=getattr(persona, "id", None),
+                            error=str(exc),
+                        )
+                        persona_pack = _clean_mapping(getattr(persona, "interview_pack", None)) or None
+                    persona_packs.append(persona_pack)
                 result_data_by_persona = self._run_ui_evaluations_for_personas(
                     company_id=company_id,
                     user_id=user_id,
@@ -3171,6 +4084,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                     personas=personas,
                     screens=screens,
                     media_parts=media_parts,
+                    persona_packs=persona_packs,
                 )
                 for persona, result_data in zip(personas, result_data_by_persona):
                     result = self.repository.create_ui_test_result(db_session, company_id=company_id, test_id=test.id, persona_id=persona.id, data=result_data)

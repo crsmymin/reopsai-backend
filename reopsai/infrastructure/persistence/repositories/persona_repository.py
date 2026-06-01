@@ -26,10 +26,18 @@ from reopsai.infrastructure.persistence.models.persona import (
 
 
 ADMIN_ROLES = {"owner", "admin"}
+PERSONA_TAG_MAX_LENGTH = 20
 
 
 def utcnow():
     return datetime.now(timezone.utc)
+
+
+def normalize_persona_tag(value):
+    if value is None:
+        return None
+    tag = str(value).strip()
+    return tag[:PERSONA_TAG_MAX_LENGTH] if tag else None
 
 
 class PersonaRepository:
@@ -129,7 +137,7 @@ class PersonaRepository:
         filters = [Persona.company_id == int(company_id), Persona.deleted_at.is_(None)]
         if search:
             pattern = f"%{search.strip()}%"
-            filters.append(or_(Persona.name.ilike(pattern), Persona.title.ilike(pattern)))
+            filters.append(or_(Persona.name.ilike(pattern), Persona.tag.ilike(pattern), Persona.title.ilike(pattern)))
         if folder_id is not None:
             filters.append(Persona.folder_id == int(folder_id))
         if no_folder:
@@ -160,6 +168,7 @@ class PersonaRepository:
             summaries.append(
                 {
                     "name": row.name,
+                    "tag": row.tag,
                     "age": row.age,
                     "generation": row.generation,
                     "title": row.title,
@@ -205,6 +214,7 @@ class PersonaRepository:
             folder_id=data.get("folder_id"),
             source_external_id=data.get("source_external_id"),
             name=data["name"],
+            tag=normalize_persona_tag(data.get("tag")),
             gender=data.get("gender"),
             title=data.get("title"),
             personality=data.get("personality"),
@@ -262,6 +272,7 @@ class PersonaRepository:
         allowed = {
             "folder_id",
             "name",
+            "tag",
             "gender",
             "title",
             "personality",
@@ -306,7 +317,7 @@ class PersonaRepository:
         }
         for key in allowed:
             if key in data:
-                setattr(persona, key, data[key])
+                setattr(persona, key, normalize_persona_tag(data[key]) if key == "tag" else data[key])
         persona.updated_by_user_id = int(user_id)
         persona.updated_at = utcnow()
         session.flush()

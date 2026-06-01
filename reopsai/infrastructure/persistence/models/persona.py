@@ -55,6 +55,7 @@ class Persona(Base):
     folder_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("persona_folders.id", ondelete="SET NULL"), nullable=True, index=True)
     source_external_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    tag: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
     gender: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     personality: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

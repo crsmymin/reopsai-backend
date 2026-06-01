@@ -13,6 +13,7 @@ from typing import Callable, Iterable
 DEFAULT_SEED_PATH = Path(__file__).resolve().parents[3] / "data" / "nemotron-personas-korea-sample.jsonl"
 DEFAULT_TEXT_MODEL = os.getenv("PERSONA_LLM_SEGMENTATION_IDENTITY_MODEL") or os.getenv("PERSONA_GEMINI_TEXT_MODEL") or "gemini-2.5-flash"
 DEFAULT_PERSONA_GENERATION_MAX_CONCURRENCY = 3
+PERSONA_TAG_MAX_LENGTH = 20
 
 TELECOM_CONTEXT_PATTERN = re.compile(
     r"통신|요금제|번호이동|멤버십|결합|부가서비스|대리점|carrier|telecom|wireless|mobile plan|phone plan|subscription",
@@ -63,6 +64,31 @@ def _log_persona_generation_event(message: str, **values):
     details = " ".join(f"{key}={value}" for key, value in values.items() if value is not None)
     suffix = f" | {details}" if details else ""
     print(f"[persona-generation] {message}{suffix}", flush=True)
+
+
+def _normalize_persona_tag(value) -> str | None:
+    tag = str(value or "").strip()
+    return tag[:PERSONA_TAG_MAX_LENGTH] if tag else None
+
+
+def _resolve_persona_tag(profile: dict, segment: dict, payload: dict) -> str | None:
+    segment_inputs = payload.get("segmentInputs")
+    if isinstance(segment_inputs, list) and segment_inputs:
+        for item in segment_inputs:
+            if not isinstance(item, dict):
+                continue
+            if item.get("id") in {profile.get("segmentId"), segment.get("id")}:
+                return _normalize_persona_tag(item.get("name") or segment.get("name"))
+    return _normalize_persona_tag(segment.get("name"))
+
+
+def _with_persona_tag(persona: dict, profile: dict, segment: dict, payload: dict) -> dict:
+    return {
+        **persona,
+        "tag": _normalize_persona_tag(persona.get("tag")) or _resolve_persona_tag(profile, segment, payload),
+    }
+
+
 TELECOM_DIMENSION_GROUPS = {
     "brandRetention": ("brandRetentionTendency", "premiumInfraBenefitOrientation"),
     "optimizationResource": ("optimizationResourceInvestment", "paymentResistanceLine"),
@@ -277,7 +303,7 @@ def validate_generation_payload(payload: dict) -> tuple[dict | None, list[str]]:
                     parsed_segments.append(
                         {
                             "id": str(segment["id"]).strip(),
-                            "name": segment_name,
+                            "name": _normalize_persona_tag(segment_name) or segment_name,
                             "description": segment_description,
                             "targetCount": target_count,
                             **({"criteria": str(segment["criteria"]).strip()} if segment.get("criteria") else {}),
@@ -860,7 +886,7 @@ def _normalize_segments(raw_segments: list, payload: dict) -> list[dict]:
         normalized.append(
             {
                 "id": str(segment.get("id") or f"segment_{index + 1}"),
-                "name": str(segment.get("name") or f"Segment {index + 1}"),
+                "name": _normalize_persona_tag(segment.get("name")) or f"Segment {index + 1}",
                 "nameEn": segment.get("name_en") or segment.get("nameEn"),
                 "description": str(segment.get("description") or ""),
                 "targetCount": _coerce_count(segment.get("target_count") or segment.get("targetCount")),
@@ -936,8 +962,67 @@ def _language_label(payload: dict) -> str:
     return LANGUAGE_LABELS.get(language) or language or "English"
 
 
+def _income_formatting_guidance(payload: dict) -> str:
+    country = ((payload.get("locale") or {}).get("country") or "").upper()
+    if country == "KR":
+        return """
+## Income Format Requirements
+- income means the persona's own annual personal income, not household income
+- income must be a single exact annual income amount in Korean won only
+- Format it as digits with comma separators and end with 원
+- Example: "68,000,000원"
+- If the persona is primarily a homemaker, caregiver, student, job-seeker, retiree, or otherwise not in paid employment, leave income empty unless there is a clear personal income source
+- Do not write 월 소득, ranges, percentile descriptions, or any explanatory prose inside income"""
+    return """
+## Income Format Requirements
+- income must describe the persona's own annual personal income, not household income
+- income must be a single exact annual income amount only
+- If the persona is not in paid employment and has no clear personal income source, leave income empty
+- Do not write ranges, percentile descriptions, or explanatory prose inside income"""
+
+
 def _is_likely_telecom_context(*values) -> bool:
     return bool(TELECOM_CONTEXT_PATTERN.search(" ".join(str(value or "") for value in values)))
+
+
+def _format_segment_inputs(segment_inputs: list[dict]) -> str:
+    blocks = []
+    for index, segment in enumerate(segment_inputs or []):
+        criteria = f"- Criteria: {segment.get('criteria')}" if segment.get("criteria") else ""
+        blocks.append(
+            "\n".join(
+                value
+                for value in [
+                    f"{index + 1}. {segment.get('name')}",
+                    f"- ID: {segment.get('id')}",
+                    f"- Description: {segment.get('description')}",
+                    criteria,
+                    f"- Target Count: {segment.get('targetCount')}",
+                ]
+                if value
+            )
+        )
+    return "\n\n".join(blocks)
+
+
+def _telecom_segmentation_guidance(enabled: bool) -> str:
+    if not enabled:
+        return ""
+    return """
+## Telecom Differentiation Requirements
+- Because this service is telecom-related, make segments diverge across telecom behavior and service-management style
+- Vary brand retention and premium infrastructure/benefit orientation
+- Vary whether optimization is driven by money saving or by reducing time and effort
+- Vary information exploration and problem-solving autonomy
+- Vary AI/provider trust and willingness to share data for personalization
+- Vary household decision leadership, telecom product understanding, and daily telecom service usage context
+- Avoid creating multiple segments that share the same telecom decision logic with only demographic differences"""
+
+
+def _existing_persona_names(existing_personas: list[dict]) -> str:
+    names = [str(persona.get("name") or "").strip() for persona in existing_personas or []]
+    names = [name for name in names if name]
+    return ", ".join(names) if names else "None"
 
 
 def _execute_json_stage(
@@ -963,17 +1048,226 @@ def _execute_json_stage(
 
 
 def _segmentation_prompt(payload: dict, existing_personas: list[dict]) -> str:
+    locale = payload.get("locale") or {}
+    target_language = _language_label(payload)
+    country = locale.get("country") or "KR"
+    region = locale.get("region") or "Nationwide"
+    existing_names = _existing_persona_names(existing_personas)
+    segment_inputs = payload.get("segmentInputs") or []
+    total_count = _coerce_count(payload.get("totalCount"))
+    telecom_guidance = _telecom_segmentation_guidance(
+        _is_likely_telecom_context(
+            payload.get("serviceDescription"),
+            payload.get("targetAudience"),
+            *[
+                value
+                for segment in segment_inputs
+                for value in [segment.get("name"), segment.get("description"), segment.get("criteria")]
+            ],
+        )
+    )
+
+    if payload.get("sourceType") == "segment_based" and segment_inputs:
+        total_from_segments = sum(_coerce_count(segment.get("targetCount")) for segment in segment_inputs)
+        return f"""
+STAGE: segmentation_identity
+You are an expert in persona creation and market segmentation.
+
+## Task
+You are given predefined segments. DO NOT create new segments.
+For each provided segment:
+1. Keep the id, name, and description EXACTLY as provided
+2. Derive segment characteristics based on the description and criteria
+3. Generate identity profiles matching the segment's target_count
+
+## Critical Rules
+- Do NOT add, remove, rename, or reorder segments
+- Segment IDs are immutable foreign keys. Every profile.segment_id MUST exactly equal one of the provided segment IDs, character-for-character.
+- Do NOT invent profile segment IDs like "segment_1" unless that exact ID was provided.
+- The total profiles array length MUST match the requested Total exactly
+- The number of profiles per segment MUST match target_count exactly
+- Names must be realistic and culturally appropriate for the country
+- Age must be a specific integer and align with the segment's age_range_hint
+- title, sector, organisation, role_area, and role_level must be written as human-readable labels in the target language
+- Do not output English role level codes like "manager" unless the target language itself is English
+- If the persona is not in a conventional paid job, do not force corporate job metadata
+- For homemaker, student, job-seeker, retiree, caregiver, or similar personas:
+  use title as the main social role,
+  leave organisation empty unless there is a real affiliation,
+  leave role_level empty unless it is truly meaningful,
+  and use role_area for one short responsibility/domain instead of a fake department name
+- All profiles must have unique name+age+occupation combinations
+- Respond with JSON only
+
+## Output Format
+{{
+  "segments": [
+    {{
+      "id": "segment_1",
+      "name": "Segment Name",
+      "name_en": "Segment Name in English",
+      "description": "Brief description of this segment",
+      "target_count": 2,
+      "characteristics": {{
+        "key_traits": ["trait1", "trait2", "trait3"],
+        "age_range_hint": "age-range",
+        "occupation_hint": ["occupation1", "occupation2"],
+        "income_level_hint": "level",
+        "urban_rural_hint": "area_type"
+      }}
+    }}
+  ],
+  "profiles": [
+    {{
+      "segment_id": "segment_1",
+      "name": "Full Name",
+      "title": "Job Title",
+      "age": 34,
+      "gender": "female",
+      "generation": "millennial",
+      "current_city": "Seoul",
+      "current_country": "KR",
+      "sector": "IT",
+      "organisation": "Company Name",
+      "role_area": "Product",
+      "role_level": "Role level in target language"
+    }}
+  ]
+}}
+
+IMPORTANT: Generate persona names that are culturally appropriate for {country}. Write names in the country's common script (or standard romanization if needed), and do not translate names into {target_language}. Keep segment names and descriptions exactly as provided. Generate all other text content in {target_language}. Keep "name_en" in English.
+
+## Provided Segments
+{_format_segment_inputs(segment_inputs)}
+
+## Country/Region Context
+- Country: {country}
+- Region: {region}
+- Target Language: {target_language}
+
+## Number of Personas to Generate
+Total {total_from_segments or total_count}
+The profiles array MUST contain exactly {total_from_segments or total_count} item(s).
+
+## Existing Personas (avoid duplicates)
+{existing_names}
+{telecom_guidance}
+
+Use the provided segments exactly as listed.
+Generate segment characteristics and identity profiles for each segment.
+Every profile.segment_id must exactly match a provided segment ID from the list above.
+All names must be unique and not duplicate existing personas.
+""".strip()
+
+    diversity_instruction = ""
+    if total_count > 1:
+        diversity_instruction = """
+## Diversity Requirements
+- Unless the target audience explicitly restricts gender or age, distribute personas across multiple age bands and genders
+- Avoid all personas sharing the same gender or within a 5-year age window
+- If the target audience is narrow, stay within it but vary ages across early/mid/late range and role levels"""
+
     return f"""
 STAGE: segmentation_identity
-Return JSON with "segments" and "profiles".
-Profiles count must be exactly {payload["totalCount"]}.
-For segment_based requests, keep provided segment ids exactly.
+You are an expert in market segmentation and persona development.
+
+## Task
+Based on the provided service description and target audience:
+1. Define 3-5 distinct customer segments
+2. Generate basic identity profiles for each segment
+
+## Segment Definition Rules
+- Each segment must have distinctly different characteristics
+- Segments should represent realistic customer groups who would actually use this service
+- Segment names should be concise and descriptive
+- Characteristics should include key traits, age range hints, and occupation hints
+
+## Diversity & Coverage Rules
+- Unless the target audience explicitly restricts gender or age, ensure demographic variety across segments
+- Use multiple age bands and a mix of genders when generating multiple personas
+- Do not let all profiles share the same gender or sit within a 5-year age window unless explicitly required
+
+## Identity Profile Rules
+- The profiles array length MUST match the requested Total exactly
+- If Total is 1, output exactly one profile, even if you define multiple segments
+- Names: realistic names appropriate for the country/culture
+- Age: REQUIRED integer field - specific age, not a range
+- Generation: derived from age (gen_z: 13-28, millennial: 29-44, gen_x: 45-60, baby_boomer: 61-79)
+- City: real city names from the specified country
+- title, sector, organisation, role_area, and role_level must be written as human-readable labels in the target language
+- Do not output English role level codes like "manager" unless the target language itself is English
+- If the persona is not in a conventional paid job, do not force corporate job metadata
+- For homemaker, student, job-seeker, retiree, caregiver, or similar personas:
+  use title as the main social role,
+  leave organisation empty unless there is a real affiliation,
+  leave role_level empty unless it is truly meaningful,
+  and use role_area for one short responsibility/domain instead of a fake department name
+- All profiles must have unique name+age+occupation combinations
+- Respond with JSON only
+
+## Output Format
+{{
+  "segments": [
+    {{
+      "id": "segment_1",
+      "name": "Segment Name",
+      "name_en": "Segment Name in English",
+      "description": "Brief description of this segment",
+      "target_count": 3,
+      "characteristics": {{
+        "key_traits": ["trait1", "trait2", "trait3"],
+        "age_range_hint": "age-range",
+        "occupation_hint": ["occupation1", "occupation2"],
+        "income_level_hint": "level",
+        "urban_rural_hint": "area_type"
+      }}
+    }}
+  ],
+  "profiles": [
+    {{
+      "segment_id": "segment_1",
+      "name": "Full Name",
+      "title": "Job Title",
+      "age": 34,
+      "gender": "female",
+      "generation": "millennial",
+      "current_city": "Seoul",
+      "current_country": "KR",
+      "sector": "IT",
+      "organisation": "Company Name",
+      "role_area": "Product",
+      "role_level": "Role level in target language"
+    }}
+  ]
+}}
+
+IMPORTANT: Generate persona names that are culturally appropriate for {country}. Write names in the country's common script (or standard romanization if needed), and do not translate names into {target_language}. Generate all other text content in {target_language}. Keep "name_en" in English.
+
+## Service Information
+{payload.get("serviceDescription") or ""}
+
+## Target Audience
+{payload.get("targetAudience") or ""}
+
+## Country/Region Context
+- Country: {country}
+- Region: {region}
+- Target Language: {target_language}
+
+## Number of Personas to Generate
+Total {total_count}
+The profiles array MUST contain exactly {total_count} item(s). Do not generate one profile per segment unless the requested Total requires it.
+
+## Existing Personas (avoid duplicates)
+{existing_names}
+{diversity_instruction}
+{telecom_guidance}
 
 Generation input:
 {json.dumps(payload, ensure_ascii=False)}
 
-Existing personas to avoid:
-{json.dumps(existing_personas, ensure_ascii=False)}
+Based on the above information, generate segment definitions and basic identity profiles.
+All names must be unique and not duplicate existing personas.
 """.strip()
 
 
@@ -1136,12 +1430,43 @@ def _seed_metadata(selected: dict, persona_name: str) -> dict:
 
 
 def _narrative_prompt(persona: dict, payload: dict, segment: dict, seed: dict) -> str:
+    target_language = _language_label(payload)
+    income_guidance = _income_formatting_guidance(payload)
     return f"""
 STAGE: narrative_polish
-Rewrite and enrich one GeneratedPersona. Return JSON with either "persona" or the persona fields.
-Required narrative fields: attitudes, biography, demeanour, interests, behaviours, motivation, upbringing,
-personality, preferences, socialContext, culturalBackground, quote, imagePrompt.
-Do not omit required fields. If a detail is not explicit, infer a concrete value from the draft persona, segment, and Nemotron seed.
+You are an expert persona editor.
+
+## Task
+Lightly polish a dataset-seeded persona into clean app-ready persona fields.
+
+## Critical Rules
+1. Preserve all facts from the seed: age, gender, job, city, household, housing, education, interests, and life history.
+2. Do not adapt the persona to the telecom service here.
+3. Do not invent new life events.
+4. Keep the output concise, coherent, and field-oriented.
+5. Do not generate telecom behavior dimensions.
+6. Required narrative fields: attitudes, biography, demeanour, interests, behaviours, motivation, upbringing, personality, preferences, socialContext, culturalBackground, quote, imagePrompt.
+7. Do not omit required fields. If a detail is not explicit, infer a concrete value from the draft persona and Nemotron seed without contradicting the seed.
+8. Generate all narrative text in {target_language}. Only imagePrompt should be in English.
+9. Respond with JSON only.
+
+## Output Format
+{{
+  "attitudes": "Polished worldview and values",
+  "biography": "Polished biography",
+  "demeanour": "Polished communication style",
+  "interests": "Polished interests",
+  "behaviours": "Polished behavior patterns",
+  "motivation": "Polished motivations",
+  "upbringing": "Polished upbringing",
+  "personality": "Polished personality",
+  "preferences": "Polished preferences",
+  "socialContext": "Polished social context",
+  "culturalBackground": "Polished cultural background",
+  "income": "Exact annual income amount only",
+  "quote": "Representative quote",
+  "imagePrompt": "English profile image prompt"
+}}
 
 Generation input:
 {json.dumps(payload, ensure_ascii=False)}
@@ -1154,6 +1479,10 @@ Draft persona:
 
 Nemotron seed:
 {json.dumps(seed, ensure_ascii=False)}
+
+{income_guidance}
+
+Lightly rewrite only for clarity and field fit. Preserve the seed's facts and tone.
 """.strip()
 
 
@@ -1203,11 +1532,13 @@ Generate telecom behavior dimensions and numeric behavior scores for a fixed per
 2. Infer telecom behavior from the persona's life context, household situation, job habits, and service context.
 3. Make each field concrete and behavior-based.
 4. Avoid generic labels. Write 1-3 natural-language sentences per dimension field.
-5. Score each of the four score groups from 1 to 5 based on the generated dimensions and fixed persona evidence.
-6. Score semantics: 1 = very low, 2 = low, 3 = moderate, 4 = high, 5 = very high.
-7. Each score must include a concise rationale and 1-3 evidence snippets grounded in the fixed persona or generated dimensions.
-8. Generate all text in {target_language}.
-9. Respond with JSON only.
+5. Write each dimension value as 1-3 natural-language sentences, not keywords.
+6. Make these telecom traits meaningfully distinct from other possible segments rather than repeating generic statements.
+7. Score each of the four score groups from 1 to 5 based on the generated dimensions and fixed persona evidence.
+8. Score semantics: 1 = very low, 2 = low, 3 = moderate, 4 = high, 5 = very high.
+9. Each score must include a concise rationale and 1-3 evidence snippets grounded in the fixed persona or generated dimensions.
+10. Generate all text in {target_language}.
+11. Respond with JSON only.
 
 ## Output Format
 {{
@@ -1545,7 +1876,12 @@ def generate_seed_based_personas(payload: dict, existing_personas: Iterable[dict
     selected_names = []
     personas = []
     for selected in selected_seeds:
-        persona = map_nemotron_seed_to_persona(selected, existing, selected_names)
+        persona = _with_persona_tag(
+            map_nemotron_seed_to_persona(selected, existing, selected_names),
+            selected["profile"],
+            selected["segment"],
+            payload,
+        )
         selected_names.append(persona["name"])
         personas.append(persona)
     timings_ms = {"seedSelection": int((time.monotonic() - started_at) * 1000)}
@@ -1594,7 +1930,12 @@ def generate_personas_pipeline(
     service_context = _service_context(payload)
     seeded_drafts = []
     for selected in selected_seeds:
-        persona = map_nemotron_seed_to_persona(selected, existing, selected_names)
+        persona = _with_persona_tag(
+            map_nemotron_seed_to_persona(selected, existing, selected_names),
+            selected["profile"],
+            selected["segment"],
+            payload,
+        )
         selected_names.append(persona["name"])
         seeded_drafts.append({"selected": selected, "persona": persona})
 
