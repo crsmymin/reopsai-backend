@@ -49,6 +49,7 @@ DEFAULT_PERSONA_PACK_MODEL = "gemini-2.5-flash"
 DEFAULT_PERSONA_INTERVIEW_MODEL = "gpt-5.4"
 DEFAULT_INTERVIEW_MAX_CONCURRENCY = 4
 DEFAULT_INTERVIEW_RETRY_ATTEMPTS = 2
+PERSONA_TAG_MAX_LENGTH = 20
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,11 @@ def _first_text(*values):
 def _clean_model_name(value):
     model = str(value or "").strip()
     return model or None
+
+
+def _normalize_persona_tag(value):
+    tag = str(value or "").strip()
+    return tag[:PERSONA_TAG_MAX_LENGTH] if tag else None
 
 
 def _infer_provider_from_model(model: str | None, fallback: str) -> str:
@@ -2180,6 +2186,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 merged.append(
                     {
                         "name": name,
+                        "tag": _normalize_persona_tag(item.get("tag")),
                         "age": item.get("age"),
                         "generation": item.get("generation"),
                         "title": item.get("title"),
@@ -2219,6 +2226,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             "folderId": str(persona.folder_id) if persona.folder_id is not None else None,
             "created_by_user_id": persona.created_by_user_id,
             "name": persona.name,
+            "tag": persona.tag,
             "gender": persona.gender,
             "title": persona.title,
             "personality": persona.personality,
@@ -2331,6 +2339,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         return {
             "folder_id": int(folder_id) if folder_id else None,
             "name": persona.get("name"),
+            "tag": _normalize_persona_tag(persona.get("tag")),
             "gender": persona.get("gender"),
             "title": persona.get("title"),
             "personality": persona.get("personality"),

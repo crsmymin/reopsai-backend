@@ -13,6 +13,7 @@ from typing import Callable, Iterable
 DEFAULT_SEED_PATH = Path(__file__).resolve().parents[3] / "data" / "nemotron-personas-korea-sample.jsonl"
 DEFAULT_TEXT_MODEL = os.getenv("PERSONA_LLM_SEGMENTATION_IDENTITY_MODEL") or os.getenv("PERSONA_GEMINI_TEXT_MODEL") or "gemini-2.5-flash"
 DEFAULT_PERSONA_GENERATION_MAX_CONCURRENCY = 3
+PERSONA_TAG_MAX_LENGTH = 20
 
 TELECOM_CONTEXT_PATTERN = re.compile(
     r"통신|요금제|번호이동|멤버십|결합|부가서비스|대리점|carrier|telecom|wireless|mobile plan|phone plan|subscription",
@@ -63,6 +64,31 @@ def _log_persona_generation_event(message: str, **values):
     details = " ".join(f"{key}={value}" for key, value in values.items() if value is not None)
     suffix = f" | {details}" if details else ""
     print(f"[persona-generation] {message}{suffix}", flush=True)
+
+
+def _normalize_persona_tag(value) -> str | None:
+    tag = str(value or "").strip()
+    return tag[:PERSONA_TAG_MAX_LENGTH] if tag else None
+
+
+def _resolve_persona_tag(profile: dict, segment: dict, payload: dict) -> str | None:
+    segment_inputs = payload.get("segmentInputs")
+    if isinstance(segment_inputs, list) and segment_inputs:
+        for item in segment_inputs:
+            if not isinstance(item, dict):
+                continue
+            if item.get("id") in {profile.get("segmentId"), segment.get("id")}:
+                return _normalize_persona_tag(item.get("name") or segment.get("name"))
+    return _normalize_persona_tag(segment.get("name"))
+
+
+def _with_persona_tag(persona: dict, profile: dict, segment: dict, payload: dict) -> dict:
+    return {
+        **persona,
+        "tag": _normalize_persona_tag(persona.get("tag")) or _resolve_persona_tag(profile, segment, payload),
+    }
+
+
 TELECOM_DIMENSION_GROUPS = {
     "brandRetention": ("brandRetentionTendency", "premiumInfraBenefitOrientation"),
     "optimizationResource": ("optimizationResourceInvestment", "paymentResistanceLine"),
@@ -277,7 +303,7 @@ def validate_generation_payload(payload: dict) -> tuple[dict | None, list[str]]:
                     parsed_segments.append(
                         {
                             "id": str(segment["id"]).strip(),
-                            "name": segment_name,
+                    "name": _normalize_persona_tag(segment_name) or segment_name,
                             "description": segment_description,
                             "targetCount": target_count,
                             **({"criteria": str(segment["criteria"]).strip()} if segment.get("criteria") else {}),
@@ -860,7 +886,7 @@ def _normalize_segments(raw_segments: list, payload: dict) -> list[dict]:
         normalized.append(
             {
                 "id": str(segment.get("id") or f"segment_{index + 1}"),
-                "name": str(segment.get("name") or f"Segment {index + 1}"),
+                "name": _normalize_persona_tag(segment.get("name")) or f"Segment {index + 1}",
                 "nameEn": segment.get("name_en") or segment.get("nameEn"),
                 "description": str(segment.get("description") or ""),
                 "targetCount": _coerce_count(segment.get("target_count") or segment.get("targetCount")),
@@ -1545,7 +1571,12 @@ def generate_seed_based_personas(payload: dict, existing_personas: Iterable[dict
     selected_names = []
     personas = []
     for selected in selected_seeds:
-        persona = map_nemotron_seed_to_persona(selected, existing, selected_names)
+        persona = _with_persona_tag(
+            map_nemotron_seed_to_persona(selected, existing, selected_names),
+            selected["profile"],
+            selected["segment"],
+            payload,
+        )
         selected_names.append(persona["name"])
         personas.append(persona)
     timings_ms = {"seedSelection": int((time.monotonic() - started_at) * 1000)}
@@ -1594,7 +1625,12 @@ def generate_personas_pipeline(
     service_context = _service_context(payload)
     seeded_drafts = []
     for selected in selected_seeds:
-        persona = map_nemotron_seed_to_persona(selected, existing, selected_names)
+        persona = _with_persona_tag(
+            map_nemotron_seed_to_persona(selected, existing, selected_names),
+            selected["profile"],
+            selected["segment"],
+            payload,
+        )
         selected_names.append(persona["name"])
         seeded_drafts.append({"selected": selected, "persona": persona})
 
