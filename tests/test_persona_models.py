@@ -37,6 +37,13 @@ def test_persona_models_register_in_metadata():
     assert "persona_snapshot" in Base.metadata.tables["persona_ab_test_results"].columns
     assert "raw_response" in Base.metadata.tables["persona_ab_test_results"].columns
     assert "turns" in Base.metadata.tables["persona_interview_results"].columns
+    persona_folder_table = Base.metadata.tables["persona_folders"]
+    assert "uq_persona_folders_company_name" not in {
+        constraint.name for constraint in persona_folder_table.constraints
+    }
+    assert "ux_persona_folders_company_name_active" in {
+        index.name for index in persona_folder_table.indexes
+    }
 
 
 def test_persona_asset_accepts_updated_by_user_id():
