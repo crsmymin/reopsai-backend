@@ -634,6 +634,71 @@ def _weighted_available_scores(entries):
     return _clamp_percent(value / weight, 0)
 
 
+def _finalize_flow_completion_score(*, step_confusion_scores, step_dropoff_risks, step_efficiency_penalties):
+    if not step_confusion_scores or not step_dropoff_risks:
+        return None
+    overall_confusion_score = _aggregate_flow_step_risk(step_confusion_scores)
+    overall_dropoff_risk = _aggregate_flow_step_risk(step_dropoff_risks)
+    overall_efficiency_penalty = _aggregate_flow_step_risk(step_efficiency_penalties) if step_efficiency_penalties else None
+    direct_completion = _clamp_percent(100 - overall_efficiency_penalty, 0) if isinstance(overall_efficiency_penalty, (int, float)) else None
+    raw_completion_rate = _weighted_available_scores(
+        [
+            {"value": direct_completion, "weight": FLOW_COMPLETION_DIRECT_WEIGHT},
+            {"value": 100 - overall_confusion_score if isinstance(overall_confusion_score, (int, float)) else None, "weight": FLOW_COMPLETION_CONFUSION_WEIGHT},
+            {"value": 100 - overall_dropoff_risk if isinstance(overall_dropoff_risk, (int, float)) else None, "weight": FLOW_COMPLETION_DROPOFF_WEIGHT},
+        ]
+    )
+    flow_failure_risk = _weighted_available_scores(
+        [
+            {"value": overall_confusion_score, "weight": 0.45},
+            {"value": overall_dropoff_risk, "weight": 0.55},
+        ]
+    )
+    if not isinstance(raw_completion_rate, (int, float)):
+        return None
+    return raw_completion_rate if not isinstance(flow_failure_risk, (int, float)) else _cap_flow_completion_by_risk(raw_completion_rate, flow_failure_risk)
+
+
+def _flow_efficiency_penalties_for_steps(*, scoped_events, step_indices):
+    completion_events = [event for event in scoped_events if event.get("metric") == "효율성"]
+    if not completion_events:
+        return []
+    return [
+        _accumulated_flow_risk_score(
+            [event for event in scoped_events if event.get("metric") == "효율성" and event.get("screenIndex") == step_index]
+        )
+        or 0
+        for step_index in step_indices
+    ]
+
+
+def _score_flow_completion_from_flow_analysis(flow_analysis, analysis_events, total_step_count=None):
+    items = sorted(
+        [item for item in _as_list(flow_analysis) if isinstance(item, dict)],
+        key=lambda item: item.get("screenIndex", 0),
+    )
+    if not items:
+        return _score_flow_completion_metric(analysis_events, total_step_count=total_step_count)
+
+    step_confusion_scores = [
+        _clamp_percent(item.get("confusionScore", item.get("confusion_score")), 0) for item in items
+    ]
+    step_dropoff_risks = [
+        _clamp_percent(item.get("dropoffRisk", item.get("dropoff_risk")), 0) for item in items
+    ]
+    step_indices = [item.get("screenIndex") for item in items]
+    scoped_events = [event for event in analysis_events if event.get("testType") == "flow"]
+    step_efficiency_penalties = _flow_efficiency_penalties_for_steps(
+        scoped_events=scoped_events,
+        step_indices=step_indices,
+    )
+    return _finalize_flow_completion_score(
+        step_confusion_scores=step_confusion_scores,
+        step_dropoff_risks=step_dropoff_risks,
+        step_efficiency_penalties=step_efficiency_penalties,
+    )
+
+
 def _score_flow_completion_metric(events, screen_index=None, total_step_count=None):
     scoped_events = [
         event
@@ -670,37 +735,15 @@ def _score_flow_completion_metric(events, screen_index=None, total_step_count=No
         return None
     step_confusion_scores = [_score_flow_risk_metric(events, "혼란도", step_index) or 0 for step_index in step_indices]
     step_dropoff_risks = [_score_flow_risk_metric(events, "이탈 위험", step_index) or 0 for step_index in step_indices]
-    step_efficiency_penalties = (
-        [
-            _accumulated_flow_risk_score(
-                [event for event in scoped_events if event.get("metric") == "효율성" and event.get("screenIndex") == step_index]
-            )
-            or 0
-            for step_index in step_indices
-        ]
-        if completion_events
-        else []
+    step_efficiency_penalties = _flow_efficiency_penalties_for_steps(
+        scoped_events=scoped_events,
+        step_indices=step_indices,
     )
-    overall_confusion_score = _aggregate_flow_step_risk(step_confusion_scores)
-    overall_dropoff_risk = _aggregate_flow_step_risk(step_dropoff_risks)
-    overall_efficiency_penalty = _aggregate_flow_step_risk(step_efficiency_penalties)
-    direct_completion = _clamp_percent(100 - overall_efficiency_penalty, 0) if isinstance(overall_efficiency_penalty, (int, float)) else None
-    raw_completion_rate = _weighted_available_scores(
-        [
-            {"value": direct_completion, "weight": FLOW_COMPLETION_DIRECT_WEIGHT},
-            {"value": 100 - overall_confusion_score if isinstance(overall_confusion_score, (int, float)) else None, "weight": FLOW_COMPLETION_CONFUSION_WEIGHT},
-            {"value": 100 - overall_dropoff_risk if isinstance(overall_dropoff_risk, (int, float)) else None, "weight": FLOW_COMPLETION_DROPOFF_WEIGHT},
-        ]
+    return _finalize_flow_completion_score(
+        step_confusion_scores=step_confusion_scores,
+        step_dropoff_risks=step_dropoff_risks,
+        step_efficiency_penalties=step_efficiency_penalties,
     )
-    flow_failure_risk = _weighted_available_scores(
-        [
-            {"value": overall_confusion_score, "weight": 0.45},
-            {"value": overall_dropoff_risk, "weight": 0.55},
-        ]
-    )
-    if not isinstance(raw_completion_rate, (int, float)):
-        return None
-    return raw_completion_rate if not isinstance(flow_failure_risk, (int, float)) else _cap_flow_completion_by_risk(raw_completion_rate, flow_failure_risk)
 
 
 def _score_metric(events, metric):
@@ -825,11 +868,20 @@ def _merge_ui_flow_analysis(current, incoming):
     return [by_index[index] for index in sorted(index for index in by_index if index is not None)]
 
 
-def _apply_structured_scoring(*, fallback_scores: dict, analysis_events, is_flow_test: bool, flow_step_count=None):
+def _apply_structured_scoring(*, fallback_scores: dict, analysis_events, is_flow_test: bool, flow_step_count=None, flow_analysis=None):
     clarity = _score_metric(analysis_events, "명확성")
     usability = _score_metric(analysis_events, "사용성")
     satisfaction = _score_metric(analysis_events, "만족도")
-    overall_flow_score = _score_flow_completion_metric(analysis_events, total_step_count=flow_step_count) if is_flow_test else None
+    if is_flow_test and _as_list(flow_analysis):
+        overall_flow_score = _score_flow_completion_from_flow_analysis(
+            flow_analysis,
+            analysis_events,
+            total_step_count=flow_step_count,
+        )
+    elif is_flow_test:
+        overall_flow_score = _score_flow_completion_metric(analysis_events, total_step_count=flow_step_count)
+    else:
+        overall_flow_score = None
     scored = {
         "clarity": clarity if isinstance(clarity, (int, float)) else _clamp_percent(fallback_scores.get("clarity"), 70),
         "usability": usability if isinstance(usability, (int, float)) else _clamp_percent(fallback_scores.get("usability"), 70),
@@ -2503,6 +2555,7 @@ class PersonaService:
             analysis_events=analysis_events,
             is_flow_test=is_flow,
             flow_step_count=len(screens),
+            flow_analysis=flow_analysis,
         )
         screen_insights = self._normalize_ui_screen_insights(
             feedback=feedback,
@@ -2902,10 +2955,14 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             parsed = self._fallback_interview_question_set(goal=goal, product_description=product_description, length=length)
         return self._normalize_interview_question_set(parsed, goal=goal, product_description=product_description, length=length)
 
-    def _persona_interview_source(self, db_session, *, company_id: int, persona):
+    def _persona_interview_source(self, db_session, *, company_id: int, persona, include_activities: bool = True):
         payload = self.persona_payload(persona)
         settings = self.repository.get_memory_settings(db_session, company_id=company_id, persona_id=persona.id) if hasattr(self.repository, "get_memory_settings") else None
-        activities = self.repository.list_activities(db_session, company_id=company_id, persona_id=persona.id) if hasattr(self.repository, "list_activities") else []
+        activities = (
+            self.repository.list_activities(db_session, company_id=company_id, persona_id=persona.id)
+            if include_activities and hasattr(self.repository, "list_activities")
+            else []
+        )
         traits = self.repository.list_traits(db_session, company_id=company_id, persona_id=persona.id) if hasattr(self.repository, "list_traits") else []
         lines = ["[기본 정보]"]
         for label, value in (
@@ -2959,13 +3016,14 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             lines.append("\n[학습된 특성]")
             for trait in traits:
                 lines.append(f"- {getattr(trait, 'category', 'general')}: {getattr(trait, 'trait', '')} (confidence {getattr(trait, 'confidence', 0)})")
-        lines.append("\n[메모리/활동]")
-        if settings:
-            lines.append(f"- 메모리 사용: {'활성' if getattr(settings, 'enable_memory', False) else '비활성'}")
-            lines.append(f"- 메모리 강도: {getattr(settings, 'memory_strength', None)}")
-        lines.append(f"- 활동 수: {len(activities or [])}")
-        for activity in (activities or [])[:10]:
-            lines.append(f"- {getattr(activity, 'activity_type', 'activity')}: {getattr(activity, 'summary', '')}")
+        if include_activities:
+            lines.append("\n[메모리/활동]")
+            if settings:
+                lines.append(f"- 메모리 사용: {'활성' if getattr(settings, 'enable_memory', False) else '비활성'}")
+                lines.append(f"- 메모리 강도: {getattr(settings, 'memory_strength', None)}")
+            lines.append(f"- 활동 수: {len(activities or [])}")
+            for activity in (activities or [])[:10]:
+                lines.append(f"- {getattr(activity, 'activity_type', 'activity')}: {getattr(activity, 'summary', '')}")
         return "\n".join(lines)
 
     def _persona_interview_pack_prompt(self, *, persona_text: str):
@@ -3048,7 +3106,12 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
 
     def _get_or_create_persona_interview_pack(self, db_session, *, company_id: int, user_id: int, persona, model: str | None = None, force_refresh: bool = False):
         resolved_model = (model or self._default_model_for_stage("persona_interview_pack")).strip()
-        persona_text = self._persona_interview_source(db_session, company_id=company_id, persona=persona)
+        persona_text = self._persona_interview_source(
+            db_session,
+            company_id=company_id,
+            persona=persona,
+            include_activities=False,
+        )
         source_hash = self._pack_source_hash(persona_text=persona_text, model=resolved_model)
         cached_pack = _clean_mapping(getattr(persona, "interview_pack", None))
         if (
