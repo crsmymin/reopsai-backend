@@ -16,6 +16,7 @@ from typing import Any, Mapping, Optional
 
 from reopsai.domain.persona.generation import (
     PersonaGenerationQualityError,
+    build_curated_interview_evidence_bundle,
     generate_segment_suggestions_pipeline,
     generate_personas_pipeline,
     infer_persona_source_type,
@@ -27,8 +28,8 @@ from reopsai.domain.persona.interview_evidence import (
     TELECOM_EVIDENCE_VARIABLES,
     chunk_to_payload,
     chunk_vector_id,
+    empty_curated_evidence_bundle,
     format_evidence_for_prompt,
-    gather_interview_evidence_for_persona,
     normalize_chunk_row_data,
     search_interview_evidence_chunks,
     upsert_interview_source_embeddings,
@@ -312,7 +313,7 @@ def _score_from_keywords(text: str, positive: tuple[str, ...], negative: tuple[s
 
 def _build_telecom_behavior_scores(persona) -> list[dict]:
     stored_scores = _clean_mapping(getattr(persona, "telecom_behavior_scores", None))
-    if isinstance(stored_scores, list):
+    if isinstance(stored_scores, list) and stored_scores:
         return stored_scores
     dimensions = _clean_mapping(getattr(persona, "telecom_behavior_dimensions", None)) or {}
     profile = _clean_mapping(getattr(persona, "profile", None)) or {}
@@ -3956,14 +3957,13 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
 
                         def interview_evidence_retriever(persona: dict, segment: dict, payload: dict):
                             try:
-                                return gather_interview_evidence_for_persona(
+                                return build_curated_interview_evidence_bundle(
                                     vector_service=vector_service,
                                     candidate_chunks=interview_chunks,
                                     persona=persona,
                                     segment=segment,
                                     payload=payload,
-                                    top_k=1,
-                                    max_chunks_per_source=1,
+                                    text_generator=persona_text_generator,
                                 )
                             except Exception as exc:
                                 print(
@@ -3971,7 +3971,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                                     f"persona={persona.get('name')} error={exc}",
                                     flush=True,
                                 )
-                                return {}
+                                return empty_curated_evidence_bundle()
         except Exception:
             interview_evidence_retriever = None
 

@@ -22,6 +22,16 @@ TELECOM_EVIDENCE_VARIABLES = (
     "telecomServiceUsageContext",
 )
 
+TELECOM_DOMAIN_ANCHOR = (
+    "통신 요금제 요금 이동 번호이동 결합 가족요금 앱 고객센터 "
+    "AI 추천 개인정보 데이터 혜택 멤버십 알뜰폰 T월드"
+)
+
+GLOBAL_EVIDENCE_TOP_K = 12
+GLOBAL_EVIDENCE_MAX_CHUNKS_PER_SOURCE = 3
+CURATED_EVIDENCE_MIN_KEEP = 3
+CURATED_EVIDENCE_MAX_KEEP = 7
+
 VARIABLE_SEARCH_HINTS: dict[str, str] = {
     "brandRetentionTendency": "통신사 유지 장기 고객 전환 번호이동 브랜드",
     "premiumInfraBenefitOrientation": "통신 품질 끊김 데이터 속도 프리미엄 혜택",
@@ -301,6 +311,35 @@ def build_persona_evidence_query(
     return " ".join(parts).strip()
 
 
+def build_global_evidence_query(
+    *,
+    persona: dict | None,
+    segment: dict | None,
+    payload: dict | None,
+) -> str:
+    """Single retrieval query: segment + user input + seed narrative + telecom domain anchor."""
+    persona = persona if isinstance(persona, dict) else {}
+    parts = _collect_text_parts(
+        build_generation_request_context(payload),
+        build_segment_context(segment),
+        TELECOM_DOMAIN_ANCHOR,
+        persona.get("name"),
+        persona.get("title"),
+        persona.get("personality"),
+        persona.get("attitudes"),
+        persona.get("behaviours"),
+        persona.get("behaviors"),
+        persona.get("motivation"),
+        persona.get("biography"),
+        persona.get("preferences"),
+        persona.get("socialContext"),
+        persona.get("social_context"),
+        persona.get("culturalBackground"),
+        persona.get("cultural_background"),
+    )
+    return " ".join(parts).strip()
+
+
 def _select_diverse_chunks(
     ranked: list[tuple[float, Any]],
     *,
@@ -346,7 +385,7 @@ def search_interview_evidence_chunks(
     *,
     vector_service,
     candidate_chunks: list,
-    target_variable: str,
+    target_variable: str | None,
     query_text: str,
     top_k: int = 5,
     used_chunk_ids: set[int] | None = None,
@@ -354,17 +393,20 @@ def search_interview_evidence_chunks(
     max_chunks_per_source: int = 1,
     pool_size: int = 24,
 ) -> list[dict[str, Any]]:
-    if target_variable not in TELECOM_EVIDENCE_VARIABLES:
+    if target_variable is not None and target_variable not in TELECOM_EVIDENCE_VARIABLES:
         return []
 
     used_chunk_ids = used_chunk_ids if used_chunk_ids is not None else set()
     source_usage_counts = source_usage_counts if source_usage_counts is not None else {}
 
-    filtered = [
-        chunk
-        for chunk in candidate_chunks
-        if target_variable in (chunk.target_variables or [])
-    ]
+    if target_variable:
+        filtered = [
+            chunk
+            for chunk in candidate_chunks
+            if target_variable in (chunk.target_variables or [])
+        ]
+    else:
+        filtered = list(candidate_chunks)
     if not filtered:
         return []
 
@@ -388,7 +430,12 @@ def search_interview_evidence_chunks(
         return [chunk_to_payload(chunk) for _, chunk in fallback]
 
     service = vector_service.improved_service
-    query = (query_text or "").strip() or VARIABLE_SEARCH_HINTS[target_variable]
+    if (query_text or "").strip():
+        query = str(query_text).strip()
+    elif target_variable:
+        query = VARIABLE_SEARCH_HINTS[target_variable]
+    else:
+        query = TELECOM_DOMAIN_ANCHOR
     query_vector = _embedding_to_list(service.model.encode(query))
     vector_ids = [chunk.embedding_vector_id for chunk in embedded]
     stored = service.collection.get(ids=vector_ids, include=["embeddings", "metadatas"])
@@ -424,6 +471,181 @@ def search_interview_evidence_chunks(
         payload["similarityScore"] = round(score, 4)
         results.append(payload)
     return results
+
+
+def search_global_interview_evidence_chunks(
+    *,
+    vector_service,
+    candidate_chunks: list,
+    persona: dict | None,
+    segment: dict | None,
+    payload: dict | None,
+    top_k: int = GLOBAL_EVIDENCE_TOP_K,
+    max_chunks_per_source: int = GLOBAL_EVIDENCE_MAX_CHUNKS_PER_SOURCE,
+    pool_size: int = 36,
+) -> list[dict[str, Any]]:
+    """Variable-agnostic retrieval: one similarity pass over all embedded chunks."""
+    query = build_global_evidence_query(persona=persona, segment=segment, payload=payload)
+    return search_interview_evidence_chunks(
+        vector_service=vector_service,
+        candidate_chunks=candidate_chunks,
+        target_variable=None,
+        query_text=query,
+        top_k=top_k,
+        used_chunk_ids=set(),
+        source_usage_counts={},
+        max_chunks_per_source=max_chunks_per_source,
+        pool_size=pool_size,
+    )
+
+
+def _chunk_payload_by_id(candidates: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    mapping: dict[int, dict[str, Any]] = {}
+    for item in candidates:
+        chunk_id = item.get("id")
+        if chunk_id is not None:
+            mapping[int(chunk_id)] = item
+    return mapping
+
+
+def apply_coherence_curation(
+    candidates: list[dict[str, Any]],
+    curation: dict[str, Any] | None,
+    *,
+    min_keep: int = CURATED_EVIDENCE_MIN_KEEP,
+    max_keep: int = CURATED_EVIDENCE_MAX_KEEP,
+) -> list[dict[str, Any]]:
+    """Resolve keep_chunk_ids from LLM; fallback to top similarity if too few."""
+    if not candidates:
+        return []
+
+    by_id = _chunk_payload_by_id(candidates)
+    keep_ids: list[int] = []
+    for raw_id in (curation or {}).get("keep_chunk_ids") or (curation or {}).get("keepChunkIds") or []:
+        try:
+            keep_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            continue
+
+    kept = [by_id[chunk_id] for chunk_id in keep_ids if chunk_id in by_id]
+    seen: set[int] = {int(item["id"]) for item in kept if item.get("id") is not None}
+
+    ranked = sorted(
+        candidates,
+        key=lambda item: float(item.get("similarityScore") or 0.0),
+        reverse=True,
+    )
+    for item in ranked:
+        chunk_id = item.get("id")
+        if chunk_id is None or int(chunk_id) in seen:
+            continue
+        kept.append(item)
+        seen.add(int(chunk_id))
+        if len(kept) >= max(min_keep, max_keep):
+            break
+
+    if len(kept) > max_keep:
+        kept = sorted(
+            kept,
+            key=lambda item: float(item.get("similarityScore") or 0.0),
+            reverse=True,
+        )[:max_keep]
+    return kept
+
+
+def format_candidates_for_coherence_prompt(candidates: list[dict[str, Any]], *, max_experience_chars: int = 320) -> str:
+    lines = []
+    for item in candidates:
+        chunk_id = item.get("id")
+        lines.append(f"- chunk_id={chunk_id} source_id={item.get('sourceId')} score={item.get('similarityScore', 'n/a')}")
+        lines.append(f"  target_variables: {', '.join(item.get('targetVariables') or [])}")
+        lines.append(f"  experience: {_clip_evidence_text(item.get('experienceText', ''), max_experience_chars)}")
+        if item.get("summary"):
+            lines.append(f"  summary: {_clip_evidence_text(item.get('summary', ''), 160)}")
+    return "\n".join(lines)
+
+
+def format_curated_bundle_for_prompt(
+    *,
+    keep_chunks: list[dict[str, Any]],
+    dominant_axes: list[str] | None = None,
+    persona_fit_notes: str | None = None,
+    segment_alignment: str | None = None,
+    max_experience_chars: int = 420,
+    max_quote_chars: int = 240,
+) -> str:
+    if not keep_chunks:
+        return ""
+    lines = [
+        "## Interview Evidence (curated bundle — one coherent behavioral profile)",
+        "Use ALL kept chunks together as a single real-user behavior reference.",
+        "Do NOT mix in conflicting habits (e.g. long-term loyalty vs frequent switching).",
+        "Paraphrase for the fixed persona; do not copy participant names or identities.",
+    ]
+    if dominant_axes:
+        lines.append("### Dominant behavioral axes")
+        for axis in dominant_axes:
+            text = str(axis).strip()
+            if text:
+                lines.append(f"- {text}")
+    if segment_alignment:
+        lines.append(f"- segment_alignment: {segment_alignment}")
+    if persona_fit_notes:
+        lines.append(f"- persona_fit_notes: {_clip_evidence_text(persona_fit_notes, 400)}")
+    lines.append("### Curated experiences")
+    for index, item in enumerate(keep_chunks, start=1):
+        lines.append(
+            f"#### Experience {index} (chunk_id={item.get('id')}, score={item.get('similarityScore', 'n/a')})"
+        )
+        lines.append(
+            f"- experience: {_clip_evidence_text(item.get('experienceText', ''), max_experience_chars)}"
+        )
+        lines.append(f"- quote: {_clip_evidence_text(item.get('sourceQuote', ''), max_quote_chars)}")
+        if item.get("summary"):
+            lines.append(f"- summary: {_clip_evidence_text(item.get('summary', ''), 120)}")
+        variables = item.get("targetVariables") or []
+        if variables:
+            lines.append(f"- signals: {', '.join(str(value) for value in variables[:6])}")
+    return "\n".join(lines)
+
+
+def empty_curated_evidence_bundle() -> dict[str, Any]:
+    return {
+        "mode": "curated_bundle",
+        "enabled": False,
+        "candidateCount": 0,
+        "chunkCount": 0,
+        "droppedCount": 0,
+        "dominantAxes": [],
+        "segmentAlignment": None,
+        "personaFitNotes": "",
+        "keepChunks": [],
+        "promptText": "",
+    }
+
+
+def summarize_curated_evidence_bundle(bundle: dict[str, Any] | None) -> dict[str, Any]:
+    bundle = bundle if isinstance(bundle, dict) else {}
+    keep_chunks = bundle.get("keepChunks") or bundle.get("keep_chunks") or []
+    if not bundle.get("enabled") and not keep_chunks:
+        return {"enabled": False, "mode": "curated_bundle", "chunkCount": 0, "candidateCount": 0}
+    source_ids = sorted(
+        {
+            int(item.get("sourceId"))
+            for item in keep_chunks
+            if item.get("sourceId") is not None
+        }
+    )
+    return {
+        "enabled": True,
+        "mode": "curated_bundle",
+        "chunkCount": len(keep_chunks),
+        "candidateCount": int(bundle.get("candidateCount") or bundle.get("candidate_count") or 0),
+        "droppedCount": int(bundle.get("droppedCount") or bundle.get("dropped_count") or 0),
+        "dominantAxes": bundle.get("dominantAxes") or bundle.get("dominant_axes") or [],
+        "segmentAlignment": bundle.get("segmentAlignment") or bundle.get("segment_alignment"),
+        "sourceIds": source_ids,
+    }
 
 
 def gather_interview_evidence_for_persona(

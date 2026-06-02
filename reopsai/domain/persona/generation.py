@@ -125,45 +125,93 @@ TELECOM_SCORE_DIMENSION_FIELDS = {
     ),
 }
 TELECOM_SCORE_RUBRIC_TEXT = """
-## Score group rubric (use Generated Telecom Behavior Dimensions as primary evidence)
+## Scale meaning (read before scoring)
 
-### brandRetention — 랜드 유지 성향
-Read: brandRetentionTendency, premiumInfraBenefitOrientation
-1: 번호이동·해지 검토가 잦고, 현재 통신사 유지 이유가 거의 없음. 프리미엄/품질 혜택에도 무관심.
-2: 가격·혜택이 좋으면 변경을 고려. 장기 이용 관성은 약함.
-3: 불편 없으면 유지하나, 명확한 이득이 있으면 변경도 검토.
-4: 장기 이용·결합·번호 유지 부담 등으로 변경을 꺼림. 안정·신뢰 가치를 중시.
-5: 강한 브랜드/통신사 충성. 품질·멤버십·결합 생태계 이탈 비용을 크게 느낌.
+- **1–5 is a behavioral tendency on this axis only — NOT a quality grade, NOT "bad vs good".**
+- **Low scores (1–2) are normal, valid user profiles** (cautious, minimal, delegate, offline-first). Do NOT round up to sound positive or sympathetic.
+- **High scores (4–5) are also normal** when dimension text shows strong engagement on that axis.
+- Score from **observed behavior in dimension text**, not from brand prestige, polite tone, or "AI/innovation sounds positive".
+- Avoid **positivity bias**: marketing-friendly phrases ("혁신", "긍정적 이미지", "신뢰") without matching **usage behavior** do NOT justify 4–5.
+
+## How to score (Generated Telecom Behavior Dimensions = ONLY source for the integer)
+
+For each of the 4 groups:
+1. Read ONLY the two dimension fields listed for that group.
+2. Identify the **dominant behavior** on that axis (not one optimistic sentence — overall pattern).
+3. Match **one** anchor 1–5. If texts conflict, pick the **lower** score (e.g. "긍정적 이미지" + "몇 번만 쓰고 안 씀" → digitalAiOpenness ≤2).
+4. rationale: neutral researcher tone — describe the tendency at this level; **never** apologize for low scores or praise high scores as "better".
+5. evidence: 1–3 strings from those dimension fields only.
+6. Use the **full scale** including 1 and 2 whenever they fit — **do not cluster at 3–4** out of courtesy.
+
+---
+
+### brandRetention — 브랜드 유지 성향
+Fields: brandRetentionTendency, premiumInfraBenefitOrientation
+(Low = 이동·비교 중심 성향, High = 유지·결합 중심 성향 — neither is "wrong".)
+
+| Score | When to assign (dominant pattern in dimension text) |
+|-------|------------------------------------------------------|
+| **1** | Active switching mindset: 번호이동·이탈·6개월·보상·상품권·유지보다 이동·이동이 유리·자주 변경. Little reason to stay; premium/quality benefits ignored. |
+| **2** | Change-ready: 가격·혜택이 좋으면 변경, 약정 끝나면 검토, 장기 관성 약함. Some brand mention but **behavior favors moving**. |
+| **3** | Balanced: 유지하나 이득 있으면 검토, 불편 없으면 유지. Neither loyalist nor frequent switcher. |
+| **4** | Stay-oriented: 결합·가족·번호 유지 부담·장기 이용·변경 꺼림·안정·신뢰. Switching mentioned only as rare exception. |
+| **5** | Strong loyalty: 충성·생태계 이탈 비용·프리미엄/품질/멤버십을 핵심 가치. Switching almost absent. |
+
+**Not 4-5 if:** dimension says 이동 적극, 주기적 변경, 유지보다 보상, 알뜰/이동 최적화가 주 전략.
+
+---
 
 ### optimizationResource — 최적화 리소스 투입
-Read: optimizationResourceInvestment, paymentResistanceLine
-(이 그룹은 시간·노력 투입뿐 아니라, 돈·요금·프리미엄·대리/상담으로 ‘편의·확실성’을 사는 선택도 반영한다.)
-1: 직접 비교·발품은 거의 없음. 상담·매장·결합 상품 등에 맡기거나, 조금 더 내더라도 번거로움을 피하는 편.
-2: 최소 확인만. 복잡한 재계산은 피하고, 추가 요금이 확실한 해결(프리미엄·부가·대리 처리)을 받아들이기도 함.
-3: 핵심만 보고 필요 시 비교. 시간을 아끼려 유료·편의 옵션을 쓰는지, 직접 비교하는지는 dimension에 따라 갈림.
-4: 정기적으로 앱·커뮤니티·요금표를 비교·재검토. 가족 결합·할인을 시간·노력으로 직접 최적화.
-5: 지속적·능동적 최적화(엑셀·알림·후기·상담 병행). 월 지출·혜택을 스스로 능동 관리.
+Fields: optimizationResourceInvestment, paymentResistanceLine
+(Low = 시간·노력 절약·위임·편의 구매 성향 — valid. High = 직접 비교·능동 관리 성향.)
+
+| Score | When to assign |
+|-------|----------------|
+| **1** | Almost no self-comparison: 위임·맡김·귀찮·시간 아깝·최소 확인·결론만·상담·대리점 의존. OR: switches often for gifts with **no** ongoing self-optimization narrative. |
+| **2** | Low effort: 가끔 확인, 복잡한 재계산 회피, 편의·프리미엄에 돈으로 해결. Compares only when forced. |
+| **3** | Mixed: 핵심만 비교, 필요 시에만. Sometimes saves money, sometimes saves time — equally plausible. |
+| **4** | Active comparer: 정기적 앱/요금표/커뮤니티 비교, 결합·할인 직접 관리, 재검토 습관. |
+| **5** | Power optimizer: 지속·능동·엑셀/알림/후기/상담 병행, 월 지출·혜택 능동 관리. |
+
+---
 
 ### informationControl — 정보탐색 및 통제 욕구
-Read: informationExplorationStyle, problemSolvingAutonomy
-1: 정보 탐색·직접 해결 거의 없음. 대리점·상담원·지인 위임.
-2: 기본 확인만. 조건·근거 비교는 얕음.
-3: 공식 앱·안내와 주변 경험을 조합. 단순 문제는 직접, 복잡한 건 상담.
-4: 다채널 비교·검증 후 결정. 스스로 후보를 좁히는 편.
-5: 높은 통제욕: 근거·조건·예외를 끝까지 확인. 자가 해결·추적 선호.
+Fields: informationExplorationStyle, problemSolvingAutonomy
+(Low = 위임·상담 의존 성향. High = 직접 탐색·통제 성향 — both common.)
+
+| Score | When to assign |
+|-------|----------------|
+| **1** | Delegates: 탐색 거의 없음, 상담원·대리점·지인 위임, 직접 해결 안 함. |
+| **2** | Shallow: 기본 확인만, 조건·근거 비교 얕음, 막히면 바로 상담. |
+| **3** | Hybrid: 앱·안내 + 주변 의견, 단순은 직접·복잡은 상담. |
+| **4** | Self-driven: 다채널 비교·검증, 스스로 후보 축소, FAQ/챗봇 먼저. |
+| **5** | High control: 약관·비교표·예외까지 확인, 자가 해결·추적 선호. |
+
+---
 
 ### digitalAiOpenness — 디지털 및 AI 개방성
-Read: aiProviderTrust, personalizationDataSharingScope
-1: AI·앱 추천·개인화 데이터 공유 모두 거부. 오프라인·대면 선호.
-2: 필수 기능만 사용. AI·데이터 제공에 불신·꺼림.
-3: 익숙한 앱·공지는 사용. AI는 보조, 개인정보는 최소만.
-4: AI·앱 추천을 적극 활용. 사용량·선호 등 제한적 데이터 제공 수용.
-5: AI·개인화·디지털 채널 적극 수용. 새 기능·구독·데이터 기반 추천에 개방적.
+Fields: aiProviderTrust, personalizationDataSharingScope
 
-Scoring rules:
-- Pick one integer 1-5 per group from the rubric anchors (not an average of sub-fields).
-- rationale must cite concrete behaviors from the dimension texts (quote short phrases).
-- evidence must list 1-3 short strings copied or paraphrased from dimension fields or persona bio.
+**Axis definition:** How much the person **actually uses and trusts** carrier digital/AI channels and data sharing — not how futuristic they sound.
+
+| Score | Tendency label (neutral) | Assign when dimension text shows |
+|-------|--------------------------|----------------------------------|
+| **1** | Minimal digital/AI reliance | 대면·오프라인·전화/매장 선호; AI·추천·개인화 **거부 또는 미사용**; 또는 통신사 AI를 **잠깐만** 써 보고 **지속 사용 없음**, 일상은 **다른 앱/기본 기능**(제미나이·기본앱 등). **"혁신 기대/긍정 이미지" 문장만 있고 사용 행동이 없으면 1–2.** |
+| **2** | Cautious, limited trial | 필수 앱 기능(요금·납부) 위주; AI·맞춤 **불신·꺼림·보조 수준**; 데이터 **최소·비식별**만; 신기해서 시험은 했으나 **루틴에 없음**. |
+| **3** | Pragmatic middle | 익숙한 메뉴만; AI는 **가끔 참고**, 최종은 직접 확인; 위치·민감 데이터는 **제한적** 허용. |
+| **4** | Regular digital adopter | 앱·AI 추천을 **반복적으로** 활용; 사용량·선호 등 **일부 데이터 제공**에 동의; 통신사 채널이 **실제 선택 경로**. |
+| **5** | High openness | 신기능·구독·개인화·데이터 기반 추천을 **적극·지속** 사용; 새 디지털 실험에 **편안함**. |
+
+**digitalAiOpenness anti-bias (mandatory):**
+- **Do NOT score 4–5** for: "기대한다", "좋을 것 같다", "긍정적 이미지", "신뢰한다" **without** repeated/ongoing use in dimension text.
+- **Score 1–2 is expected** for: 몇 번 사용, 지속 이어지지 않음, 다른 서비스로 옮김, 설정 끔, 불편·부담, 개인정보 최소화 — these are **valid profiles**, not errors.
+- Separating **attitude toward innovation** (talk) vs **adoption** (action): when talk > action, score by **action** (usually 1–2).
+
+---
+
+## Cross-group consistency
+- Scores may differ across groups (e.g. brandRetention=2, digitalAiOpenness=1, informationControl=4).
+- Within one group, both dimension fields must support the chosen score; if they conflict, score lower and note the conflict neutrally in rationale.
 """.strip()
 NARRATIVE_REQUIRED_FIELDS = [
     "attitudes",
@@ -1608,17 +1656,18 @@ def _telecom_dimensions_only_prompt(
     evidence_rules = ""
     if has_interview_evidence:
         evidence_section = f"""
-## Interview Evidence (retrieved real user experiences — PRIMARY source)
-Each `### variableName` block lists real interview chunks for that DNA field.
-You MUST ground that field in its block: reuse concrete habits, channels, trade-offs, and quotes.
-Do not output generic telecom copy that could fit any persona when a block is present.
+## Interview Evidence (curated bundle — PRIMARY source)
+The bundle lists real user experiences filtered for ONE coherent behavioral profile.
+Ground ALL 11 dimension fields in the same dominant axes. Do not contradict the bundle.
+Paraphrase for the fixed persona; never copy participant names from chunks.
 {interview_evidence_text.strip()}
 """
         evidence_rules = """
-8. When Interview Evidence exists for a dimension key, that section is the main source for that field.
-9. For each dimension field with a matching `###` block, include at least one specific detail from `experience` or `quote`.
-10. Do not paraphrase all fields into the same one-sentence template; fields with different evidence must read differently.
-11. `telecomServiceUsageContext` must reflect its evidence block when present.
+8. Treat the curated bundle as one behavioral story; all 11 fields must align with dominant_axes.
+9. Fields not explicitly in the bundle may be inferred conservatively from the same axes only.
+10. Never combine conflicting habits (long-term carrier loyalty vs frequent switching for rewards).
+11. Do not cite or invent evidence from dropped/conflicting interview chunks.
+12. `telecomServiceUsageContext` must match the bundle's daily telecom usage patterns.
 """
     return f"""
 STAGE: telecom_dimensions
@@ -1630,7 +1679,7 @@ Generate only the 11 telecom behavior dimension fields for a fixed persona. Do n
 
 ## Critical Rules
 1. Do not rewrite the persona identity or narrative (name, age, biography, title).
-2. {"Prioritize Interview Evidence per field; use fixed persona only to align tone and segment fit." if has_interview_evidence else "Infer telecom behavior from the persona's life context, household situation, job habits, and service context."}
+2. {"Prioritize the curated Interview Evidence bundle; use fixed persona only for tone and segment fit." if has_interview_evidence else "Infer telecom behavior from the persona's life context, household situation, job habits, and service context."}
 3. Make each field concrete and behavior-based; mention the persona by name where natural.
 4. Write 2-3 natural-language sentences per dimension field (not keywords).
 5. Make fields meaningfully distinct from each other.
@@ -1695,11 +1744,13 @@ Do not rescore or rewrite dimension narratives.
 {TELECOM_SCORE_RUBRIC_TEXT}
 
 ## Critical Rules
-1. Primary evidence: Generated Telecom Behavior Dimensions (fields listed above per group).
-2. Secondary: Fixed Persona bio/behaviours only when a dimension field is ambiguous.
-3. Each output item: key, label (Korean), score (int 1-5), maxScore 5, rationale (2+ sentences in {target_language}), evidence (1-3 strings).
-4. Scores across groups should be consistent but not identical — differentiate when behaviors differ.
-5. Respond with JSON only.
+1. Scores are **tendency labels**, not judgments — low is NOT "bad"; high is NOT "good".
+2. Score ONLY from dimension field behaviors — ignore flattering adjectives, brand image, or innovation hype without usage proof.
+3. If behavior matches 1 or 2, output 1 or 2 — **never inflate** to 3–4 to avoid sounding negative (especially digitalAiOpenness).
+4. rationale (2+ sentences in {target_language}): neutral description of this tendency level; cite dimension phrases; no moral wording.
+5. evidence: 1-3 short strings from dimension fields for that group.
+6. Groups are independent axes — different scores are normal; identical 4–4–4–4 is suspicious unless dimensions truly match.
+7. Respond with JSON only.
 
 ## Output Format
 {{
@@ -1847,6 +1898,198 @@ def _validate_telecom_scores(value: list[dict]):
         raise PersonaGenerationQualityError(f"telecom scores invalid: {'; '.join(details)}")
 
 
+def _interview_evidence_coherence_prompt(
+    persona: dict,
+    payload: dict,
+    segment: dict,
+    *,
+    candidates_text: str,
+) -> str:
+    target_language = _language_label(payload)
+    segment_traits = (segment.get("characteristics") or {}).get("keyTraits") or (segment.get("characteristics") or {}).get("key_traits") or []
+    return f"""
+STAGE: interview_evidence_coherence
+You are an expert telecom UX researcher curating interview evidence for persona DNA generation.
+
+## Task
+From the candidate chunks below, select a coherent subset for ONE synthetic persona's telecom behavior.
+Output dominant behavioral axes and which chunk_ids to KEEP vs DROP.
+
+## Priority (highest first)
+1. Alignment with Selected Segment (name, description, traits) and Fixed Persona narrative.
+2. Internal consistency: chunks must support the SAME behavioral story (one dominant theme).
+3. Drop chunks that conflict with the majority (e.g. "20-year loyalty" vs "switch every 6 months for gifts").
+4. Prefer chunks from the same source_id when they reinforce the same theme (not required).
+5. Keep 3-7 chunks. If unsure, keep fewer but coherent chunks rather than many conflicting ones.
+
+## Rules
+- Do NOT clone a real participant as the persona; extract behavior patterns only.
+- keep_chunk_ids must reference ids from the candidate list only.
+- Write dominant_axes and persona_fit_notes in {target_language}.
+- Respond with JSON only.
+
+## Output Format
+{{
+  "dominant_axes": ["axis 1", "axis 2"],
+  "segment_alignment": "high",
+  "persona_fit_notes": "Why these chunks fit the persona and segment",
+  "keep_chunk_ids": [1, 4, 7],
+  "drop_chunk_ids": [2],
+  "drop_reasons": {{"2": "Conflicts with segment and other chunks on carrier switching"}}
+}}
+
+## Selected Segment
+- name: {segment.get("name")}
+- description: {segment.get("description")}
+- key_traits: {", ".join(str(value) for value in segment_traits)}
+
+## Service Context
+{_service_context(payload)}
+
+## Fixed Persona (narrative — do not replace identity)
+{_telecom_fixed_persona_json(persona)}
+
+## Candidate Chunks
+{candidates_text}
+""".strip()
+
+
+def _normalize_coherence_curation(parsed: dict) -> dict:
+    if not isinstance(parsed, dict):
+        return {}
+    dominant_axes = parsed.get("dominant_axes") or parsed.get("dominantAxes") or []
+    if not isinstance(dominant_axes, list):
+        dominant_axes = [dominant_axes]
+    dominant_axes = [str(value).strip() for value in dominant_axes if str(value).strip()]
+
+    keep_ids = parsed.get("keep_chunk_ids") or parsed.get("keepChunkIds") or []
+    drop_ids = parsed.get("drop_chunk_ids") or parsed.get("dropChunkIds") or []
+    if not isinstance(keep_ids, list):
+        keep_ids = []
+    if not isinstance(drop_ids, list):
+        drop_ids = []
+
+    drop_reasons = parsed.get("drop_reasons") or parsed.get("dropReasons") or {}
+    if not isinstance(drop_reasons, dict):
+        drop_reasons = {}
+
+    return {
+        "dominant_axes": dominant_axes,
+        "segment_alignment": str(parsed.get("segment_alignment") or parsed.get("segmentAlignment") or "").strip(),
+        "persona_fit_notes": str(parsed.get("persona_fit_notes") or parsed.get("personaFitNotes") or "").strip(),
+        "keep_chunk_ids": keep_ids,
+        "drop_chunk_ids": drop_ids,
+        "drop_reasons": drop_reasons,
+    }
+
+
+def build_curated_interview_evidence_bundle(
+    *,
+    vector_service,
+    candidate_chunks: list,
+    persona: dict,
+    segment: dict,
+    payload: dict,
+    text_generator: Callable[[str], tuple[str, dict]],
+) -> dict:
+    from reopsai.domain.persona.interview_evidence import (
+        apply_coherence_curation,
+        empty_curated_evidence_bundle,
+        format_candidates_for_coherence_prompt,
+        format_curated_bundle_for_prompt,
+        search_global_interview_evidence_chunks,
+    )
+
+    candidates = search_global_interview_evidence_chunks(
+        vector_service=vector_service,
+        candidate_chunks=candidate_chunks,
+        persona=persona,
+        segment=segment,
+        payload=payload,
+    )
+    if not candidates:
+        return empty_curated_evidence_bundle()
+
+    curation = {}
+    try:
+
+        def validate_coherence(parsed: dict):
+            normalized = _normalize_coherence_curation(parsed)
+            if not normalized.get("dominant_axes"):
+                raise PersonaGenerationQualityError("coherence missing dominant_axes")
+
+        candidates_text = format_candidates_for_coherence_prompt(candidates)
+        parsed, _usage = _execute_json_stage(
+            text_generator,
+            _interview_evidence_coherence_prompt(
+                persona,
+                payload,
+                segment,
+                candidates_text=candidates_text,
+            ),
+            stage_name="interview_evidence_coherence",
+            validator=validate_coherence,
+            max_attempts=2,
+        )
+        curation = _normalize_coherence_curation(parsed)
+    except Exception as exc:
+        _log_persona_generation_event(
+            "interview_evidence_coherence_fallback",
+            persona=persona.get("name"),
+            error=str(exc),
+            candidate_count=len(candidates),
+        )
+
+    keep_chunks = apply_coherence_curation(candidates, curation)
+    keep_ids = {int(item["id"]) for item in keep_chunks if item.get("id") is not None}
+    dropped_count = sum(1 for item in candidates if item.get("id") not in keep_ids)
+
+    prompt_text = format_curated_bundle_for_prompt(
+        keep_chunks=keep_chunks,
+        dominant_axes=curation.get("dominant_axes"),
+        persona_fit_notes=curation.get("persona_fit_notes"),
+        segment_alignment=curation.get("segment_alignment"),
+    )
+    return {
+        "mode": "curated_bundle",
+        "enabled": bool(keep_chunks),
+        "candidateCount": len(candidates),
+        "chunkCount": len(keep_chunks),
+        "droppedCount": dropped_count,
+        "dominantAxes": curation.get("dominant_axes") or [],
+        "segmentAlignment": curation.get("segment_alignment"),
+        "personaFitNotes": curation.get("persona_fit_notes") or "",
+        "keepChunks": keep_chunks,
+        "promptText": prompt_text,
+        "curation": curation,
+    }
+
+
+def _interview_evidence_prompt_text(bundle: dict | None, evidence_by_variable: dict | None = None) -> tuple[str, int]:
+    from reopsai.domain.persona.interview_evidence import count_evidence_chunks, format_evidence_for_prompt
+
+    if isinstance(bundle, dict) and (bundle.get("promptText") or bundle.get("prompt_text")):
+        text = str(bundle.get("promptText") or bundle.get("prompt_text") or "").strip()
+        keep_chunks = bundle.get("keepChunks") or bundle.get("keep_chunks") or []
+        return text, len(keep_chunks)
+    if isinstance(bundle, dict) and (bundle.get("keepChunks") or bundle.get("keep_chunks")):
+        from reopsai.domain.persona.interview_evidence import format_curated_bundle_for_prompt
+
+        keep_chunks = bundle.get("keepChunks") or bundle.get("keep_chunks") or []
+        text = format_curated_bundle_for_prompt(
+            keep_chunks=keep_chunks,
+            dominant_axes=bundle.get("dominantAxes") or bundle.get("dominant_axes"),
+            persona_fit_notes=bundle.get("personaFitNotes") or bundle.get("persona_fit_notes"),
+            segment_alignment=bundle.get("segmentAlignment") or bundle.get("segment_alignment"),
+        )
+        return text, len(keep_chunks)
+    legacy = evidence_by_variable if evidence_by_variable is not None else (bundle if isinstance(bundle, dict) else {})
+    if legacy and not legacy.get("mode"):
+        text = format_evidence_for_prompt(legacy)
+        return text, count_evidence_chunks(legacy)
+    return "", 0
+
+
 def stage_nemotron_telecom_behavior_dimensions(
     persona: dict,
     payload: dict,
@@ -1854,13 +2097,16 @@ def stage_nemotron_telecom_behavior_dimensions(
     seed: dict,
     text_generator: Callable[[str], tuple[str, dict]],
     *,
+    interview_evidence_bundle: dict | None = None,
     interview_evidence_by_variable: dict | None = None,
 ) -> tuple[dict, dict]:
-    from reopsai.domain.persona.interview_evidence import count_evidence_chunks, format_evidence_for_prompt
-
-    evidence_by_variable = interview_evidence_by_variable or {}
-    evidence_text = format_evidence_for_prompt(evidence_by_variable)
-    evidence_chunk_count = count_evidence_chunks(evidence_by_variable)
+    evidence_bundle = interview_evidence_bundle
+    if evidence_bundle is None and interview_evidence_by_variable:
+        evidence_bundle = interview_evidence_by_variable
+    evidence_text, evidence_chunk_count = _interview_evidence_prompt_text(
+        evidence_bundle,
+        evidence_by_variable=interview_evidence_by_variable,
+    )
     prompt = _telecom_dimensions_only_prompt(
         persona,
         payload,
@@ -1888,6 +2134,7 @@ def stage_nemotron_telecom_behavior_dimensions(
     usage = _usage_from(usage)
     usage["telecomStage"] = "dimensions"
     usage["evidenceChunkCount"] = evidence_chunk_count
+    usage["evidenceMode"] = "curated_bundle" if evidence_text else "none"
     return dimensions, usage
 
 
@@ -2052,19 +2299,20 @@ def generate_personas_pipeline(
                 persona, payload, selected["segment"], selected["seed"], text_generator
             )
             narrative_usage = usage
-            evidence_for_persona = interview_evidence_by_variable
+            evidence_bundle = interview_evidence_by_variable
             interview_evidence_summary = None
             if interview_evidence_retriever is not None:
-                evidence_for_persona = interview_evidence_retriever(persona, selected["segment"], payload)
-                from reopsai.domain.persona.interview_evidence import summarize_interview_evidence
+                evidence_bundle = interview_evidence_retriever(persona, selected["segment"], payload)
+                from reopsai.domain.persona.interview_evidence import summarize_curated_evidence_bundle
 
-                interview_evidence_summary = summarize_interview_evidence(evidence_for_persona)
+                interview_evidence_summary = summarize_curated_evidence_bundle(evidence_bundle)
                 _log_persona_generation_event(
                     "interview_evidence_retrieved",
                     persona=persona.get("name"),
-                    variable_count=interview_evidence_summary.get("variableCount"),
+                    mode=interview_evidence_summary.get("mode"),
                     chunk_count=interview_evidence_summary.get("chunkCount"),
-                    top_k_per_variable=1,
+                    candidate_count=interview_evidence_summary.get("candidateCount"),
+                    dominant_axes=interview_evidence_summary.get("dominantAxes"),
                 )
             dimensions, dimensions_usage = stage_nemotron_telecom_behavior_dimensions(
                 persona,
@@ -2072,7 +2320,7 @@ def generate_personas_pipeline(
                 selected["segment"],
                 selected["seed"],
                 text_generator,
-                interview_evidence_by_variable=evidence_for_persona,
+                interview_evidence_bundle=evidence_bundle if isinstance(evidence_bundle, dict) else None,
             )
             return {
                 "selected": selected,
@@ -2145,7 +2393,7 @@ def generate_personas_pipeline(
         "generation_metadata": {
             "nemotronSeedReferences": seed_references,
             "timingsMs": timings_ms,
-            "interviewEvidenceMode": "per_persona_retrieval" if interview_evidence_retriever else "static",
+            "interviewEvidenceMode": "curated_bundle" if interview_evidence_retriever else "static",
             "interviewEvidenceRetriever": bool(interview_evidence_retriever),
             "interviewEvidenceSummaries": interview_evidence_summaries,
         },
