@@ -419,7 +419,7 @@ def _narrative_response(name="Persona A"):
     }
 
 
-def _telecom_response():
+def _telecom_dimensions_response():
     return {
         "telecom_behavior_dimensions": {
             "brandRetention": {
@@ -444,6 +444,11 @@ def _telecom_response():
                 "telecomServiceUsageContext": "앱에서 청구액과 사용량을 정기적으로 확인합니다.",
             },
         },
+    }
+
+
+def _telecom_scores_response():
+    return {
         "telecom_behavior_scores": [
             {
                 "key": "brandRetention",
@@ -481,16 +486,6 @@ def _telecom_response():
     }
 
 
-def _interview_response():
-    return {
-        "selected_type": "유형2",
-        "source_user_ids": ["user02"],
-        "reference_strength": 7,
-        "rationale": "직접 비교하고 관리하는 성향이 유사합니다.",
-        "telecom_service_usage_context": "매달 앱에서 청구액과 데이터 사용량을 먼저 확인하고, 사용 패턴이 달라지면 후보 요금제를 비교합니다. 가족이나 동료에게 들은 혜택 정보도 직접 검증한 뒤 반영합니다. AI 추천은 후보를 좁히는 도구로 받아들이지만 최종 변경 전에는 금액과 조건을 다시 확인합니다. 복잡한 결합 조건은 상담 채널로 최종 확인합니다.",
-    }
-
-
 class FakeLlmAdapter:
     def generate_response(self, prompt, generation_config=None, model_name=None):
         if "STAGE: segmentation_identity" in prompt:
@@ -498,9 +493,9 @@ class FakeLlmAdapter:
         elif "STAGE: narrative_polish" in prompt:
             content = _narrative_response()
         elif "STAGE: telecom_dimensions" in prompt:
-            content = _telecom_response()
-        elif "STAGE: interview_reference" in prompt:
-            content = _interview_response()
+            content = _telecom_dimensions_response()
+        elif "STAGE: telecom_scores" in prompt:
+            content = _telecom_scores_response()
         else:
             content = {}
         return {
@@ -561,9 +556,9 @@ class ConcurrentPersonaGenerationAdapter(FakeLlmAdapter):
                 with self._lock:
                     self._active_narratives -= 1
         elif "STAGE: telecom_dimensions" in prompt:
-            content = _telecom_response()
-        elif "STAGE: interview_reference" in prompt:
-            content = _interview_response()
+            content = _telecom_dimensions_response()
+        elif "STAGE: telecom_scores" in prompt:
+            content = _telecom_scores_response()
         else:
             content = {}
         return {
@@ -603,7 +598,7 @@ def test_persona_generation_service_matches_legacy_preview_contract():
     assert body["personas"][0]["imageUrl"].startswith("data:image/png;base64,")
     assert body["personas"][0]["telecomBehaviorScores"][0]["key"] == "brandRetention"
     assert body["personas"][0]["telecomBehaviorScores"][0]["rationale"]
-    assert body["personas"][0]["telecomBehaviorDimensions"]["telecomLifeCharacteristics"]["telecomServiceUsageContext"].startswith("매달 앱")
+    assert body["personas"][0]["telecomBehaviorDimensions"]["telecomLifeCharacteristics"]["telecomServiceUsageContext"].startswith("앱에서")
     assert "segments" in body
     assert "generationMetadata" in body
     assert body["tokenUsage"] == {"inputTokens": 40, "outputTokens": 80, "totalTokens": 120, "model": "gemini-2.5-flash"}
@@ -654,9 +649,9 @@ class SparseThenRichLlmAdapter:
             else:
                 content = _narrative_response()
         elif "STAGE: telecom_dimensions" in prompt:
-            content = _telecom_response()
-        elif "STAGE: interview_reference" in prompt:
-            content = _interview_response()
+            content = _telecom_dimensions_response()
+        elif "STAGE: telecom_scores" in prompt:
+            content = _telecom_scores_response()
         else:
             content = {}
         return {

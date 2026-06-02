@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from reopsai.domain.persona.generation import (
     DEFAULT_SEED_PATH,
     _json_extract,
@@ -102,7 +104,9 @@ def test_json_extract_inserts_missing_comma_at_parser_error_position():
     assert parsed["telecom_behavior_scores"][1]["key"] == "optimizationResource"
 
 
-def test_telecom_dimensions_falls_back_when_model_keeps_returning_invalid_json():
+def test_telecom_dimensions_raises_when_model_keeps_returning_invalid_json():
+    from reopsai.domain.persona.generation import PersonaGenerationQualityError
+
     persona = {
         "name": "김민수",
         "biography": "가족 결합과 요금제 혜택을 주기적으로 확인하는 직장인입니다.",
@@ -127,17 +131,10 @@ def test_telecom_dimensions_falls_back_when_model_keeps_returning_invalid_json()
             "model": "gemini-2.5-flash",
         }
 
-    updated, usage = stage_nemotron_telecom_dimensions(persona, payload, segment, seed, invalid_text_generator)
+    with pytest.raises(PersonaGenerationQualityError):
+        stage_nemotron_telecom_dimensions(persona, payload, segment, seed, invalid_text_generator)
 
-    assert calls["count"] == 3
-    assert updated["telecomBehaviorDimensions"]["telecomLifeCharacteristics"]["telecomServiceUsageContext"]
-    assert [score["key"] for score in updated["telecomBehaviorScores"]] == [
-        "brandRetention",
-        "optimizationResource",
-        "informationControl",
-        "digitalAiOpenness",
-    ]
-    assert usage["model"] == "gemini-2.5-flash"
+    assert calls["count"] == 2
 
 
 def test_generation_payload_normalizes_source_and_nemotron_options():

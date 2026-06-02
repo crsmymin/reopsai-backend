@@ -18,6 +18,8 @@ from reopsai.infrastructure.persistence.models.persona import (
     PersonaFolder,
     PersonaInterview,
     PersonaInterviewResult,
+    PersonaInterviewChunk,
+    PersonaInterviewSource,
     PersonaLearnedTrait,
     PersonaMemorySettings,
     PersonaUITest,
@@ -785,6 +787,149 @@ class PersonaRepository:
         interview.deleted_at = utcnow()
         interview.updated_by_user_id = int(user_id)
         interview.updated_at = utcnow()
+        session.flush()
+
+    @staticmethod
+    def list_interview_sources(session, *, company_id: int, status: Optional[str] = None):
+        filters = [PersonaInterviewSource.company_id == int(company_id), PersonaInterviewSource.deleted_at.is_(None)]
+        if status:
+            filters.append(PersonaInterviewSource.source_status == str(status))
+        return session.execute(
+            select(PersonaInterviewSource)
+            .where(*filters)
+            .order_by(PersonaInterviewSource.created_at.desc(), PersonaInterviewSource.id.desc())
+        ).scalars().all()
+
+    @staticmethod
+    def get_interview_source(session, *, company_id: int, source_id: int):
+        return session.execute(
+            select(PersonaInterviewSource)
+            .where(
+                PersonaInterviewSource.company_id == int(company_id),
+                PersonaInterviewSource.id == int(source_id),
+                PersonaInterviewSource.deleted_at.is_(None),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def create_interview_source(session, *, company_id: int, user_id: int, data: dict):
+        source = PersonaInterviewSource(
+            company_id=int(company_id),
+            team_id=data.get("team_id"),
+            created_by_user_id=int(user_id),
+            updated_by_user_id=int(user_id),
+            title=data["title"],
+            participant_code=data.get("participant_code"),
+            raw_text=data["raw_text"],
+            language=data.get("language") or "ko",
+            source_status=data.get("source_status") or "uploaded",
+            processing_error=data.get("processing_error"),
+            metadata_=data.get("metadata"),
+        )
+        session.add(source)
+        session.flush()
+        return source
+
+    @staticmethod
+    def update_interview_source(session, source, *, user_id: int, data: dict):
+        for key in ("title", "participant_code", "raw_text", "language", "source_status", "processing_error"):
+            if key in data:
+                setattr(source, key, data[key])
+        if "metadata" in data:
+            source.metadata_ = data["metadata"]
+        source.updated_by_user_id = int(user_id)
+        source.updated_at = utcnow()
+        session.flush()
+        return source
+
+    @staticmethod
+    def soft_delete_interview_source(session, source, *, user_id: int):
+        source.deleted_at = utcnow()
+        source.updated_by_user_id = int(user_id)
+        source.updated_at = utcnow()
+        session.flush()
+
+    @staticmethod
+    def get_interview_source_by_participant_code(session, *, company_id: int, participant_code: str):
+        if not participant_code:
+            return None
+        return session.execute(
+            select(PersonaInterviewSource)
+            .where(
+                PersonaInterviewSource.company_id == int(company_id),
+                PersonaInterviewSource.participant_code == str(participant_code),
+                PersonaInterviewSource.deleted_at.is_(None),
+            )
+            .order_by(PersonaInterviewSource.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def list_interview_chunks_for_company(session, *, company_id: int):
+        return session.execute(
+            select(PersonaInterviewChunk)
+            .where(PersonaInterviewChunk.company_id == int(company_id))
+            .order_by(PersonaInterviewChunk.source_id.asc(), PersonaInterviewChunk.id.asc())
+        ).scalars().all()
+
+    @staticmethod
+    def list_interview_chunks_for_source(session, *, source_id: int):
+        return session.execute(
+            select(PersonaInterviewChunk)
+            .where(PersonaInterviewChunk.source_id == int(source_id))
+            .order_by(PersonaInterviewChunk.id.asc())
+        ).scalars().all()
+
+    @staticmethod
+    def count_interview_chunks_for_company(session, *, company_id: int) -> int:
+        return int(
+            session.execute(
+                select(func.count())
+                .select_from(PersonaInterviewChunk)
+                .where(PersonaInterviewChunk.company_id == int(company_id))
+            ).scalar_one()
+            or 0
+        )
+
+    @staticmethod
+    def delete_interview_chunks_for_source(session, *, source_id: int):
+        session.query(PersonaInterviewChunk).filter(PersonaInterviewChunk.source_id == int(source_id)).delete(
+            synchronize_session=False
+        )
+        session.flush()
+
+    @staticmethod
+    def replace_interview_chunks(session, *, source, chunks: list[dict]):
+        PersonaRepository.delete_interview_chunks_for_source(session, source_id=source.id)
+        created = []
+        for index, item in enumerate(chunks, start=1):
+            external_chunk_id = item.get("external_chunk_id") or f"{source.participant_code or 'chunk'}-E{index:02d}"
+            row = PersonaInterviewChunk(
+                source_id=int(source.id),
+                company_id=int(source.company_id),
+                external_chunk_id=str(external_chunk_id),
+                experience_text=item["experience_text"],
+                source_quote=item["source_quote"],
+                summary=item.get("summary"),
+                target_variables=item.get("target_variables") or [],
+                behavioral_signals=item.get("behavioral_signals") or [],
+                tags=item.get("tags") or [],
+                evidence_strength=item.get("evidence_strength"),
+                confidence=item.get("confidence"),
+            )
+            session.add(row)
+            created.append(row)
+        session.flush()
+        return created
+
+    @staticmethod
+    def mark_interview_chunks_embedded(session, chunks: list, *, vector_ids: list[str]):
+        now = utcnow()
+        for chunk, vector_id in zip(chunks, vector_ids):
+            chunk.embedding_vector_id = vector_id
+            chunk.embedded_at = now
+            chunk.updated_at = now
         session.flush()
 
     @staticmethod
