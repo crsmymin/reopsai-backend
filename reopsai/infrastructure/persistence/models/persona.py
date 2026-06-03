@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Float,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -26,9 +27,6 @@ JsonValue = Optional[Union[dict, list]]
 
 class PersonaFolder(Base):
     __tablename__ = "persona_folders"
-    __table_args__ = (
-        UniqueConstraint("company_id", "name", name="uq_persona_folders_company_name"),
-    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -42,6 +40,16 @@ class PersonaFolder(Base):
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
     updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     deleted_at: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+    __table_args__ = (
+        Index(
+            "ux_persona_folders_company_name_active",
+            "company_id",
+            "name",
+            unique=True,
+            postgresql_where=deleted_at.is_(None),
+        ),
+    )
 
 
 class Persona(Base):

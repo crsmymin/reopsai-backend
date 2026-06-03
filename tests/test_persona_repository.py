@@ -13,6 +13,9 @@ class FakeScalarResult:
     def all(self):
         return self.rows
 
+    def scalar_one_or_none(self):
+        return self.rows[0] if self.rows else None
+
 
 class FakeQuery:
     def __init__(self, session):
@@ -34,11 +37,13 @@ class FakeSession:
         self.added = []
         self.bulk_update_values = None
         self.flushed = False
+        self.last_statement = None
 
     def query(self, model):
         return FakeQuery(self)
 
     def execute(self, statement):
+        self.last_statement = statement
         return FakeScalarResult(self.existing_rows)
 
     def add(self, row):
@@ -92,3 +97,19 @@ def test_replace_figma_flows_updates_existing_start_nodes_instead_of_reinserting
     assert existing_flow.figma_flow_name == "홈에서 상품서비스"
     assert existing_flow.metadata_ == {"source": "figma_api"}
     assert session.added[0].figma_start_node_id == "49:197"
+
+
+def test_folder_name_exists_only_checks_active_folders():
+    session = FakeSession([])
+
+    exists = PersonaRepository.folder_name_exists(
+        session,
+        company_id=5,
+        name="skt",
+        exclude_folder_id=4,
+    )
+
+    compiled = str(session.last_statement.compile(compile_kwargs={"literal_binds": True}))
+    assert exists is False
+    assert "persona_folders.deleted_at IS NULL" in compiled
+    assert "persona_folders.id != 4" in compiled

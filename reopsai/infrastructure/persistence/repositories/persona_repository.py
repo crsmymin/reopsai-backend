@@ -88,6 +88,21 @@ class PersonaRepository:
         ).scalar_one_or_none()
 
     @staticmethod
+    def folder_name_exists(session, *, company_id: int, name: str, exclude_folder_id: Optional[int] = None) -> bool:
+        filters = [
+            PersonaFolder.company_id == int(company_id),
+            PersonaFolder.name == str(name),
+            PersonaFolder.deleted_at.is_(None),
+        ]
+        if exclude_folder_id is not None:
+            filters.append(PersonaFolder.id != int(exclude_folder_id))
+        return session.execute(
+            select(PersonaFolder.id)
+            .where(*filters)
+            .limit(1)
+        ).scalar_one_or_none() is not None
+
+    @staticmethod
     def create_folder(session, *, company_id: int, user_id: int, data: dict):
         folder = PersonaFolder(
             company_id=int(company_id),
