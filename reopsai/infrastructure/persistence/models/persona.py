@@ -384,6 +384,60 @@ class PersonaInterview(Base):
     deleted_at: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
+class PersonaInterviewChunk(Base):
+    __tablename__ = "persona_interview_chunks"
+    __table_args__ = (
+        UniqueConstraint("source_id", "external_chunk_id", name="uq_persona_interview_chunks_source_external"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    source_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("persona_interview_sources.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    company_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    external_chunk_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    experience_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_quote: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    target_variables: Mapped[JsonValue] = mapped_column(JSONB, nullable=False, server_default="[]")
+    behavioral_signals: Mapped[JsonValue] = mapped_column(JSONB, nullable=True)
+    tags: Mapped[JsonValue] = mapped_column(JSONB, nullable=True)
+    evidence_strength: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    embedding_vector_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    embedded_at: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class PersonaInterviewSource(Base):
+    __tablename__ = "persona_interview_sources"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    team_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("teams.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_by_user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    updated_by_user_id: Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    participant_code: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    language: Mapped[str] = mapped_column(String(32), nullable=False, server_default="ko")
+    source_status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="uploaded", index=True)
+    processing_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    metadata_: Mapped[JsonValue] = mapped_column("metadata", JSONB, nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    updated_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    deleted_at: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
 class PersonaInterviewResult(Base):
     __tablename__ = "persona_interview_results"
     __table_args__ = (

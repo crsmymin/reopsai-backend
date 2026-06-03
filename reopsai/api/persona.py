@@ -465,6 +465,101 @@ def list_interview_personas():
     return _response(persona_service.list_interview_personas(company_id=context["company_id"]))
 
 
+@persona_bp.route("/interview-sources", methods=["GET"])
+@tier_required(["enterprise"])
+def list_interview_sources():
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(
+        persona_service.list_interview_sources(
+            company_id=context["company_id"],
+            user_id=context["user_id"],
+            status=request.args.get("status"),
+        )
+    )
+
+
+@persona_bp.route("/interview-sources", methods=["POST"])
+@tier_required(["enterprise"])
+def create_interview_source():
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.create_interview_source(company_id=context["company_id"], user_id=context["user_id"], data=_json_body()))
+
+
+@persona_bp.route("/interview-sources/<int:source_id>", methods=["GET"])
+@tier_required(["enterprise"])
+def get_interview_source(source_id: int):
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.get_interview_source(company_id=context["company_id"], user_id=context["user_id"], source_id=source_id))
+
+
+@persona_bp.route("/interview-sources/<int:source_id>", methods=["PATCH"])
+@tier_required(["enterprise"])
+def update_interview_source(source_id: int):
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.update_interview_source(company_id=context["company_id"], user_id=context["user_id"], source_id=source_id, data=_json_body()))
+
+
+@persona_bp.route("/interview-sources/<int:source_id>", methods=["DELETE"])
+@tier_required(["enterprise"])
+def delete_interview_source(source_id: int):
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.delete_interview_source(company_id=context["company_id"], user_id=context["user_id"], source_id=source_id))
+
+
+@persona_bp.route("/interview-sources/<int:source_id>/embed", methods=["POST"])
+@tier_required(["enterprise"])
+def embed_interview_source(source_id: int):
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.embed_interview_source(company_id=context["company_id"], user_id=context["user_id"], source_id=source_id))
+
+
+@persona_bp.route("/interview-sources/import-local", methods=["POST"])
+@tier_required(["enterprise"])
+def import_local_interview_evidence():
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    body = _json_body()
+    return _response(
+        persona_service.import_local_interview_evidence(
+            company_id=context["company_id"],
+            user_id=context["user_id"],
+            cleaning_dir=str(body.get("cleaningDir") or body.get("cleaning_dir") or "/Users/pxd/QA/cleaning"),
+            embed=bool(body.get("embed", True)),
+            replace_existing=bool(body.get("replaceExisting", body.get("replace_existing", True))),
+        )
+    )
+
+
+@persona_bp.route("/interview-evidence/search", methods=["GET"])
+@tier_required(["enterprise"])
+def search_interview_evidence():
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(
+        persona_service.search_interview_evidence(
+            company_id=context["company_id"],
+            user_id=context["user_id"],
+            target_variable=request.args.get("targetVariable") or request.args.get("target_variable") or "",
+            query=request.args.get("query"),
+            top_k=int(request.args.get("topK") or request.args.get("top_k") or 5),
+        )
+    )
+
+
 @persona_bp.route("/interviews/<int:interview_id>", methods=["GET"])
 @tier_required(["enterprise"])
 def get_interview(interview_id: int):

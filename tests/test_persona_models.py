@@ -19,6 +19,7 @@ def test_persona_models_register_in_metadata():
         "persona_ab_tests",
         "persona_ab_test_results",
         "persona_interviews",
+        "persona_interview_sources",
         "persona_interview_results",
     }
 
@@ -44,6 +45,8 @@ def test_persona_models_register_in_metadata():
     assert "ux_persona_folders_company_name_active" in {
         index.name for index in persona_folder_table.indexes
     }
+    assert "raw_text" in Base.metadata.tables["persona_interview_sources"].columns
+    assert "source_status" in Base.metadata.tables["persona_interview_sources"].columns
 
 
 def test_persona_asset_accepts_updated_by_user_id():

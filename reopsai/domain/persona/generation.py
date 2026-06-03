@@ -106,38 +106,113 @@ TELECOM_SCORE_GROUPS = {
     "informationControl": "정보탐색 및 통제 욕구",
     "digitalAiOpenness": "디지털 및 AI 개방성",
 }
-TELECOM_INTERVIEW_REFERENCES = [
-    {
-        "typeId": "유형1",
-        "sourceUserIds": ["user01"],
-        "summary": "장기 통신사 이용자이며 결합 구조와 번호 변경 부담 때문에 이동성이 낮다.",
-    },
-    {
-        "typeId": "유형2",
-        "sourceUserIds": ["user02", "user03", "user05", "user06"],
-        "summary": "가족 결합, 멤버십, 사용량을 직접 비교하는 실용적 관리형 이용자다.",
-    },
-    {
-        "typeId": "유형3",
-        "sourceUserIds": ["user04"],
-        "summary": "알뜰폰, 자급제, 커뮤니티 정보를 적극 비교하는 고관여 절약형 이용자다.",
-    },
-    {
-        "typeId": "유형4",
-        "sourceUserIds": ["user07", "user08", "user09"],
-        "summary": "가격과 데이터량, OTT 조건, 앱 AI 검색을 빠르게 훑는 젊은 변경 검토층이다.",
-    },
-    {
-        "typeId": "유형5",
-        "sourceUserIds": ["user11"],
-        "summary": "가족 전체 회선과 인터넷/IPTV 결합을 관리하는 장기 이용 관리자다.",
-    },
-    {
-        "typeId": "유형6",
-        "sourceUserIds": ["user10", "user12"],
-        "summary": "프리미엄 요금제, OTT/구독 혜택, 앱 기반 탐색과 AI 상담 기대가 큰 이용자다.",
-    },
-]
+TELECOM_SCORE_DIMENSION_FIELDS = {
+    "brandRetention": (
+        "brandRetention.brandRetentionTendency",
+        "brandRetention.premiumInfraBenefitOrientation",
+    ),
+    "optimizationResource": (
+        "optimizationResource.optimizationResourceInvestment",
+        "optimizationResource.paymentResistanceLine",
+    ),
+    "informationControl": (
+        "informationControl.informationExplorationStyle",
+        "informationControl.problemSolvingAutonomy",
+    ),
+    "digitalAiOpenness": (
+        "digitalAiOpenness.aiProviderTrust",
+        "digitalAiOpenness.personalizationDataSharingScope",
+    ),
+}
+TELECOM_SCORE_RUBRIC_TEXT = """
+## Scale meaning (read before scoring)
+
+- **1–5 is a behavioral tendency on this axis only — NOT a quality grade, NOT "bad vs good".**
+- **Low scores (1–2) are normal, valid user profiles** (cautious, minimal, delegate, offline-first). Do NOT round up to sound positive or sympathetic.
+- **High scores (4–5) are also normal** when dimension text shows strong engagement on that axis.
+- Score from **observed behavior in dimension text**, not from brand prestige, polite tone, or "AI/innovation sounds positive".
+- Avoid **positivity bias**: marketing-friendly phrases ("혁신", "긍정적 이미지", "신뢰") without matching **usage behavior** do NOT justify 4–5.
+
+## How to score (Generated Telecom Behavior Dimensions = ONLY source for the integer)
+
+For each of the 4 groups:
+1. Read ONLY the two dimension fields listed for that group.
+2. Identify the **dominant behavior** on that axis (not one optimistic sentence — overall pattern).
+3. Match **one** anchor 1–5. If texts conflict, pick the **lower** score (e.g. "긍정적 이미지" + "몇 번만 쓰고 안 씀" → digitalAiOpenness ≤2).
+4. rationale: neutral researcher tone — describe the tendency at this level; **never** apologize for low scores or praise high scores as "better".
+5. evidence: 1–3 strings from those dimension fields only.
+6. Use the **full scale** including 1 and 2 whenever they fit — **do not cluster at 3–4** out of courtesy.
+
+---
+
+### brandRetention — 브랜드 유지 성향
+Fields: brandRetentionTendency, premiumInfraBenefitOrientation
+(Low = 이동·비교 중심 성향, High = 유지·결합 중심 성향 — neither is "wrong".)
+
+| Score | When to assign (dominant pattern in dimension text) |
+|-------|------------------------------------------------------|
+| **1** | Active switching mindset: 번호이동·이탈·6개월·보상·상품권·유지보다 이동·이동이 유리·자주 변경. Little reason to stay; premium/quality benefits ignored. |
+| **2** | Change-ready: 가격·혜택이 좋으면 변경, 약정 끝나면 검토, 장기 관성 약함. Some brand mention but **behavior favors moving**. |
+| **3** | Balanced: 유지하나 이득 있으면 검토, 불편 없으면 유지. Neither loyalist nor frequent switcher. |
+| **4** | Stay-oriented: 결합·가족·번호 유지 부담·장기 이용·변경 꺼림·안정·신뢰. Switching mentioned only as rare exception. |
+| **5** | Strong loyalty: 충성·생태계 이탈 비용·프리미엄/품질/멤버십을 핵심 가치. Switching almost absent. |
+
+**Not 4-5 if:** dimension says 이동 적극, 주기적 변경, 유지보다 보상, 알뜰/이동 최적화가 주 전략.
+
+---
+
+### optimizationResource — 최적화 리소스 투입
+Fields: optimizationResourceInvestment, paymentResistanceLine
+(Low = 시간·노력 절약·위임·편의 구매 성향 — valid. High = 직접 비교·능동 관리 성향.)
+
+| Score | When to assign |
+|-------|----------------|
+| **1** | Almost no self-comparison: 위임·맡김·귀찮·시간 아깝·최소 확인·결론만·상담·대리점 의존. OR: switches often for gifts with **no** ongoing self-optimization narrative. |
+| **2** | Low effort: 가끔 확인, 복잡한 재계산 회피, 편의·프리미엄에 돈으로 해결. Compares only when forced. |
+| **3** | Mixed: 핵심만 비교, 필요 시에만. Sometimes saves money, sometimes saves time — equally plausible. |
+| **4** | Active comparer: 정기적 앱/요금표/커뮤니티 비교, 결합·할인 직접 관리, 재검토 습관. |
+| **5** | Power optimizer: 지속·능동·엑셀/알림/후기/상담 병행, 월 지출·혜택 능동 관리. |
+
+---
+
+### informationControl — 정보탐색 및 통제 욕구
+Fields: informationExplorationStyle, problemSolvingAutonomy
+(Low = 위임·상담 의존 성향. High = 직접 탐색·통제 성향 — both common.)
+
+| Score | When to assign |
+|-------|----------------|
+| **1** | Delegates: 탐색 거의 없음, 상담원·대리점·지인 위임, 직접 해결 안 함. |
+| **2** | Shallow: 기본 확인만, 조건·근거 비교 얕음, 막히면 바로 상담. |
+| **3** | Hybrid: 앱·안내 + 주변 의견, 단순은 직접·복잡은 상담. |
+| **4** | Self-driven: 다채널 비교·검증, 스스로 후보 축소, FAQ/챗봇 먼저. |
+| **5** | High control: 약관·비교표·예외까지 확인, 자가 해결·추적 선호. |
+
+---
+
+### digitalAiOpenness — 디지털 및 AI 개방성
+Fields: aiProviderTrust, personalizationDataSharingScope
+
+**Axis definition:** How much the person **actually uses and trusts** carrier digital/AI channels and data sharing — not how futuristic they sound.
+
+| Score | Tendency label (neutral) | Assign when dimension text shows |
+|-------|--------------------------|----------------------------------|
+| **1** | Minimal digital/AI reliance | 대면·오프라인·전화/매장 선호; AI·추천·개인화 **거부 또는 미사용**; 또는 통신사 AI를 **잠깐만** 써 보고 **지속 사용 없음**, 일상은 **다른 앱/기본 기능**(제미나이·기본앱 등). **"혁신 기대/긍정 이미지" 문장만 있고 사용 행동이 없으면 1–2.** |
+| **2** | Cautious, limited trial | 필수 앱 기능(요금·납부) 위주; AI·맞춤 **불신·꺼림·보조 수준**; 데이터 **최소·비식별**만; 신기해서 시험은 했으나 **루틴에 없음**. |
+| **3** | Pragmatic middle | 익숙한 메뉴만; AI는 **가끔 참고**, 최종은 직접 확인; 위치·민감 데이터는 **제한적** 허용. |
+| **4** | Regular digital adopter | 앱·AI 추천을 **반복적으로** 활용; 사용량·선호 등 **일부 데이터 제공**에 동의; 통신사 채널이 **실제 선택 경로**. |
+| **5** | High openness | 신기능·구독·개인화·데이터 기반 추천을 **적극·지속** 사용; 새 디지털 실험에 **편안함**. |
+
+**digitalAiOpenness anti-bias (mandatory):**
+- **Do NOT score 4–5** for: "기대한다", "좋을 것 같다", "긍정적 이미지", "신뢰한다" **without** repeated/ongoing use in dimension text.
+- **Score 1–2 is expected** for: 몇 번 사용, 지속 이어지지 않음, 다른 서비스로 옮김, 설정 끔, 불편·부담, 개인정보 최소화 — these are **valid profiles**, not errors.
+- Separating **attitude toward innovation** (talk) vs **adoption** (action): when talk > action, score by **action** (usually 1–2).
+
+---
+
+## Cross-group consistency
+- Scores may differ across groups (e.g. brandRetention=2, digitalAiOpenness=1, informationControl=4).
+- Within one group, both dimension fields must support the chosen score; if they conflict, score lower and note the conflict neutrally in rationale.
+""".strip()
 NARRATIVE_REQUIRED_FIELDS = [
     "attitudes",
     "biography",
@@ -1035,7 +1110,14 @@ def _execute_json_stage(
 ) -> tuple[dict, dict]:
     last_error = None
     for attempt in range(max_attempts):
-        retry = "" if attempt == 0 else f"\n\nRetry because the previous {stage_name} response was invalid: {last_error}. Return complete JSON only."
+        if attempt == 0:
+            retry = ""
+        else:
+            retry = (
+                f"\n\nREGENERATE REQUIRED: The previous {stage_name} response was invalid ({last_error}). "
+                "Return one complete valid JSON object only. Include every required field. "
+                "Do not truncate, omit groups, or use placeholder text."
+            )
         try:
             content, usage = text_generator(f"{prompt}{retry}")
             parsed = _json_extract(content)
@@ -1518,107 +1600,34 @@ def stage_nemotron_seed_narrative_polish(persona: dict, payload: dict, segment: 
     return merged, usage
 
 
-def _telecom_prompt(persona: dict, payload: dict, segment: dict, seed: dict) -> str:
-    target_language = _language_label(payload)
+def _telecom_fixed_persona_json(persona: dict) -> str:
+    return json.dumps(
+        {
+            "name": persona.get("name"),
+            "age": persona.get("age"),
+            "gender": persona.get("gender"),
+            "title": persona.get("title"),
+            "income": persona.get("income"),
+            "current_city": persona.get("currentCity"),
+            "current_country": persona.get("currentCountry"),
+            "biography": persona.get("biography"),
+            "attitudes": persona.get("attitudes"),
+            "behaviours": persona.get("behaviours"),
+            "motivation": persona.get("motivation"),
+            "personality": persona.get("personality"),
+            "preferences": persona.get("preferences"),
+            "social_context": persona.get("socialContext"),
+            "cultural_background": persona.get("culturalBackground"),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _telecom_context_tail(persona: dict, payload: dict, segment: dict, seed: dict) -> str:
     return f"""
-STAGE: telecom_dimensions
-You are an expert telecom UX researcher.
-
-## Task
-Generate telecom behavior dimensions and numeric behavior scores for a fixed persona.
-
-## Critical Rules
-1. Do not rewrite the persona identity or narrative.
-2. Infer telecom behavior from the persona's life context, household situation, job habits, and service context.
-3. Make each field concrete and behavior-based.
-4. Avoid generic labels. Write 1-3 natural-language sentences per dimension field.
-5. Write each dimension value as 1-3 natural-language sentences, not keywords.
-6. Make these telecom traits meaningfully distinct from other possible segments rather than repeating generic statements.
-7. Score each of the four score groups from 1 to 5 based on the generated dimensions and fixed persona evidence.
-8. Score semantics: 1 = very low, 2 = low, 3 = moderate, 4 = high, 5 = very high.
-9. Each score must include a concise rationale and 1-3 evidence snippets grounded in the fixed persona or generated dimensions.
-10. Generate all text in {target_language}.
-11. Respond with JSON only.
-
-## Output Format
-{{
-  "telecom_behavior_dimensions": {{
-    "brandRetention": {{
-      "brandRetentionTendency": "How strongly they keep the current carrier or brand",
-      "premiumInfraBenefitOrientation": "How much they value premium network quality and bundled benefits"
-    }},
-    "optimizationResource": {{
-      "optimizationResourceInvestment": "How they trade money against time and effort for plan optimization",
-      "paymentResistanceLine": "The payment level or condition where they start resisting extra cost"
-    }},
-    "informationControl": {{
-      "informationExplorationStyle": "How they explore and compare telecom information",
-      "problemSolvingAutonomy": "How independently they solve telecom service problems"
-    }},
-    "digitalAiOpenness": {{
-      "aiProviderTrust": "Trust in AI and provider recommendations",
-      "personalizationDataSharingScope": "What information they will share for personalization"
-    }},
-    "telecomLifeCharacteristics": {{
-      "householdDecisionLeadership": "Household structure and telecom decision leadership",
-      "productServiceUnderstanding": "How well they understand telecom products and service conditions",
-      "telecomServiceUsageContext": "Lived context of how they use, manage, and adjust telecom services"
-    }}
-  }},
-  "telecom_behavior_scores": [
-    {{
-      "key": "brandRetention",
-      "label": "브랜드 유지 성향",
-      "score": 4,
-      "maxScore": 5,
-      "rationale": "Why this persona scores this way",
-      "evidence": ["Specific supporting signal from persona or dimensions"]
-    }},
-    {{
-      "key": "optimizationResource",
-      "label": "최적화 리소스 투입",
-      "score": 2,
-      "maxScore": 5,
-      "rationale": "Why this persona scores this way",
-      "evidence": ["Specific supporting signal from persona or dimensions"]
-    }},
-    {{
-      "key": "informationControl",
-      "label": "정보탐색 및 통제 욕구",
-      "score": 3,
-      "maxScore": 5,
-      "rationale": "Why this persona scores this way",
-      "evidence": ["Specific supporting signal from persona or dimensions"]
-    }},
-    {{
-      "key": "digitalAiOpenness",
-      "label": "디지털 및 AI 개방성",
-      "score": 5,
-      "maxScore": 5,
-      "rationale": "Why this persona scores this way",
-      "evidence": ["Specific supporting signal from persona or dimensions"]
-    }}
-  ]
-}}
-
 ## Fixed Persona
-{json.dumps({
-        "name": persona.get("name"),
-        "age": persona.get("age"),
-        "gender": persona.get("gender"),
-        "title": persona.get("title"),
-        "income": persona.get("income"),
-        "current_city": persona.get("currentCity"),
-        "current_country": persona.get("currentCountry"),
-        "biography": persona.get("biography"),
-        "attitudes": persona.get("attitudes"),
-        "behaviours": persona.get("behaviours"),
-        "motivation": persona.get("motivation"),
-        "personality": persona.get("personality"),
-        "preferences": persona.get("preferences"),
-        "social_context": persona.get("socialContext"),
-        "cultural_background": persona.get("culturalBackground"),
-    }, ensure_ascii=False, indent=2)}
+{_telecom_fixed_persona_json(persona)}
 
 ## Selected Segment
 - Segment: {segment.get("name")}
@@ -1630,10 +1639,190 @@ Generate telecom behavior dimensions and numeric behavior scores for a fixed per
 
 ## Dataset Seed Context
 {json.dumps(seed, ensure_ascii=False, indent=2)}
-
-Generate the 11 telecom behavior variables and the 4 telecom behavior scores. Keep the fixed persona unchanged.
-The telecomServiceUsageContext field should be experience-based and written in 4-5 sentences.
 """.strip()
+
+
+def _telecom_dimensions_only_prompt(
+    persona: dict,
+    payload: dict,
+    segment: dict,
+    seed: dict,
+    *,
+    interview_evidence_text: str = "",
+) -> str:
+    target_language = _language_label(payload)
+    has_interview_evidence = bool(interview_evidence_text.strip())
+    evidence_section = ""
+    evidence_rules = ""
+    if has_interview_evidence:
+        evidence_section = f"""
+## Interview Evidence (curated bundle — PRIMARY source)
+The bundle lists real user experiences filtered for ONE coherent behavioral profile.
+Ground ALL 11 dimension fields in the same dominant axes. Do not contradict the bundle.
+Paraphrase for the fixed persona; never copy participant names from chunks.
+{interview_evidence_text.strip()}
+"""
+        evidence_rules = """
+8. Treat the curated bundle as one behavioral story; all 11 fields must align with dominant_axes.
+9. Fields not explicitly in the bundle may be inferred conservatively from the same axes only.
+10. Never combine conflicting habits (long-term carrier loyalty vs frequent switching for rewards).
+11. Do not cite or invent evidence from dropped/conflicting interview chunks.
+12. `telecomServiceUsageContext` must match the bundle's daily telecom usage patterns.
+"""
+    return f"""
+STAGE: telecom_dimensions
+You are an expert telecom UX researcher.
+
+## Task
+Generate only the 11 telecom behavior dimension fields for a fixed persona. Do not generate scores.
+{evidence_section}
+
+## Critical Rules
+1. Do not rewrite the persona identity or narrative (name, age, biography, title).
+2. {"Prioritize the curated Interview Evidence bundle; use fixed persona only for tone and segment fit." if has_interview_evidence else "Infer telecom behavior from the persona's life context, household situation, job habits, and service context."}
+3. Make each field concrete and behavior-based; mention the persona by name where natural.
+4. Write 2-3 natural-language sentences per dimension field (not keywords).
+5. Make fields meaningfully distinct from each other.
+6. Generate all text in {target_language}.
+7. Respond with JSON only.{evidence_rules}
+
+## Output Format
+{{
+  "telecom_behavior_dimensions": {{
+    "brandRetention": {{
+      "brandRetentionTendency": "...",
+      "premiumInfraBenefitOrientation": "..."
+    }},
+    "optimizationResource": {{
+      "optimizationResourceInvestment": "...",
+      "paymentResistanceLine": "..."
+    }},
+    "informationControl": {{
+      "informationExplorationStyle": "...",
+      "problemSolvingAutonomy": "..."
+    }},
+    "digitalAiOpenness": {{
+      "aiProviderTrust": "...",
+      "personalizationDataSharingScope": "..."
+    }},
+    "telecomLifeCharacteristics": {{
+      "householdDecisionLeadership": "...",
+      "productServiceUnderstanding": "...",
+      "telecomServiceUsageContext": "..."
+    }}
+  }}
+}}
+
+{_telecom_context_tail(persona, payload, segment, seed)}
+
+Generate all 11 telecom behavior dimension fields. Keep the fixed persona unchanged.
+""".strip()
+
+
+def _telecom_scores_prompt(
+    persona: dict,
+    payload: dict,
+    segment: dict,
+    dimensions: dict,
+) -> str:
+    target_language = _language_label(payload)
+    field_map_lines = "\n".join(
+        f"- {key}: {', '.join(fields)}"
+        for key, fields in TELECOM_SCORE_DIMENSION_FIELDS.items()
+    )
+    return f"""
+STAGE: telecom_scores
+You are an expert telecom UX researcher.
+
+## Task
+Assign an integer score (1-5) to each of the four telecom behavior groups using the rubric and dimension texts below.
+Do not rescore or rewrite dimension narratives.
+
+## Dimension fields used per score group
+{field_map_lines}
+
+{TELECOM_SCORE_RUBRIC_TEXT}
+
+## Critical Rules
+1. Scores are **tendency labels**, not judgments — low is NOT "bad"; high is NOT "good".
+2. Score ONLY from dimension field behaviors — ignore flattering adjectives, brand image, or innovation hype without usage proof.
+3. If behavior matches 1 or 2, output 1 or 2 — **never inflate** to 3–4 to avoid sounding negative (especially digitalAiOpenness).
+4. rationale (2+ sentences in {target_language}): neutral description of this tendency level; cite dimension phrases; no moral wording.
+5. evidence: 1-3 short strings from dimension fields for that group.
+6. Groups are independent axes — different scores are normal; identical 4–4–4–4 is suspicious unless dimensions truly match.
+7. Respond with JSON only.
+
+## Output Format
+{{
+  "telecom_behavior_scores": [
+    {{
+      "key": "brandRetention",
+      "label": "{TELECOM_SCORE_GROUPS["brandRetention"]}",
+      "score": 4,
+      "maxScore": 5,
+      "rationale": "...",
+      "evidence": ["..."]
+    }},
+    {{
+      "key": "optimizationResource",
+      "label": "{TELECOM_SCORE_GROUPS["optimizationResource"]}",
+      "score": 2,
+      "maxScore": 5,
+      "rationale": "...",
+      "evidence": ["..."]
+    }},
+    {{
+      "key": "informationControl",
+      "label": "{TELECOM_SCORE_GROUPS["informationControl"]}",
+      "score": 3,
+      "maxScore": 5,
+      "rationale": "...",
+      "evidence": ["..."]
+    }},
+    {{
+      "key": "digitalAiOpenness",
+      "label": "{TELECOM_SCORE_GROUPS["digitalAiOpenness"]}",
+      "score": 5,
+      "maxScore": 5,
+      "rationale": "...",
+      "evidence": ["..."]
+    }}
+  ]
+}}
+
+## Fixed Persona
+{_telecom_fixed_persona_json(persona)}
+
+## Generated Telecom Behavior Dimensions
+{json.dumps(dimensions, ensure_ascii=False, indent=2)}
+
+## Selected Segment
+- Segment: {segment.get("name")}
+- Description: {segment.get("description")}
+
+## Service Context
+{_service_context(payload)}
+
+Generate exactly four score objects with keys: brandRetention, optimizationResource, informationControl, digitalAiOpenness.
+""".strip()
+
+
+def _telecom_prompt(
+    persona: dict,
+    payload: dict,
+    segment: dict,
+    seed: dict,
+    *,
+    interview_evidence_text: str = "",
+) -> str:
+    """Backward-compatible alias: dimensions-only prompt (scores are a separate stage)."""
+    return _telecom_dimensions_only_prompt(
+        persona,
+        payload,
+        segment,
+        seed,
+        interview_evidence_text=interview_evidence_text,
+    )
 
 
 def _normalize_telecom_dimensions(value) -> dict:
@@ -1709,156 +1898,308 @@ def _validate_telecom_scores(value: list[dict]):
         raise PersonaGenerationQualityError(f"telecom scores invalid: {'; '.join(details)}")
 
 
-def _telecom_signal_score(context: str, positive_terms: Iterable[str], negative_terms: Iterable[str] = ()) -> int:
-    positive = sum(1 for term in positive_terms if term and term.lower() in context)
-    negative = sum(1 for term in negative_terms if term and term.lower() in context)
-    return max(1, min(5, 3 + min(2, positive) - min(2, negative)))
-
-
-def _fallback_telecom_dimensions_and_scores(persona: dict, payload: dict, segment: dict, seed: dict) -> tuple[dict, list[dict]]:
-    context = " ".join(
-        str(value or "")
-        for value in [
-            persona.get("name"),
-            persona.get("title"),
-            persona.get("biography"),
-            persona.get("attitudes"),
-            persona.get("behaviours"),
-            persona.get("motivation"),
-            persona.get("personality"),
-            persona.get("preferences"),
-            persona.get("socialContext"),
-            persona.get("culturalBackground"),
-            segment.get("name"),
-            segment.get("description"),
-            _service_context(payload),
-            json.dumps(seed, ensure_ascii=False),
-        ]
-    ).lower()
-    name = persona.get("name") or "이 퍼소나"
-    segment_name = segment.get("name") or "해당 세그먼트"
-    brand_score = _telecom_signal_score(context, ["장기", "결합", "가족", "멤버십", "프리미엄", "안정", "신뢰"], ["알뜰", "번호이동", "변경", "절약"])
-    optimization_score = _telecom_signal_score(context, ["비교", "절약", "최적화", "알뜰", "요금", "커뮤니티", "후기"], ["귀찮", "시간 부족", "복잡"])
-    information_score = _telecom_signal_score(context, ["검색", "비교", "리뷰", "후기", "커뮤니티", "앱", "직접"], ["대리점", "상담원에게 맡"])
-    ai_score = _telecom_signal_score(context, ["ai", "앱", "디지털", "추천", "자동", "개인화", "데이터"], ["불신", "개인정보", "꺼림"])
-    dimensions = {
-        "brandRetention": {
-            "brandRetentionTendency": f"{name}은 {segment_name} 맥락에서 현재 통신사의 안정성과 변경 비용을 함께 고려한다.",
-            "premiumInfraBenefitOrientation": "네트워크 품질, 멤버십, 결합 혜택이 실제 생활비나 편의로 연결될 때 프리미엄 혜택을 긍정적으로 본다.",
-        },
-        "optimizationResource": {
-            "optimizationResourceInvestment": "요금제와 혜택을 비교하되, 지나치게 복잡한 조건에는 많은 시간을 쓰지 않으려는 실용적 태도를 보인다.",
-            "paymentResistanceLine": "월 납부액이 체감 혜택보다 높거나 가족 및 생활비 관리 기준을 넘어서면 추가 지출에 저항한다.",
-        },
-        "informationControl": {
-            "informationExplorationStyle": "공식 앱, 요금제 안내, 주변 경험, 온라인 후기를 조합해 필요한 정보만 선별하려는 경향이 있다.",
-            "problemSolvingAutonomy": "기본적인 요금제 확인과 혜택 점검은 직접 처리하지만, 약정이나 결합처럼 복잡한 문제는 상담을 병행한다.",
-        },
-        "digitalAiOpenness": {
-            "aiProviderTrust": "개인 상황을 정확히 반영하고 근거를 설명하는 추천에는 개방적이지만, 불투명한 상향 판매성 추천은 경계한다.",
-            "personalizationDataSharingScope": "요금, 데이터 사용량, 결합 여부처럼 추천에 직접 필요한 범위의 데이터 공유를 선호한다.",
-        },
-        "telecomLifeCharacteristics": {
-            "householdDecisionLeadership": "본인의 회선뿐 아니라 생활 패턴과 가구 상황을 기준으로 통신 결정을 조율한다.",
-            "productServiceUnderstanding": "핵심 요금, 데이터 제공량, 약정 조건은 이해하지만 세부 할인 구조는 필요할 때 확인하는 수준이다.",
-            "telecomServiceUsageContext": f"{name}은 일상적인 모바일 데이터 사용과 통신비 관리를 생활 관리의 일부로 다룬다. 요금제 변경은 즉흥적으로 하기보다 현재 혜택, 데이터 사용량, 약정 조건을 확인한 뒤 판단한다. 불편이 생기면 먼저 앱이나 안내 페이지를 확인하고, 조건이 복잡하면 상담 채널을 활용한다. {segment_name}의 특성상 가격, 안정성, 편의성 사이의 균형을 중요하게 본다.",
-        },
-    }
-    scores = [
-        {
-            "key": "brandRetention",
-            "label": TELECOM_SCORE_GROUPS["brandRetention"],
-            "score": brand_score,
-            "maxScore": 5,
-            "rationale": "현재 이용 안정성과 변경 비용을 함께 고려하는 성향을 기준으로 산정했다.",
-            "evidence": [dimensions["brandRetention"]["brandRetentionTendency"]],
-        },
-        {
-            "key": "optimizationResource",
-            "label": TELECOM_SCORE_GROUPS["optimizationResource"],
-            "score": optimization_score,
-            "maxScore": 5,
-            "rationale": "요금, 혜택, 비교 행동에 투자하는 시간과 노력을 기준으로 산정했다.",
-            "evidence": [dimensions["optimizationResource"]["optimizationResourceInvestment"]],
-        },
-        {
-            "key": "informationControl",
-            "label": TELECOM_SCORE_GROUPS["informationControl"],
-            "score": information_score,
-            "maxScore": 5,
-            "rationale": "직접 탐색과 문제 해결 자율성의 강도를 기준으로 산정했다.",
-            "evidence": [dimensions["informationControl"]["informationExplorationStyle"]],
-        },
-        {
-            "key": "digitalAiOpenness",
-            "label": TELECOM_SCORE_GROUPS["digitalAiOpenness"],
-            "score": ai_score,
-            "maxScore": 5,
-            "rationale": "앱, AI 추천, 개인화 데이터 공유에 대한 개방성을 기준으로 산정했다.",
-            "evidence": [dimensions["digitalAiOpenness"]["aiProviderTrust"]],
-        },
-    ]
-    return dimensions, scores
-
-
-def stage_nemotron_telecom_dimensions(persona: dict, payload: dict, segment: dict, seed: dict, text_generator: Callable[[str], tuple[str, dict]]) -> tuple[dict, dict]:
-    def validate(parsed: dict):
-        dimensions = _normalize_telecom_dimensions(parsed.get("telecomBehaviorDimensions") or parsed.get("telecom_behavior_dimensions"))
-        scores = _normalize_telecom_scores(parsed.get("telecomBehaviorScores") or parsed.get("telecom_behavior_scores"))
-        _validate_telecom_dimensions(dimensions)
-        _validate_telecom_scores(scores)
-
-    try:
-        parsed, usage = _execute_json_stage(text_generator, _telecom_prompt(persona, payload, segment, seed), stage_name="telecom_dimensions", validator=validate)
-        dimensions = _normalize_telecom_dimensions(parsed.get("telecomBehaviorDimensions") or parsed.get("telecom_behavior_dimensions"))
-        scores = _normalize_telecom_scores(parsed.get("telecomBehaviorScores") or parsed.get("telecom_behavior_scores"))
-    except PersonaGenerationQualityError as exc:
-        _log_persona_generation_event("telecom_dimensions_fallback", reason=str(exc))
-        dimensions, scores = _fallback_telecom_dimensions_and_scores(persona, payload, segment, seed)
-        usage = _usage_from({"inputTokens": 0, "outputTokens": 0, "totalTokens": 0, "fallback": True})
-    return {
-        **persona,
-        "telecomBehaviorDimensions": dimensions,
-        "telecomBehaviorScores": scores,
-    }, usage
-
-
-def _interview_prompt(persona: dict, payload: dict) -> str:
+def _interview_evidence_coherence_prompt(
+    persona: dict,
+    payload: dict,
+    segment: dict,
+    *,
+    candidates_text: str,
+) -> str:
+    target_language = _language_label(payload)
+    segment_traits = (segment.get("characteristics") or {}).get("keyTraits") or (segment.get("characteristics") or {}).get("key_traits") or []
     return f"""
-STAGE: interview_reference
-Choose the closest telecom interview reference type and rewrite only telecomServiceUsageContext.
-Return JSON with selected_type, source_user_ids, reference_strength, rationale, telecom_service_usage_context.
+STAGE: interview_evidence_coherence
+You are an expert telecom UX researcher curating interview evidence for persona DNA generation.
 
-References:
-{json.dumps(TELECOM_INTERVIEW_REFERENCES, ensure_ascii=False)}
+## Task
+From the candidate chunks below, select a coherent subset for ONE synthetic persona's telecom behavior.
+Output dominant behavioral axes and which chunk_ids to KEEP vs DROP.
 
-Service context:
+## Priority (highest first)
+1. Alignment with Selected Segment (name, description, traits) and Fixed Persona narrative.
+2. Internal consistency: chunks must support the SAME behavioral story (one dominant theme).
+3. Drop chunks that conflict with the majority (e.g. "20-year loyalty" vs "switch every 6 months for gifts").
+4. Prefer chunks from the same source_id when they reinforce the same theme (not required).
+5. Keep 3-7 chunks. If unsure, keep fewer but coherent chunks rather than many conflicting ones.
+
+## Rules
+- Do NOT clone a real participant as the persona; extract behavior patterns only.
+- keep_chunk_ids must reference ids from the candidate list only.
+- Write dominant_axes and persona_fit_notes in {target_language}.
+- Respond with JSON only.
+
+## Output Format
+{{
+  "dominant_axes": ["axis 1", "axis 2"],
+  "segment_alignment": "high",
+  "persona_fit_notes": "Why these chunks fit the persona and segment",
+  "keep_chunk_ids": [1, 4, 7],
+  "drop_chunk_ids": [2],
+  "drop_reasons": {{"2": "Conflicts with segment and other chunks on carrier switching"}}
+}}
+
+## Selected Segment
+- name: {segment.get("name")}
+- description: {segment.get("description")}
+- key_traits: {", ".join(str(value) for value in segment_traits)}
+
+## Service Context
 {_service_context(payload)}
 
-Persona:
-{json.dumps(persona, ensure_ascii=False)}
+## Fixed Persona (narrative — do not replace identity)
+{_telecom_fixed_persona_json(persona)}
+
+## Candidate Chunks
+{candidates_text}
 """.strip()
 
 
-def regenerate_telecom_service_usage_context_from_interview_reference(persona: dict, payload: dict, text_generator: Callable[[str], tuple[str, dict]]) -> tuple[dict, dict | None, dict]:
-    def validate(parsed: dict):
-        if not _has_text(parsed.get("telecom_service_usage_context") or parsed.get("telecomServiceUsageContext"), min_length=20):
-            raise PersonaGenerationQualityError("telecom_service_usage_context missing")
+def _normalize_coherence_curation(parsed: dict) -> dict:
+    if not isinstance(parsed, dict):
+        return {}
+    dominant_axes = parsed.get("dominant_axes") or parsed.get("dominantAxes") or []
+    if not isinstance(dominant_axes, list):
+        dominant_axes = [dominant_axes]
+    dominant_axes = [str(value).strip() for value in dominant_axes if str(value).strip()]
 
-    parsed, usage = _execute_json_stage(text_generator, _interview_prompt(persona, payload), stage_name="interview_reference", validator=validate)
-    context = parsed.get("telecom_service_usage_context") or parsed.get("telecomServiceUsageContext")
-    dimensions = dict(persona.get("telecomBehaviorDimensions") or {})
-    life = dict(dimensions.get("telecomLifeCharacteristics") or {})
-    life["telecomServiceUsageContext"] = context
-    dimensions["telecomLifeCharacteristics"] = life
-    metadata = {
-        "personaName": persona.get("name"),
-        "selectedType": parsed.get("selected_type") or parsed.get("selectedType"),
-        "sourceUserIds": parsed.get("source_user_ids") or parsed.get("sourceUserIds") or [],
-        "referenceStrength": parsed.get("reference_strength") or parsed.get("referenceStrength") or 0,
-        "rationale": parsed.get("rationale") or "",
+    keep_ids = parsed.get("keep_chunk_ids") or parsed.get("keepChunkIds") or []
+    drop_ids = parsed.get("drop_chunk_ids") or parsed.get("dropChunkIds") or []
+    if not isinstance(keep_ids, list):
+        keep_ids = []
+    if not isinstance(drop_ids, list):
+        drop_ids = []
+
+    drop_reasons = parsed.get("drop_reasons") or parsed.get("dropReasons") or {}
+    if not isinstance(drop_reasons, dict):
+        drop_reasons = {}
+
+    return {
+        "dominant_axes": dominant_axes,
+        "segment_alignment": str(parsed.get("segment_alignment") or parsed.get("segmentAlignment") or "").strip(),
+        "persona_fit_notes": str(parsed.get("persona_fit_notes") or parsed.get("personaFitNotes") or "").strip(),
+        "keep_chunk_ids": keep_ids,
+        "drop_chunk_ids": drop_ids,
+        "drop_reasons": drop_reasons,
     }
-    return {**persona, "telecomBehaviorDimensions": dimensions}, metadata, usage
+
+
+def build_curated_interview_evidence_bundle(
+    *,
+    vector_service,
+    candidate_chunks: list,
+    persona: dict,
+    segment: dict,
+    payload: dict,
+    text_generator: Callable[[str], tuple[str, dict]],
+) -> dict:
+    from reopsai.domain.persona.interview_evidence import (
+        apply_coherence_curation,
+        empty_curated_evidence_bundle,
+        format_candidates_for_coherence_prompt,
+        format_curated_bundle_for_prompt,
+        search_global_interview_evidence_chunks,
+    )
+
+    candidates = search_global_interview_evidence_chunks(
+        vector_service=vector_service,
+        candidate_chunks=candidate_chunks,
+        persona=persona,
+        segment=segment,
+        payload=payload,
+    )
+    if not candidates:
+        return empty_curated_evidence_bundle()
+
+    curation = {}
+    try:
+
+        def validate_coherence(parsed: dict):
+            normalized = _normalize_coherence_curation(parsed)
+            if not normalized.get("dominant_axes"):
+                raise PersonaGenerationQualityError("coherence missing dominant_axes")
+
+        candidates_text = format_candidates_for_coherence_prompt(candidates)
+        parsed, _usage = _execute_json_stage(
+            text_generator,
+            _interview_evidence_coherence_prompt(
+                persona,
+                payload,
+                segment,
+                candidates_text=candidates_text,
+            ),
+            stage_name="interview_evidence_coherence",
+            validator=validate_coherence,
+            max_attempts=2,
+        )
+        curation = _normalize_coherence_curation(parsed)
+    except Exception as exc:
+        _log_persona_generation_event(
+            "interview_evidence_coherence_fallback",
+            persona=persona.get("name"),
+            error=str(exc),
+            candidate_count=len(candidates),
+        )
+
+    keep_chunks = apply_coherence_curation(candidates, curation)
+    keep_ids = {int(item["id"]) for item in keep_chunks if item.get("id") is not None}
+    dropped_count = sum(1 for item in candidates if item.get("id") not in keep_ids)
+
+    prompt_text = format_curated_bundle_for_prompt(
+        keep_chunks=keep_chunks,
+        dominant_axes=curation.get("dominant_axes"),
+        persona_fit_notes=curation.get("persona_fit_notes"),
+        segment_alignment=curation.get("segment_alignment"),
+    )
+    return {
+        "mode": "curated_bundle",
+        "enabled": bool(keep_chunks),
+        "candidateCount": len(candidates),
+        "chunkCount": len(keep_chunks),
+        "droppedCount": dropped_count,
+        "dominantAxes": curation.get("dominant_axes") or [],
+        "segmentAlignment": curation.get("segment_alignment"),
+        "personaFitNotes": curation.get("persona_fit_notes") or "",
+        "keepChunks": keep_chunks,
+        "promptText": prompt_text,
+        "curation": curation,
+    }
+
+
+def _interview_evidence_prompt_text(bundle: dict | None, evidence_by_variable: dict | None = None) -> tuple[str, int]:
+    from reopsai.domain.persona.interview_evidence import count_evidence_chunks, format_evidence_for_prompt
+
+    if isinstance(bundle, dict) and (bundle.get("promptText") or bundle.get("prompt_text")):
+        text = str(bundle.get("promptText") or bundle.get("prompt_text") or "").strip()
+        keep_chunks = bundle.get("keepChunks") or bundle.get("keep_chunks") or []
+        return text, len(keep_chunks)
+    if isinstance(bundle, dict) and (bundle.get("keepChunks") or bundle.get("keep_chunks")):
+        from reopsai.domain.persona.interview_evidence import format_curated_bundle_for_prompt
+
+        keep_chunks = bundle.get("keepChunks") or bundle.get("keep_chunks") or []
+        text = format_curated_bundle_for_prompt(
+            keep_chunks=keep_chunks,
+            dominant_axes=bundle.get("dominantAxes") or bundle.get("dominant_axes"),
+            persona_fit_notes=bundle.get("personaFitNotes") or bundle.get("persona_fit_notes"),
+            segment_alignment=bundle.get("segmentAlignment") or bundle.get("segment_alignment"),
+        )
+        return text, len(keep_chunks)
+    legacy = evidence_by_variable if evidence_by_variable is not None else (bundle if isinstance(bundle, dict) else {})
+    if legacy and not legacy.get("mode"):
+        text = format_evidence_for_prompt(legacy)
+        return text, count_evidence_chunks(legacy)
+    return "", 0
+
+
+def stage_nemotron_telecom_behavior_dimensions(
+    persona: dict,
+    payload: dict,
+    segment: dict,
+    seed: dict,
+    text_generator: Callable[[str], tuple[str, dict]],
+    *,
+    interview_evidence_bundle: dict | None = None,
+    interview_evidence_by_variable: dict | None = None,
+) -> tuple[dict, dict]:
+    evidence_bundle = interview_evidence_bundle
+    if evidence_bundle is None and interview_evidence_by_variable:
+        evidence_bundle = interview_evidence_by_variable
+    evidence_text, evidence_chunk_count = _interview_evidence_prompt_text(
+        evidence_bundle,
+        evidence_by_variable=interview_evidence_by_variable,
+    )
+    prompt = _telecom_dimensions_only_prompt(
+        persona,
+        payload,
+        segment,
+        seed,
+        interview_evidence_text=evidence_text,
+    )
+
+    def validate(parsed: dict):
+        dimensions = _normalize_telecom_dimensions(
+            parsed.get("telecomBehaviorDimensions") or parsed.get("telecom_behavior_dimensions")
+        )
+        _validate_telecom_dimensions(dimensions)
+
+    parsed, usage = _execute_json_stage(
+        text_generator,
+        prompt,
+        stage_name="telecom_dimensions",
+        validator=validate,
+        max_attempts=2,
+    )
+    dimensions = _normalize_telecom_dimensions(
+        parsed.get("telecomBehaviorDimensions") or parsed.get("telecom_behavior_dimensions")
+    )
+    usage = _usage_from(usage)
+    usage["telecomStage"] = "dimensions"
+    usage["evidenceChunkCount"] = evidence_chunk_count
+    usage["evidenceMode"] = "curated_bundle" if evidence_text else "none"
+    return dimensions, usage
+
+
+def stage_nemotron_telecom_behavior_scores(
+    persona: dict,
+    payload: dict,
+    segment: dict,
+    dimensions: dict,
+    text_generator: Callable[[str], tuple[str, dict]],
+) -> tuple[list[dict], dict]:
+    prompt = _telecom_scores_prompt(persona, payload, segment, dimensions)
+
+    def validate(parsed: dict):
+        scores = _normalize_telecom_scores(parsed.get("telecomBehaviorScores") or parsed.get("telecom_behavior_scores"))
+        _validate_telecom_scores(scores)
+
+    parsed, usage = _execute_json_stage(
+        text_generator,
+        prompt,
+        stage_name="telecom_scores",
+        validator=validate,
+        max_attempts=2,
+    )
+    scores = _normalize_telecom_scores(parsed.get("telecomBehaviorScores") or parsed.get("telecom_behavior_scores"))
+    usage = _usage_from(usage)
+    usage["telecomStage"] = "scores"
+    return scores, usage
+
+
+def stage_nemotron_telecom_dimensions(
+    persona: dict,
+    payload: dict,
+    segment: dict,
+    seed: dict,
+    text_generator: Callable[[str], tuple[str, dict]],
+    *,
+    interview_evidence_by_variable: dict | None = None,
+) -> tuple[dict, dict]:
+    dimensions, dimensions_usage = stage_nemotron_telecom_behavior_dimensions(
+        persona,
+        payload,
+        segment,
+        seed,
+        text_generator,
+        interview_evidence_by_variable=interview_evidence_by_variable,
+    )
+    persona_with_dimensions = {**persona, "telecomBehaviorDimensions": dimensions}
+    scores, scores_usage = stage_nemotron_telecom_behavior_scores(
+        persona_with_dimensions,
+        payload,
+        segment,
+        dimensions,
+        text_generator,
+    )
+    telecom_usage = _empty_usage()
+    _add_usage(telecom_usage, dimensions_usage)
+    _add_usage(telecom_usage, scores_usage)
+    telecom_usage["telecomDimensionsSource"] = "llm"
+    telecom_usage["telecomPipeline"] = "split_dimensions_then_scores"
+    if dimensions_usage.get("evidenceChunkCount") is not None:
+        telecom_usage["evidenceChunkCount"] = dimensions_usage["evidenceChunkCount"]
+    return {
+        **persona_with_dimensions,
+        "telecomBehaviorScores": scores,
+    }, telecom_usage
 
 
 def generate_seed_based_personas(payload: dict, existing_personas: Iterable[dict] | None = None, *, seed_path: Path | None = None) -> dict:
@@ -1905,6 +2246,8 @@ def generate_personas_pipeline(
     existing_personas: Iterable[dict] | None = None,
     text_generator: Callable[[str], tuple[str, dict]],
     seed_path: Path | None = None,
+    interview_evidence_retriever: Callable[[dict, dict, dict], dict] | None = None,
+    interview_evidence_by_variable: dict | None = None,
 ) -> dict:
     started_total = time.monotonic()
     total_usage = _empty_usage()
@@ -1927,7 +2270,6 @@ def generate_personas_pipeline(
     timings_ms["seedSelection"] = int((time.monotonic() - started) * 1000)
 
     selected_names = []
-    service_context = _service_context(payload)
     seeded_drafts = []
     for selected in selected_seeds:
         persona = _with_persona_tag(
@@ -1941,43 +2283,103 @@ def generate_personas_pipeline(
 
     started = time.monotonic()
     max_workers = resolve_persona_generation_max_concurrency(len(seeded_drafts))
-    _log_persona_generation_event("batch_start", personas=len(seeded_drafts), max_workers=max_workers)
+    _log_persona_generation_event(
+        "batch_start",
+        personas=len(seeded_drafts),
+        max_workers=max_workers,
+        telecom_pipeline="split_parallel",
+    )
 
-    def generate_one(item: dict):
+    def phase_narrative_and_dimensions(item: dict):
         selected = item["selected"]
         persona = item["persona"]
-        _log_persona_generation_event("worker_start", persona=persona.get("name"))
+        _log_persona_generation_event("worker_start", persona=persona.get("name"), phase="narrative_dimensions")
         try:
-            persona, usage = stage_nemotron_seed_narrative_polish(persona, payload, selected["segment"], selected["seed"], text_generator)
+            persona, usage = stage_nemotron_seed_narrative_polish(
+                persona, payload, selected["segment"], selected["seed"], text_generator
+            )
             narrative_usage = usage
-            persona, usage = stage_nemotron_telecom_dimensions(persona, payload, selected["segment"], selected["seed"], text_generator)
-            telecom_usage = usage
-            metadata = None
-            interview_usage = None
-            if _is_likely_telecom_context(service_context, selected["segment"].get("name"), selected["segment"].get("description")):
-                persona, metadata, usage = regenerate_telecom_service_usage_context_from_interview_reference(persona, payload, text_generator)
-                interview_usage = usage
+            evidence_bundle = interview_evidence_by_variable
+            interview_evidence_summary = None
+            if interview_evidence_retriever is not None:
+                evidence_bundle = interview_evidence_retriever(persona, selected["segment"], payload)
+                from reopsai.domain.persona.interview_evidence import summarize_curated_evidence_bundle
+
+                interview_evidence_summary = summarize_curated_evidence_bundle(evidence_bundle)
+                _log_persona_generation_event(
+                    "interview_evidence_retrieved",
+                    persona=persona.get("name"),
+                    mode=interview_evidence_summary.get("mode"),
+                    chunk_count=interview_evidence_summary.get("chunkCount"),
+                    candidate_count=interview_evidence_summary.get("candidateCount"),
+                    dominant_axes=interview_evidence_summary.get("dominantAxes"),
+                )
+            dimensions, dimensions_usage = stage_nemotron_telecom_behavior_dimensions(
+                persona,
+                payload,
+                selected["segment"],
+                selected["seed"],
+                text_generator,
+                interview_evidence_bundle=evidence_bundle if isinstance(evidence_bundle, dict) else None,
+            )
+            return {
+                "selected": selected,
+                "persona": {**persona, "telecomBehaviorDimensions": dimensions},
+                "narrative_usage": narrative_usage,
+                "dimensions_usage": dimensions_usage,
+                "interview_evidence_summary": interview_evidence_summary,
+            }
+        finally:
+            _log_persona_generation_event("worker_end", persona=persona.get("name"), phase="narrative_dimensions")
+
+    dimension_results = _map_with_concurrency(seeded_drafts, max_workers, phase_narrative_and_dimensions)
+
+    def phase_scores_and_postprocess(phase_item: dict):
+        selected = phase_item["selected"]
+        persona = phase_item["persona"]
+        _log_persona_generation_event("worker_start", persona=persona.get("name"), phase="telecom_scores")
+        try:
+            dimensions = persona.get("telecomBehaviorDimensions") or {}
+            scores, scores_usage = stage_nemotron_telecom_behavior_scores(
+                persona,
+                payload,
+                selected["segment"],
+                dimensions,
+                text_generator,
+            )
+            persona = {**persona, "telecomBehaviorScores": scores}
+            telecom_usage = _empty_usage()
+            _add_usage(telecom_usage, phase_item.get("dimensions_usage"))
+            _add_usage(telecom_usage, scores_usage)
+            telecom_usage["telecomDimensionsSource"] = "llm"
+            telecom_usage["telecomPipeline"] = "split_parallel"
+            evidence_chunk_count = (phase_item.get("interview_evidence_summary") or {}).get("chunkCount") or 0
+            if evidence_chunk_count:
+                telecom_usage["evidenceChunkCount"] = evidence_chunk_count
             return {
                 "persona": persona,
-                "narrative_usage": narrative_usage,
+                "narrative_usage": phase_item.get("narrative_usage"),
                 "telecom_usage": telecom_usage,
-                "interview_usage": interview_usage,
-                "interview_reference": metadata,
+                "interview_evidence_summary": phase_item.get("interview_evidence_summary"),
                 "seed_reference": _seed_metadata(selected, persona["name"]),
             }
         finally:
-            _log_persona_generation_event("worker_end", persona=persona.get("name"))
+            _log_persona_generation_event("worker_end", persona=persona.get("name"), phase="telecom_scores")
 
-    persona_results = _map_with_concurrency(seeded_drafts, max_workers, generate_one)
+    persona_results = _map_with_concurrency(dimension_results, max_workers, phase_scores_and_postprocess)
     personas = []
     seed_references = []
-    interview_references = []
+    interview_evidence_summaries = []
     for result in persona_results:
         _add_usage(total_usage, result.get("narrative_usage"))
         _add_usage(total_usage, result.get("telecom_usage"))
-        _add_usage(total_usage, result.get("interview_usage"))
-        if result.get("interview_reference"):
-            interview_references.append(result["interview_reference"])
+        if result.get("interview_evidence_summary"):
+            interview_evidence_summaries.append(
+                {
+                    "personaName": result["persona"].get("name"),
+                    **result["interview_evidence_summary"],
+                }
+            )
         personas.append(result["persona"])
         seed_references.append(result["seed_reference"])
     timings_ms["narrativeTelecomAndPostprocess"] = int((time.monotonic() - started) * 1000)
@@ -1991,8 +2393,10 @@ def generate_personas_pipeline(
         "generation_metadata": {
             "nemotronSeedReferences": seed_references,
             "timingsMs": timings_ms,
+            "interviewEvidenceMode": "curated_bundle" if interview_evidence_retriever else "static",
+            "interviewEvidenceRetriever": bool(interview_evidence_retriever),
+            "interviewEvidenceSummaries": interview_evidence_summaries,
         },
-        "telecom_service_usage_context_references": interview_references,
         "token_usage": total_usage,
         "seed_count": len(selected_seeds),
     }

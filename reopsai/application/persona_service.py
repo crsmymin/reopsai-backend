@@ -18,12 +18,23 @@ from sqlalchemy.exc import IntegrityError
 
 from reopsai.domain.persona.generation import (
     PersonaGenerationQualityError,
+    build_curated_interview_evidence_bundle,
     generate_segment_suggestions_pipeline,
     generate_personas_pipeline,
     infer_persona_source_type,
     resolve_persona_generation_max_concurrency,
     validate_generation_payload,
     validate_segment_suggestion_payload,
+)
+from reopsai.domain.persona.interview_evidence import (
+    TELECOM_EVIDENCE_VARIABLES,
+    chunk_to_payload,
+    chunk_vector_id,
+    empty_curated_evidence_bundle,
+    format_evidence_for_prompt,
+    normalize_chunk_row_data,
+    search_interview_evidence_chunks,
+    upsert_interview_source_embeddings,
 )
 from reopsai.domain.persona.ui_test_prompts import build_ui_chunk_prompt, build_ui_scoring_prompt, build_ui_summary_prompt, build_ui_test_prompt
 from reopsai.infrastructure.persistence.engine import session_scope
@@ -93,15 +104,15 @@ PERSONA_LLM_STAGE_CONFIGS = {
         provider="gemini",
         model="gemini-2.5-flash",
         temperature=0.35,
-        max_output_tokens=4500,
+        max_output_tokens=8192,
         env_prefix="PERSONA_LLM_TELECOM_DIMENSIONS",
     ),
-    "persona_generation_interview_reference": PersonaLlmStageConfig(
+    "persona_generation_telecom_scores": PersonaLlmStageConfig(
         provider="gemini",
         model="gemini-2.5-flash",
-        temperature=0.7,
-        max_output_tokens=8192,
-        env_prefix="PERSONA_LLM_INTERVIEW_REFERENCE",
+        temperature=0.25,
+        max_output_tokens=6144,
+        env_prefix="PERSONA_LLM_TELECOM_SCORES",
     ),
     "persona_interview_pack": PersonaLlmStageConfig(
         provider="gemini",
@@ -152,7 +163,7 @@ PERSONA_LLM_PROMPT_STAGE_MARKERS = {
     "STAGE: segmentation_identity": "persona_generation_segmentation_identity",
     "STAGE: narrative_polish": "persona_generation_narrative_polish",
     "STAGE: telecom_dimensions": "persona_generation_telecom_dimensions",
-    "STAGE: interview_reference": "persona_generation_interview_reference",
+    "STAGE: telecom_scores": "persona_generation_telecom_scores",
 }
 
 
@@ -304,7 +315,7 @@ def _score_from_keywords(text: str, positive: tuple[str, ...], negative: tuple[s
 
 def _build_telecom_behavior_scores(persona) -> list[dict]:
     stored_scores = _clean_mapping(getattr(persona, "telecom_behavior_scores", None))
-    if isinstance(stored_scores, list):
+    if isinstance(stored_scores, list) and stored_scores:
         return stored_scores
     dimensions = _clean_mapping(getattr(persona, "telecom_behavior_dimensions", None)) or {}
     profile = _clean_mapping(getattr(persona, "profile", None)) or {}
@@ -963,6 +974,10 @@ def _camelize_record_aliases(payload: dict) -> dict:
         "question_set": "questionSet",
         "pack_model": "packModel",
         "persona_ids": "personaIds",
+        "participant_code": "participantCode",
+        "raw_text": "rawText",
+        "source_status": "sourceStatus",
+        "processing_error": "processingError",
         "error_message": "errorMessage",
         "started_at": "startedAt",
         "completed_at": "completedAt",
@@ -1021,6 +1036,9 @@ class PersonaService:
 
     def _can_modify(self, db_session, record, *, company_id: int, user_id: int):
         return self.repository.can_modify_record(db_session, record, company_id=company_id, user_id=user_id)
+
+    def _is_company_admin(self, db_session, *, company_id: int, user_id: int):
+        return self.repository.is_company_admin(db_session, company_id=company_id, user_id=user_id)
 
     def _get_llm_adapter(self):
         if self.llm_adapter is None:
@@ -3713,6 +3731,28 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             "updated_at": _dt(result.updated_at),
         })
 
+    def interview_source_payload(self, source, *, chunks=None):
+        payload = _camelize_record_aliases({
+            "id": source.id,
+            "company_id": source.company_id,
+            "team_id": source.team_id,
+            "created_by_user_id": source.created_by_user_id,
+            "updated_by_user_id": source.updated_by_user_id,
+            "title": source.title,
+            "participant_code": source.participant_code,
+            "raw_text": source.raw_text,
+            "language": source.language,
+            "source_status": source.source_status,
+            "processing_error": source.processing_error,
+            "metadata": _clean_mapping(source.metadata_),
+            "created_at": _dt(source.created_at),
+            "updated_at": _dt(source.updated_at),
+        })
+        if chunks is not None:
+            payload["chunks"] = [chunk_to_payload(row) for row in chunks]
+            payload["chunkCount"] = len(chunks)
+        return payload
+
     def interview_payload(self, interview, *, results=None):
         payload = _camelize_record_aliases({
             "id": interview.id,
@@ -3883,6 +3923,21 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             persona = self.repository.create_persona(db_session, company_id=company_id, user_id=user_id, data=data)
             return self._ok({"data": self.persona_payload(persona)}, 201)
 
+    def _build_persona_generation_context(self, validated: dict) -> str:
+        parts: list[str] = []
+        for key in ("serviceContext", "productDescription", "goal", "researchGoal", "industry"):
+            value = validated.get(key)
+            if value:
+                parts.append(str(value))
+        for segment in validated.get("segments") or []:
+            if not isinstance(segment, dict):
+                continue
+            if segment.get("name"):
+                parts.append(str(segment["name"]))
+            if segment.get("description"):
+                parts.append(str(segment["description"]))
+        return " ".join(parts).strip()
+
     def generate_personas(self, *, company_id: int, user_id: int, data: dict):
         started_at = time.monotonic()
         validated, errors = validate_generation_payload(data)
@@ -3908,11 +3963,46 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         def persona_text_generator(prompt: str):
             return run_with_llm_usage_context(usage_context, self._generate_text, prompt)
 
+        interview_evidence_retriever = None
+        interview_chunk_count = 0
+        try:
+            count_chunks = getattr(self.repository, "count_interview_chunks_for_company", None)
+            list_chunks = getattr(self.repository, "list_interview_chunks_for_company", None)
+            if count_chunks and list_chunks:
+                with self.session_factory() as db_session:
+                    interview_chunk_count = count_chunks(db_session, company_id=company_id)
+                    if interview_chunk_count > 0:
+                        interview_chunks = list_chunks(db_session, company_id=company_id)
+                        from reopsai.infrastructure.rag import get_vector_service
+
+                        vector_service = get_vector_service()
+
+                        def interview_evidence_retriever(persona: dict, segment: dict, payload: dict):
+                            try:
+                                return build_curated_interview_evidence_bundle(
+                                    vector_service=vector_service,
+                                    candidate_chunks=interview_chunks,
+                                    persona=persona,
+                                    segment=segment,
+                                    payload=payload,
+                                    text_generator=persona_text_generator,
+                                )
+                            except Exception as exc:
+                                print(
+                                    f"[persona-generation] interview_evidence_retrieval_failed "
+                                    f"persona={persona.get('name')} error={exc}",
+                                    flush=True,
+                                )
+                                return empty_curated_evidence_bundle()
+        except Exception:
+            interview_evidence_retriever = None
+
         def generate():
             return generate_personas_pipeline(
                 validated,
                 existing_personas=existing_personas,
                 text_generator=persona_text_generator,
+                interview_evidence_retriever=interview_evidence_retriever,
             )
 
         try:
@@ -3925,6 +4015,11 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             return self._error("seed_invalid", str(exc), 500)
         except RuntimeError as exc:
             return self._error("generation_failed", str(exc), 502)
+        except Exception as exc:
+            import traceback
+
+            traceback.print_exc()
+            return self._error("generation_failed", str(exc), 500)
         personas = self._prepare_generated_personas(generated["personas"], include_images=validated.get("includeImages", True))
         duration_ms = int((time.monotonic() - started_at) * 1000)
         generation_metadata = dict(generated["generation_metadata"])
@@ -3940,6 +4035,12 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 "segments": generated["segments"],
                 "telecomServiceUsageContextReferences": generated.get("telecom_service_usage_context_references") or [],
                 "generationMetadata": generation_metadata,
+                "interviewEvidence": {
+                    "enabled": bool(interview_evidence_retriever),
+                    "companyChunkCount": interview_chunk_count,
+                    "mode": generation_metadata.get("interviewEvidenceMode"),
+                    "summaries": generation_metadata.get("interviewEvidenceSummaries") or [],
+                },
                 "tokenUsage": generated["token_usage"],
             }
         )
@@ -4445,6 +4546,297 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
     def list_interview_personas(self, *, company_id: int):
         with self.session_factory() as db_session:
             return self._ok({"data": [self.persona_payload(row) for row in self.repository.list_all_personas(db_session, company_id=company_id)]})
+
+    def _normalize_interview_source_data(self, data: dict, *, require_raw_text: bool = True):
+        has_title = "title" in data or "name" in data
+        has_raw_text = "raw_text" in data or "rawText" in data
+        has_participant_code = "participant_code" in data or "participantCode" in data
+        has_language = "language" in data
+        title = str(data.get("title") or data.get("name") or "").strip()
+        raw_text = str(data.get("raw_text") or data.get("rawText") or "").strip()
+        participant_code = str(data.get("participant_code") or data.get("participantCode") or "").strip()
+        metadata = data.get("metadata")
+        if metadata is None:
+            metadata = data.get("meta")
+        if metadata is not None and not isinstance(metadata, dict):
+            return None, "metadata must be an object"
+        if require_raw_text and not title:
+            return None, "title is required"
+        if has_title and not title:
+            return None, "title is required"
+        if (require_raw_text or has_raw_text) and len(raw_text) < 20:
+            return None, "rawText must be at least 20 characters"
+        normalized = {}
+        if has_title or require_raw_text:
+            normalized["title"] = title
+        if has_participant_code or require_raw_text:
+            normalized["participant_code"] = participant_code or None
+        if has_language or require_raw_text:
+            normalized["language"] = str(data.get("language") or "ko").strip() or "ko"
+        if metadata is not None or require_raw_text:
+            normalized["metadata"] = metadata or {}
+        if raw_text or require_raw_text:
+            normalized["raw_text"] = raw_text
+        return normalized, None
+
+    def create_interview_source(self, *, company_id: int, user_id: int, data: dict):
+        normalized, error = self._normalize_interview_source_data(data, require_raw_text=True)
+        if error:
+            return self._error("invalid", error, 400)
+        normalized["source_status"] = "uploaded"
+        with self.session_factory() as db_session:
+            if not self._is_company_admin(db_session, company_id=company_id, user_id=user_id):
+                return self._error("forbidden", "insufficient permissions", 403)
+            source = self.repository.create_interview_source(db_session, company_id=company_id, user_id=user_id, data=normalized)
+            return self._ok({"data": self.interview_source_payload(source)}, 201)
+
+    def list_interview_sources(self, *, company_id: int, user_id: int, status: str | None = None):
+        with self.session_factory() as db_session:
+            if not self._is_company_admin(db_session, company_id=company_id, user_id=user_id):
+                return self._error("forbidden", "insufficient permissions", 403)
+            rows = self.repository.list_interview_sources(db_session, company_id=company_id, status=status)
+            return self._ok({"data": [self.interview_source_payload(row) for row in rows]})
+
+    def get_interview_source(self, *, company_id: int, user_id: int, source_id: int):
+        with self.session_factory() as db_session:
+            if not self._is_company_admin(db_session, company_id=company_id, user_id=user_id):
+                return self._error("forbidden", "insufficient permissions", 403)
+            source = self.repository.get_interview_source(db_session, company_id=company_id, source_id=source_id)
+            if not source:
+                return self._error("not_found", "interview source not found", 404)
+            return self._ok({"data": self.interview_source_payload(source)})
+
+    def update_interview_source(self, *, company_id: int, user_id: int, source_id: int, data: dict):
+        normalized, error = self._normalize_interview_source_data(data, require_raw_text=False)
+        if error:
+            return self._error("invalid", error, 400)
+        if "source_status" in data or "sourceStatus" in data:
+            normalized["source_status"] = str(data.get("source_status") or data.get("sourceStatus") or "").strip() or "uploaded"
+        if "processing_error" in data or "processingError" in data:
+            normalized["processing_error"] = data.get("processing_error") or data.get("processingError")
+        with self.session_factory() as db_session:
+            if not self._is_company_admin(db_session, company_id=company_id, user_id=user_id):
+                return self._error("forbidden", "insufficient permissions", 403)
+            source = self.repository.get_interview_source(db_session, company_id=company_id, source_id=source_id)
+            if not source:
+                return self._error("not_found", "interview source not found", 404)
+            updated = self.repository.update_interview_source(db_session, source, user_id=user_id, data=normalized)
+            return self._ok({"data": self.interview_source_payload(updated)})
+
+    def delete_interview_source(self, *, company_id: int, user_id: int, source_id: int):
+        with self.session_factory() as db_session:
+            if not self._is_company_admin(db_session, company_id=company_id, user_id=user_id):
+                return self._error("forbidden", "insufficient permissions", 403)
+            source = self.repository.get_interview_source(db_session, company_id=company_id, source_id=source_id)
+            if not source:
+                return self._error("not_found", "interview source not found", 404)
+            self.repository.soft_delete_interview_source(db_session, source, user_id=user_id)
+            return self._ok()
+
+    def embed_interview_source(self, *, company_id: int, user_id: int, source_id: int):
+        from reopsai.infrastructure.rag import get_vector_service
+
+        with self.session_factory() as db_session:
+            if not self._is_company_admin(db_session, company_id=company_id, user_id=user_id):
+                return self._error("forbidden", "insufficient permissions", 403)
+            source = self.repository.get_interview_source(db_session, company_id=company_id, source_id=source_id)
+            if not source:
+                return self._error("not_found", "interview source not found", 404)
+            chunks = self.repository.list_interview_chunks_for_source(db_session, source_id=source.id)
+            if not chunks:
+                return self._error("invalid", "semantic interview chunks are required before embedding", 400)
+            self.repository.update_interview_source(
+                db_session,
+                source,
+                user_id=user_id,
+                data={"source_status": "embedding", "processing_error": None},
+            )
+            try:
+                for chunk in chunks:
+                    chunk.embedding_vector_id = chunk_vector_id(chunk.id)
+                db_session.flush()
+                result = upsert_interview_source_embeddings(get_vector_service(), source, chunks)
+                self.repository.mark_interview_chunks_embedded(db_session, chunks, vector_ids=result["ids"])
+                metadata = source.metadata_ if isinstance(source.metadata_, dict) else {}
+                metadata = {
+                    **metadata,
+                    "embedding": {
+                        "chunk_count": result["chunk_count"],
+                        "vector_ids": result["ids"],
+                        "collection": "ux_rag",
+                        "mode": "semantic_chunks",
+                    },
+                }
+                updated = self.repository.update_interview_source(
+                    db_session,
+                    source,
+                    user_id=user_id,
+                    data={"source_status": "embedded", "processing_error": None, "metadata": metadata},
+                )
+                return self._ok({"data": self.interview_source_payload(updated, chunks=chunks), "embedding": result})
+            except Exception as exc:
+                updated = self.repository.update_interview_source(
+                    db_session,
+                    source,
+                    user_id=user_id,
+                    data={"source_status": "failed", "processing_error": str(exc)},
+                )
+                return self._error("failed", self.interview_source_payload(updated).get("processingError") or str(exc), 500)
+
+    def search_interview_evidence(self, *, company_id: int, user_id: int, target_variable: str, query: str | None = None, top_k: int = 5):
+        from reopsai.infrastructure.rag import get_vector_service
+
+        variable = str(target_variable or "").strip()
+        if variable not in TELECOM_EVIDENCE_VARIABLES:
+            return self._error("invalid", f"targetVariable must be one of: {', '.join(TELECOM_EVIDENCE_VARIABLES)}", 400)
+        with self.session_factory() as db_session:
+            if not self._is_company_admin(db_session, company_id=company_id, user_id=user_id):
+                return self._error("forbidden", "insufficient permissions", 403)
+            chunks = self.repository.list_interview_chunks_for_company(db_session, company_id=company_id)
+            hits = search_interview_evidence_chunks(
+                vector_service=get_vector_service(),
+                candidate_chunks=chunks,
+                target_variable=variable,
+                query_text=query or "",
+                top_k=max(1, min(int(top_k or 5), 20)),
+            )
+            return self._ok({"data": hits, "targetVariable": variable, "count": len(hits)})
+
+    def import_local_interview_evidence(
+        self,
+        *,
+        company_id: int,
+        user_id: int,
+        cleaning_dir: str,
+        embed: bool = True,
+        replace_existing: bool = True,
+    ):
+        from pathlib import Path
+
+        from reopsai.infrastructure.rag import get_vector_service
+
+        base = Path(cleaning_dir).resolve()
+        cleaned_dir = base / "llm_cleaned_interviews"
+        chunk_dir = base / "experience_chunks"
+        if not cleaned_dir.exists() or not chunk_dir.exists():
+            return self._error("invalid", f"cleaning directories not found under {base}", 400)
+
+        imported = []
+        with self.session_factory() as db_session:
+            if not self._is_company_admin(db_session, company_id=company_id, user_id=user_id):
+                return self._error("forbidden", "insufficient permissions", 403)
+
+            for chunk_path in sorted(chunk_dir.glob("*_chunks.json")):
+                payload = json.loads(chunk_path.read_text(encoding="utf-8"))
+                participant_code = str(payload.get("participantCode") or "").strip()
+                reference_type = str(payload.get("referenceType") or "").strip()
+                source_stem = chunk_path.stem.replace("_chunks", "")
+                cleaned_path = cleaned_dir / f"{source_stem}_llm_cleaned.txt"
+                if not cleaned_path.exists():
+                    continue
+
+                normalized_chunks = []
+                for item in payload.get("chunks") or []:
+                    row = normalize_chunk_row_data(item)
+                    if row:
+                        normalized_chunks.append(row)
+                if not normalized_chunks:
+                    continue
+
+                source = self.repository.get_interview_source_by_participant_code(
+                    db_session,
+                    company_id=company_id,
+                    participant_code=participant_code,
+                )
+                if source and not replace_existing:
+                    imported.append(
+                        {
+                            "sourceId": source.id,
+                            "participantCode": participant_code,
+                            "skipped": True,
+                            "reason": "already_exists",
+                        }
+                    )
+                    continue
+
+                if source and replace_existing:
+                    self.repository.delete_interview_chunks_for_source(db_session, source_id=source.id)
+                    self.repository.update_interview_source(
+                        db_session,
+                        source,
+                        user_id=user_id,
+                        data={
+                            "title": source_stem,
+                            "participant_code": participant_code,
+                            "raw_text": cleaned_path.read_text(encoding="utf-8"),
+                            "language": "ko",
+                            "source_status": "chunked",
+                            "metadata": {
+                                "referenceType": reference_type,
+                                "sourceFile": f"{source_stem}.txt",
+                                "anonymizationMethod": "llm",
+                                "chunkCount": len(normalized_chunks),
+                            },
+                        },
+                    )
+                else:
+                    source = self.repository.create_interview_source(
+                        db_session,
+                        company_id=company_id,
+                        user_id=user_id,
+                        data={
+                            "title": source_stem,
+                            "participant_code": participant_code,
+                            "raw_text": cleaned_path.read_text(encoding="utf-8"),
+                            "language": "ko",
+                            "source_status": "chunked",
+                            "metadata": {
+                                "referenceType": reference_type,
+                                "sourceFile": f"{source_stem}.txt",
+                                "anonymizationMethod": "llm",
+                                "chunkCount": len(normalized_chunks),
+                            },
+                        },
+                    )
+
+                created_chunks = self.repository.replace_interview_chunks(
+                    db_session,
+                    source=source,
+                    chunks=normalized_chunks,
+                )
+                embed_result = None
+                if embed:
+                    for chunk in created_chunks:
+                        chunk.embedding_vector_id = chunk_vector_id(chunk.id)
+                    db_session.flush()
+                    embed_result = upsert_interview_source_embeddings(get_vector_service(), source, created_chunks)
+                    self.repository.mark_interview_chunks_embedded(db_session, created_chunks, vector_ids=embed_result["ids"])
+                    metadata = source.metadata_ if isinstance(source.metadata_, dict) else {}
+                    metadata = {
+                        **metadata,
+                        "embedding": {
+                            "chunk_count": embed_result["chunk_count"],
+                            "vector_ids": embed_result["ids"],
+                            "collection": "ux_rag",
+                            "mode": "semantic_chunks",
+                        },
+                    }
+                    self.repository.update_interview_source(
+                        db_session,
+                        source,
+                        user_id=user_id,
+                        data={"source_status": "embedded", "processing_error": None, "metadata": metadata},
+                    )
+
+                imported.append(
+                    {
+                        "sourceId": source.id,
+                        "participantCode": participant_code,
+                        "chunkCount": len(created_chunks),
+                        "embedded": bool(embed),
+                    }
+                )
+        return self._ok({"data": imported, "importedCount": len(imported)})
 
     def create_interview(self, *, company_id: int, user_id: int, data: dict):
         if not self._require_name(data):
