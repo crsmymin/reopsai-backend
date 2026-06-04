@@ -10,6 +10,7 @@ from reopsai.application.persona_service import (
     _apply_structured_flow_analysis_scores,
     _apply_structured_scoring,
     _aggregate_flow_step_risk,
+    _normalize_ui_scoring_analysis,
     _score_flow_completion_from_flow_analysis,
     _score_flow_completion_metric,
 )
@@ -1329,6 +1330,94 @@ def _flow_scoring_event(screen_index, metric="혼란도", polarity="negative", s
         "reason": "test",
         "sourceComment": "test comment",
     }
+
+
+def test_normalize_ui_scoring_analysis_separates_flow_and_screen_metrics():
+    flow_payload = {
+        "analysisEvents": [
+            {
+                "testType": "screen",
+                "metric": "명확성",
+                "subMetric": "직관성",
+                "targetElement": "CTA",
+                "polarity": "negative",
+                "severity": 3,
+                "elementImportance": 1.0,
+                "personaRelevance": 3,
+                "confidence": 0.8,
+                "mappingRole": "primary",
+                "impactMultiplier": 1.0,
+                "screenIndex": 0,
+                "stepIndex": 0,
+                "reason": "ignored",
+                "sourceComment": "screen comment",
+            },
+            {
+                "testType": "flow",
+                "metric": "혼란도",
+                "subMetric": "직관성",
+                "targetElement": "CTA",
+                "polarity": "negative",
+                "severity": 4,
+                "elementImportance": 1.0,
+                "personaRelevance": 4,
+                "confidence": 0.85,
+                "mappingRole": "primary",
+                "impactMultiplier": 1.0,
+                "screenIndex": 0,
+                "stepIndex": 0,
+                "reason": "kept",
+                "sourceComment": "flow comment",
+            },
+        ]
+    }
+    flow_events = _normalize_ui_scoring_analysis(flow_payload, is_flow_test=True)["analysisEvents"]
+    assert len(flow_events) == 1
+    assert flow_events[0]["testType"] == "flow"
+    assert flow_events[0]["metric"] == "혼란도"
+
+    screen_payload = {
+        "analysisEvents": [
+            {
+                "testType": "flow",
+                "metric": "혼란도",
+                "subMetric": "직관성",
+                "targetElement": "CTA",
+                "polarity": "negative",
+                "severity": 4,
+                "elementImportance": 1.0,
+                "personaRelevance": 4,
+                "confidence": 0.85,
+                "mappingRole": "primary",
+                "impactMultiplier": 1.0,
+                "screenIndex": 0,
+                "stepIndex": 0,
+                "reason": "ignored",
+                "sourceComment": "flow comment",
+            },
+            {
+                "testType": "screen",
+                "metric": "명확성",
+                "subMetric": "직관성",
+                "targetElement": "CTA",
+                "polarity": "negative",
+                "severity": 3,
+                "elementImportance": 1.0,
+                "personaRelevance": 3,
+                "confidence": 0.8,
+                "mappingRole": "primary",
+                "impactMultiplier": 1.0,
+                "screenIndex": 0,
+                "stepIndex": None,
+                "reason": "kept",
+                "sourceComment": "screen comment",
+            },
+        ]
+    }
+    screen_events = _normalize_ui_scoring_analysis(screen_payload, is_flow_test=False)["analysisEvents"]
+    assert len(screen_events) == 1
+    assert screen_events[0]["testType"] == "screen"
+    assert screen_events[0]["metric"] == "명확성"
 
 
 def test_flow_completion_score_uses_structured_flow_analysis_steps():

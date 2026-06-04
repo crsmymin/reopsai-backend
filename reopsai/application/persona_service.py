@@ -387,6 +387,8 @@ def _clamp_percent(value, fallback: int = 50):
 
 
 SCORING_METRICS = ("명확성", "사용성", "만족도", "혼란도", "이탈 위험", "효율성")
+SCREEN_SCORING_METRICS = ("명확성", "사용성", "만족도")
+FLOW_SCORING_METRICS = ("혼란도", "이탈 위험", "효율성")
 SCORING_SUB_METRICS = (
     "직관성",
     "인지 용이성",
@@ -448,20 +450,38 @@ def _clamp_range(value, minimum, maximum, fallback):
     return max(minimum, min(maximum, value))
 
 
-def _read_scoring_metric(value):
+def _read_scoring_metric(value, *, allowed_metrics=SCORING_METRICS):
     if value == "예상 완료율":
-        return "효율성"
-    return value if isinstance(value, str) and value in SCORING_METRICS else None
+        value = "효율성"
+    return value if isinstance(value, str) and value in allowed_metrics else None
+
+
+def _scoring_events_for_test_type(events, *, is_flow_test: bool):
+    expected_type = "flow" if is_flow_test else "screen"
+    allowed_metrics = set(FLOW_SCORING_METRICS if is_flow_test else SCREEN_SCORING_METRICS)
+    filtered = []
+    for event in _as_list(events):
+        if not isinstance(event, dict):
+            continue
+        if event.get("testType") != expected_type:
+            continue
+        if event.get("metric") not in allowed_metrics:
+            continue
+        filtered.append(event)
+    return filtered
 
 
 def _read_scoring_sub_metric(value):
     return value if isinstance(value, str) and value in SCORING_SUB_METRICS else None
 
 
-def _normalize_ui_scoring_analysis(raw_value):
+def _normalize_ui_scoring_analysis(raw_value, *, is_flow_test: bool = False):
     source = _as_dict(raw_value)
     if not source:
         return {"keyElements": [], "analysisEvents": []}
+
+    expected_type = "flow" if is_flow_test else "screen"
+    allowed_metrics = FLOW_SCORING_METRICS if is_flow_test else SCREEN_SCORING_METRICS
 
     key_elements = []
     for item in _as_list(source.get("keyElements") or source.get("key_elements")):
@@ -475,7 +495,10 @@ def _normalize_ui_scoring_analysis(raw_value):
                 "importance": _clamp_range(_read_number(entry.get("importance"), 1), 0.5, 1.5, 1),
                 "relatedMetrics": [
                     metric
-                    for metric in (_read_scoring_metric(value) for value in _read_string_array(entry.get("relatedMetrics") or entry.get("related_metrics")))
+                    for metric in (
+                        _read_scoring_metric(value, allowed_metrics=allowed_metrics)
+                        for value in _read_string_array(entry.get("relatedMetrics") or entry.get("related_metrics"))
+                    )
                     if metric
                 ],
                 "reason": _read_string(entry.get("reason")),
@@ -485,7 +508,7 @@ def _normalize_ui_scoring_analysis(raw_value):
     analysis_events = []
     for item in _as_list(source.get("analysisEvents") or source.get("analysis_events")):
         entry = _as_dict(item)
-        metric = _read_scoring_metric(entry.get("metric"))
+        metric = _read_scoring_metric(entry.get("metric"), allowed_metrics=allowed_metrics)
         sub_metric = _read_scoring_sub_metric(entry.get("subMetric") or entry.get("sub_metric"))
         polarity = entry.get("polarity") if entry.get("polarity") in {"positive", "negative"} else None
         mapping_role = "secondary" if entry.get("mappingRole") == "secondary" or entry.get("mapping_role") == "secondary" else "primary"
@@ -497,7 +520,7 @@ def _normalize_ui_scoring_analysis(raw_value):
         step_index = entry.get("stepIndex", entry.get("step_index"))
         analysis_events.append(
             {
-                "testType": "flow" if entry.get("testType") == "flow" or entry.get("test_type") == "flow" else "screen",
+                "testType": expected_type,
                 "metric": metric,
                 "subMetric": sub_metric,
                 "targetElement": target_element,
@@ -752,12 +775,13 @@ def _score_metric(events, metric):
     return _weighted_event_score([event for event in events if event.get("metric") == metric])
 
 
-def _score_metric_for_screen(events, metric, screen_index, *, include_unscoped=False):
+def _score_metric_for_screen(events, metric, screen_index, *, include_unscoped=False, test_type="screen"):
     return _weighted_event_score(
         [
             event
             for event in events
-            if event.get("metric") == metric
+            if event.get("testType") == test_type
+            and event.get("metric") == metric
             and (event.get("screenIndex") == screen_index or (include_unscoped and event.get("screenIndex") is None))
         ]
     )
@@ -766,35 +790,43 @@ def _score_metric_for_screen(events, metric, screen_index, *, include_unscoped=F
 def _apply_structured_flow_analysis_scores(*, flow_analysis, analysis_events):
     if not flow_analysis:
         return flow_analysis
+    flow_events = _scoring_events_for_test_type(analysis_events, is_flow_test=True)
     updated = []
     for item in flow_analysis:
         screen_index = item.get("screenIndex")
-        confusion_score = _score_flow_risk_metric(analysis_events, "혼란도", screen_index)
-        dropoff_risk = _score_flow_risk_metric(analysis_events, "이탈 위험", screen_index)
-        ui_clarity = _score_metric_for_screen(analysis_events, "명확성", screen_index)
-        visual_hierarchy = _score_metric_for_screen(analysis_events, "만족도", screen_index)
+        confusion_score = _score_flow_risk_metric(flow_events, "혼란도", screen_index)
+        dropoff_risk = _score_flow_risk_metric(flow_events, "이탈 위험", screen_index)
         updated.append(
             {
                 **item,
                 "confusionScore": confusion_score if isinstance(confusion_score, (int, float)) else item.get("confusionScore"),
                 "dropoffRisk": dropoff_risk if isinstance(dropoff_risk, (int, float)) else item.get("dropoffRisk"),
-                "uiClarity": ui_clarity if isinstance(ui_clarity, (int, float)) else item.get("uiClarity"),
-                "visualHierarchy": visual_hierarchy if isinstance(visual_hierarchy, (int, float)) else item.get("visualHierarchy"),
+                "uiClarity": (
+                    _clamp_percent(100 - confusion_score, item.get("uiClarity"))
+                    if isinstance(confusion_score, (int, float))
+                    else item.get("uiClarity")
+                ),
+                "visualHierarchy": (
+                    _clamp_percent(100 - dropoff_risk, item.get("visualHierarchy"))
+                    if isinstance(dropoff_risk, (int, float))
+                    else item.get("visualHierarchy")
+                ),
             }
         )
     return updated
 
 
 def _apply_structured_screen_scores(*, screen_scores, analysis_events):
+    screen_events = _scoring_events_for_test_type(analysis_events, is_flow_test=False)
     include_unscoped = len(_as_list(screen_scores)) == 1
     updated = []
     for item in _as_list(screen_scores):
         if not isinstance(item, dict):
             continue
         screen_index = item.get("screenIndex")
-        clarity = _score_metric_for_screen(analysis_events, "명확성", screen_index, include_unscoped=include_unscoped)
-        usability = _score_metric_for_screen(analysis_events, "사용성", screen_index, include_unscoped=include_unscoped)
-        satisfaction = _score_metric_for_screen(analysis_events, "만족도", screen_index, include_unscoped=include_unscoped)
+        clarity = _score_metric_for_screen(screen_events, "명확성", screen_index, include_unscoped=include_unscoped)
+        usability = _score_metric_for_screen(screen_events, "사용성", screen_index, include_unscoped=include_unscoped)
+        satisfaction = _score_metric_for_screen(screen_events, "만족도", screen_index, include_unscoped=include_unscoped)
         next_clarity = clarity if isinstance(clarity, (int, float)) else item.get("clarity")
         next_usability = usability if isinstance(usability, (int, float)) else item.get("usability")
         next_appeal = satisfaction if isinstance(satisfaction, (int, float)) else item.get("appeal")
@@ -871,25 +903,36 @@ def _merge_ui_flow_analysis(current, incoming):
 
 
 def _apply_structured_scoring(*, fallback_scores: dict, analysis_events, is_flow_test: bool, flow_step_count=None, flow_analysis=None):
-    clarity = _score_metric(analysis_events, "명확성")
-    usability = _score_metric(analysis_events, "사용성")
-    satisfaction = _score_metric(analysis_events, "만족도")
-    if is_flow_test and _as_list(flow_analysis):
-        overall_flow_score = _score_flow_completion_from_flow_analysis(
-            flow_analysis,
-            analysis_events,
-            total_step_count=flow_step_count,
+    screen_events = _scoring_events_for_test_type(analysis_events, is_flow_test=False)
+    flow_events = _scoring_events_for_test_type(analysis_events, is_flow_test=True)
+    if is_flow_test:
+        if _as_list(flow_analysis):
+            overall_flow_score = _score_flow_completion_from_flow_analysis(
+                flow_analysis,
+                flow_events,
+                total_step_count=flow_step_count,
+            )
+        else:
+            overall_flow_score = _score_flow_completion_metric(flow_events, total_step_count=flow_step_count)
+        scored = {
+            "clarity": _clamp_percent(fallback_scores.get("clarity"), 70),
+            "usability": _clamp_percent(fallback_scores.get("usability"), 70),
+            "appeal": _clamp_percent(fallback_scores.get("appeal"), 65),
+        }
+        scored["overall"] = round(overall_flow_score) if isinstance(overall_flow_score, (int, float)) else round(
+            (scored["clarity"] + scored["usability"] + scored["appeal"]) / 3
         )
-    elif is_flow_test:
-        overall_flow_score = _score_flow_completion_metric(analysis_events, total_step_count=flow_step_count)
     else:
         overall_flow_score = None
-    scored = {
-        "clarity": clarity if isinstance(clarity, (int, float)) else _clamp_percent(fallback_scores.get("clarity"), 70),
-        "usability": usability if isinstance(usability, (int, float)) else _clamp_percent(fallback_scores.get("usability"), 70),
-        "appeal": satisfaction if isinstance(satisfaction, (int, float)) else _clamp_percent(fallback_scores.get("appeal"), 65),
-    }
-    scored["overall"] = round((scored["clarity"] + scored["usability"] + scored["appeal"]) / 3)
+        clarity = _score_metric(screen_events, "명확성")
+        usability = _score_metric(screen_events, "사용성")
+        satisfaction = _score_metric(screen_events, "만족도")
+        scored = {
+            "clarity": clarity if isinstance(clarity, (int, float)) else _clamp_percent(fallback_scores.get("clarity"), 70),
+            "usability": usability if isinstance(usability, (int, float)) else _clamp_percent(fallback_scores.get("usability"), 70),
+            "appeal": satisfaction if isinstance(satisfaction, (int, float)) else _clamp_percent(fallback_scores.get("appeal"), 65),
+        }
+        scored["overall"] = round((scored["clarity"] + scored["usability"] + scored["appeal"]) / 3)
     scored["overallFlowScore"] = overall_flow_score if isinstance(overall_flow_score, (int, float)) else fallback_scores.get("overallFlowScore")
     return scored
 
@@ -2236,6 +2279,18 @@ class PersonaService:
             )
         return insights
 
+    def _parse_ui_screen_summaries(self, *, source, screens):
+        summaries = []
+        for item in _as_list(_as_dict(source).get("screenSummaries") or _as_dict(source).get("screen_summaries")):
+            if not isinstance(item, dict):
+                continue
+            screen_index = self._resolve_ui_screen_reference_index(item, screens)
+            summary = _first_text(item.get("summary"), item.get("feedback"), item.get("content"))
+            if not summary:
+                continue
+            summaries.append({"screenIndex": screen_index, "summary": summary})
+        return sorted(summaries, key=lambda item: item["screenIndex"])
+
     def _fallback_ui_summary_feedback(self, *, persona, screens, screen_feedbacks, pin_comments, flow_analysis, is_flow: bool):
         persona_name = getattr(persona, "name", None) or "이 퍼소나"
         if is_flow:
@@ -2322,6 +2377,7 @@ class PersonaService:
 
         source = _as_dict(parsed)
         scores = _as_dict(source.get("scores"))
+        screen_summaries = self._parse_ui_screen_summaries(source=source, screens=screens) if not is_flow else []
         normalized = {
             "scores": {
                 "clarity": self._score_value(scores, ("clarity",), fallback["scores"].get("clarity", 50)),
@@ -2335,6 +2391,7 @@ class PersonaService:
             "overallFlowScore": _clamp_percent(source.get("overallFlowScore"), fallback.get("overallFlowScore") or 0)
             if is_flow and source.get("overallFlowScore") is not None
             else fallback.get("overallFlowScore"),
+            "screenSummaries": screen_summaries,
         }
         return {"feedback": normalized, "rawText": json.dumps(parsed, ensure_ascii=False), "usage": usage}
 
@@ -2381,7 +2438,10 @@ class PersonaService:
                 ),
                 "usage": {"model": "fallback", "stage": "persona_ui_test_scoring"},
             }
-        normalized = _normalize_ui_scoring_analysis(parsed)
+        normalized = _normalize_ui_scoring_analysis(
+            parsed,
+            is_flow_test=test.scope_type == "flow" and len(screens) > 1,
+        )
         return {
             **normalized,
             "rawText": json.dumps(parsed, ensure_ascii=False),
@@ -2525,8 +2585,13 @@ class PersonaService:
         summary_feedback = _as_dict(summary_result.get("feedback"))
         scores = _as_dict(summary_feedback.get("scores"))
         summary = summary_feedback.get("overallFeedback") or "UI test run completed"
+        screen_summaries = _as_list(summary_feedback.get("screenSummaries")) if not is_flow else []
         feedback = {
-            "feedback": {"overallFeedback": summary, "screenFeedbacks": screen_feedbacks},
+            "feedback": {
+                "overallFeedback": summary,
+                "screenFeedbacks": screen_feedbacks,
+                **({"screenSummaries": screen_summaries} if screen_summaries else {}),
+            },
             "pinComments": pin_comments,
             "flowAnalysis": flow_analysis,
             "screenInsights": [],
@@ -2571,6 +2636,8 @@ class PersonaService:
             "overallFeedback": feedback_payload.get("overallFeedback") or summary,
             "screenFeedbacks": screen_feedbacks,
         }
+        if screen_summaries:
+            feedback_payload["screenSummaries"] = screen_summaries
         return {
             "summary": summary,
             "persona_goal_fit": feedback.get("personaGoalFit") or feedback.get("persona_goal_fit"),
