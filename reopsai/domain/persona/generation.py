@@ -124,6 +124,130 @@ TELECOM_SCORE_DIMENSION_FIELDS = {
         "digitalAiOpenness.personalizationDataSharingScope",
     ),
 }
+
+TELECOM_DIMENSIONS_JSON_CONTRACT = """
+## OUTPUT CONTRACT (mandatory — parse errors if violated)
+Return exactly ONE JSON object. No markdown fences, no commentary, no extra top-level keys.
+
+Required top-level key: `telecom_behavior_dimensions` (snake_case). Do NOT use `telecomBehaviorDimensions`.
+
+Inside `telecom_behavior_dimensions`, use exactly these 5 group keys (camelCase) and 11 field keys — copy verbatim:
+- brandRetention.brandRetentionTendency
+- brandRetention.premiumInfraBenefitOrientation
+- optimizationResource.optimizationResourceInvestment
+- optimizationResource.paymentResistanceLine
+- informationControl.informationExplorationStyle
+- informationControl.problemSolvingAutonomy
+- digitalAiOpenness.aiProviderTrust
+- digitalAiOpenness.personalizationDataSharingScope
+- telecomLifeCharacteristics.householdDecisionLeadership
+- telecomLifeCharacteristics.productServiceUnderstanding
+- telecomLifeCharacteristics.telecomServiceUsageContext
+
+Rules:
+- Do NOT rename keys (no snake_case field names, no Korean keys, no flat root-level fields).
+- Do NOT omit any of the 11 fields.
+- Each field value must be a non-empty string (2-3 sentences).
+- Do NOT include scores or any keys outside this schema.
+
+Template:
+{
+  "telecom_behavior_dimensions": {
+    "brandRetention": {
+      "brandRetentionTendency": "<string>",
+      "premiumInfraBenefitOrientation": "<string>"
+    },
+    "optimizationResource": {
+      "optimizationResourceInvestment": "<string>",
+      "paymentResistanceLine": "<string>"
+    },
+    "informationControl": {
+      "informationExplorationStyle": "<string>",
+      "problemSolvingAutonomy": "<string>"
+    },
+    "digitalAiOpenness": {
+      "aiProviderTrust": "<string>",
+      "personalizationDataSharingScope": "<string>"
+    },
+    "telecomLifeCharacteristics": {
+      "householdDecisionLeadership": "<string>",
+      "productServiceUnderstanding": "<string>",
+      "telecomServiceUsageContext": "<string>"
+    }
+  }
+}
+""".strip()
+
+TELECOM_SCORES_JSON_CONTRACT = f"""
+## OUTPUT CONTRACT (mandatory — parse errors if violated)
+Return exactly ONE JSON object. No markdown fences, no commentary, no extra top-level keys.
+
+Required top-level key: `telecom_behavior_scores` (snake_case). Do NOT use `telecomBehaviorScores`.
+
+`telecom_behavior_scores` MUST be a JSON array of exactly 4 objects, in this fixed order:
+1. brandRetention
+2. optimizationResource
+3. informationControl
+4. digitalAiOpenness
+
+Each array item MUST include exactly these keys:
+- key (string, one of the four English keys above)
+- label (string, fixed Korean label from template below)
+- score (integer 1-5, NOT a string)
+- maxScore (integer 5)
+- rationale (string, at least 2 sentences in Korean)
+- evidence (array of 1-3 strings — NOT a single string)
+
+Fixed key / label pairs:
+- brandRetention → {TELECOM_SCORE_GROUPS["brandRetention"]}
+- optimizationResource → {TELECOM_SCORE_GROUPS["optimizationResource"]}
+- informationControl → {TELECOM_SCORE_GROUPS["informationControl"]}
+- digitalAiOpenness → {TELECOM_SCORE_GROUPS["digitalAiOpenness"]}
+
+Rules:
+- Do NOT add, remove, or reorder array items.
+- Do NOT use Korean or alternate values for `key`.
+- Do NOT wrap evidence as a string; use a JSON string array.
+- Output ONLY the JSON object below — no rubric text outside JSON.
+
+Template:
+{{
+  "telecom_behavior_scores": [
+    {{
+      "key": "brandRetention",
+      "label": "{TELECOM_SCORE_GROUPS["brandRetention"]}",
+      "score": 4,
+      "maxScore": 5,
+      "rationale": "<string>",
+      "evidence": ["<string>", "<string>"]
+    }},
+    {{
+      "key": "optimizationResource",
+      "label": "{TELECOM_SCORE_GROUPS["optimizationResource"]}",
+      "score": 2,
+      "maxScore": 5,
+      "rationale": "<string>",
+      "evidence": ["<string>"]
+    }},
+    {{
+      "key": "informationControl",
+      "label": "{TELECOM_SCORE_GROUPS["informationControl"]}",
+      "score": 3,
+      "maxScore": 5,
+      "rationale": "<string>",
+      "evidence": ["<string>"]
+    }},
+    {{
+      "key": "digitalAiOpenness",
+      "label": "{TELECOM_SCORE_GROUPS["digitalAiOpenness"]}",
+      "score": 1,
+      "maxScore": 5,
+      "rationale": "<string>",
+      "evidence": ["<string>"]
+    }}
+  ]
+}}
+""".strip()
 TELECOM_SCORE_RUBRIC_TEXT = """
 ## Scale meaning (read before scoring)
 
@@ -1673,6 +1797,8 @@ Paraphrase for the fixed persona; never copy participant names from chunks.
 STAGE: telecom_dimensions
 You are an expert telecom UX researcher.
 
+{TELECOM_DIMENSIONS_JSON_CONTRACT}
+
 ## Task
 Generate only the 11 telecom behavior dimension fields for a fixed persona. Do not generate scores.
 {evidence_section}
@@ -1683,39 +1809,12 @@ Generate only the 11 telecom behavior dimension fields for a fixed persona. Do n
 3. Make each field concrete and behavior-based; mention the persona by name where natural.
 4. Write 2-3 natural-language sentences per dimension field (not keywords).
 5. Make fields meaningfully distinct from each other.
-6. Generate all text in {target_language}.
-7. Respond with JSON only.{evidence_rules}
-
-## Output Format
-{{
-  "telecom_behavior_dimensions": {{
-    "brandRetention": {{
-      "brandRetentionTendency": "...",
-      "premiumInfraBenefitOrientation": "..."
-    }},
-    "optimizationResource": {{
-      "optimizationResourceInvestment": "...",
-      "paymentResistanceLine": "..."
-    }},
-    "informationControl": {{
-      "informationExplorationStyle": "...",
-      "problemSolvingAutonomy": "..."
-    }},
-    "digitalAiOpenness": {{
-      "aiProviderTrust": "...",
-      "personalizationDataSharingScope": "..."
-    }},
-    "telecomLifeCharacteristics": {{
-      "householdDecisionLeadership": "...",
-      "productServiceUnderstanding": "...",
-      "telecomServiceUsageContext": "..."
-    }}
-  }}
-}}
+6. Generate all dimension text in {target_language}.
+7. Respond with JSON only — follow OUTPUT CONTRACT exactly.{evidence_rules}
 
 {_telecom_context_tail(persona, payload, segment, seed)}
 
-Generate all 11 telecom behavior dimension fields. Keep the fixed persona unchanged.
+Generate all 11 fields. Keep the fixed persona unchanged. Output ONLY the JSON object from OUTPUT CONTRACT.
 """.strip()
 
 
@@ -1734,6 +1833,8 @@ def _telecom_scores_prompt(
 STAGE: telecom_scores
 You are an expert telecom UX researcher.
 
+{TELECOM_SCORES_JSON_CONTRACT}
+
 ## Task
 Assign an integer score (1-5) to each of the four telecom behavior groups using the rubric and dimension texts below.
 Do not rescore or rewrite dimension narratives.
@@ -1750,45 +1851,7 @@ Do not rescore or rewrite dimension narratives.
 4. rationale (2+ sentences in {target_language}): neutral description of this tendency level; cite dimension phrases; no moral wording.
 5. evidence: 1-3 short strings from dimension fields for that group.
 6. Groups are independent axes — different scores are normal; identical 4–4–4–4 is suspicious unless dimensions truly match.
-7. Respond with JSON only.
-
-## Output Format
-{{
-  "telecom_behavior_scores": [
-    {{
-      "key": "brandRetention",
-      "label": "{TELECOM_SCORE_GROUPS["brandRetention"]}",
-      "score": 4,
-      "maxScore": 5,
-      "rationale": "...",
-      "evidence": ["..."]
-    }},
-    {{
-      "key": "optimizationResource",
-      "label": "{TELECOM_SCORE_GROUPS["optimizationResource"]}",
-      "score": 2,
-      "maxScore": 5,
-      "rationale": "...",
-      "evidence": ["..."]
-    }},
-    {{
-      "key": "informationControl",
-      "label": "{TELECOM_SCORE_GROUPS["informationControl"]}",
-      "score": 3,
-      "maxScore": 5,
-      "rationale": "...",
-      "evidence": ["..."]
-    }},
-    {{
-      "key": "digitalAiOpenness",
-      "label": "{TELECOM_SCORE_GROUPS["digitalAiOpenness"]}",
-      "score": 5,
-      "maxScore": 5,
-      "rationale": "...",
-      "evidence": ["..."]
-    }}
-  ]
-}}
+7. Respond with JSON only — follow OUTPUT CONTRACT exactly.
 
 ## Fixed Persona
 {_telecom_fixed_persona_json(persona)}
@@ -1803,7 +1866,7 @@ Do not rescore or rewrite dimension narratives.
 ## Service Context
 {_service_context(payload)}
 
-Generate exactly four score objects with keys: brandRetention, optimizationResource, informationControl, digitalAiOpenness.
+Generate exactly four score objects. Output ONLY the JSON object from OUTPUT CONTRACT.
 """.strip()
 
 
