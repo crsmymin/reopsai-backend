@@ -69,9 +69,11 @@ def _single_screen_summary_guidance(persona_name):
         [
             "[단일 화면 상단 퍼소나 피드백 작성 방식]",
             "- 이 영역은 개별 발화가 아니라, 이미 생성된 하단 코멘트와 위치 기반 코멘트를 취합한 요약 리포트입니다.",
-            f"- 반드시 '{persona_name}님은 ... 평가했습니다'처럼 3인칭 요약 문장으로 작성하세요.",
+            f"- 3인칭 요약 보고체로 작성하세요. 첫 문장은 '{persona_name}님은 ...' 또는 '{persona_name}님은 화면N에서 ...'처럼 시작하면 됩니다.",
             "- '저는', '제가', '좋겠어요', '아쉬워요' 같은 1인칭 발화체를 쓰지 마세요.",
+            "- 문장마다 '평가했습니다'를 반복하지 말고, '또한', '반면', '전체적으로' 등으로 긍정·부정·종합 인상을 하나의 단락처럼 이어 쓰세요.",
             "- 긍정/부정 의견을 모두 확인해, 부정 평가 근거와 긍정 평가 근거를 균형 있게 정리하세요.",
+            "- 상단 요약은 3~4문장으로 작성하세요.",
             "- 하단 코멘트에 없는 새로운 경험, 선호, 가족관계, 직업, 사용 맥락을 만들지 마세요.",
             "- 문장은 해요체가 아니라 요약 보고에 자연스러운 했습니다체로 작성하세요.",
         ]
@@ -384,7 +386,13 @@ def build_ui_summary_prompt(
             None if is_flow else _evaluation_criteria(False),
             "overallFeedback와 flowSummary는 각각 3~5문장으로 작성하세요. 단, 단계별 코멘트를 합치거나 첫 번째/두 번째/마지막 단계 순서로 나열하지 말고 전체 플로우에 대한 하나의 총평으로 써야 합니다."
             if is_flow
-            else "overallFeedback는 3~5문장으로 작성하세요.",
+            else "overallFeedback와 screenSummaries의 summary는 각각 3~4문장으로 작성하세요.",
+            "화면 수만큼 screenSummaries 항목을 하나씩 생성하고, summary는 해당 화면 pinComments를 우선 근거로 3인칭 요약하세요."
+            if not is_flow
+            else None,
+            "screenSummaries의 summary는 화면마다 하나의 흐름 있는 단락으로 쓰세요. 문장마다 '평가했습니다'를 반복하지 말고, 첫 문장만 퍼소나명으로 시작한 뒤 '또한/반면/전체적으로'로 이어가세요."
+            if not is_flow
+            else None,
             "overallFeedback는 반드시 '저는' 또는 '제가'가 자연스럽게 포함된 1인칭 task 수행 총평으로 작성하세요."
             if is_flow
             else f"overallFeedback는 반드시 '{persona_name}님은'으로 시작하는 3인칭 요약 리포트 문장으로 작성하세요.",
@@ -394,7 +402,7 @@ def build_ui_summary_prompt(
             "반환 JSON 구조:",
             '{"overallFeedback":"string","flowSummary":"string"}'
             if is_flow
-            else '{"overallFeedback":"string"}',
+            else '{"overallFeedback":"string","screenSummaries":[{"screenIndex":0,"summary":"string"}]}',
             "",
             f"테스트명: {test_name}",
             f"테스트 설명: {test_description}" if test_description else None,
@@ -509,6 +517,9 @@ def build_ui_scoring_prompt(*, test_name, test_description, scope_type, persona_
             "- Flow 평가 metric: 혼란도(직관성, 인지 용이성, 맥락 관계성), 이탈 위험(행동 유도성, 관심/동기 적합성), 효율성(입력 부담, 클릭/탐색 동선, 필수 조작 가능성, 완료 조건 명확성)"
             if is_flow
             else "- 화면 평가 metric: 명확성(직관성, 인지 용이성), 사용성(유용성, 유연성, 행동 유도성), 만족도(디자인 매력도, 서비스 신뢰도)",
+            "- Flow 평가에서는 testType=flow만 사용하고, 명확성/사용성/만족도 metric은 절대 쓰지 마세요."
+            if is_flow
+            else "- 화면 평가에서는 testType=screen만 사용하고, 혼란도/이탈 위험/효율성 metric은 절대 쓰지 마세요.",
             "- 이탈 위험은 사용성 마찰뿐 아니라, 혜택/가치/필요성이 와닿지 않아 계속 진행할 동기가 떨어지는 코멘트도 포함하세요.",
             "- Flow 평가에서 positive 이벤트는 일반적인 칭찬이 아니라, 혼란도/이탈 위험을 낮추거나 효율성을 높이는 명확한 진행 지원 근거가 있을 때만 사용하세요."
             if is_flow
@@ -525,10 +536,13 @@ def build_ui_scoring_prompt(*, test_name, test_description, scope_type, persona_
             "- personaRelevance는 해당 코멘트가 퍼소나의 성향, 관심사, 기존 경험, 불안, 선택 기준에서 직접 추론될수록 4~5로 두고, 일반 사용성 관찰이면 1~2로 두세요."
             if is_flow
             else None,
-            "- Flow의 효율성 metric은 입력 부담, 클릭/탐색 동선, 필수 조작 가능성, 완료 조건 명확성처럼 물리적·절차적 수행 가능성에 직접 연결된 근거가 있을 때만 매핑하세요."
+            "- Flow metric 분리: 헷갈림·맥락 파악 어려움→혼란도, 계속할 동기·신뢰·가치 저하→이탈 위험, 클릭·탐색·입력·단계 수·완료 조건 부담→효율성."
             if is_flow
             else None,
-            "- 단순히 헷갈리는 상태는 혼란도, 계속할 이유나 신뢰가 약해지는 상태는 이탈 위험으로 매핑하고, 동선/입력/조작 부담 근거가 별도로 없으면 효율성에 중복 매핑하지 마세요."
+            "- '눌러보다/하나씩 확인/스크롤·탐색/단계가 많다'처럼 수행 부담이 드러나면 효율성 매핑을 검토하세요. 혼란·이탈과 다른 축의 근거면 secondary로 함께 매핑해도 됩니다."
+            if is_flow
+            else None,
+            "- 같은 UI 문제의 같은 측면을 두 metric에 중복 매핑하지 마세요. 측면이 다르면 primary 1개와 secondary 1~2개로 나누세요."
             if is_flow
             else None,
             "",
@@ -555,7 +569,9 @@ def build_ui_scoring_prompt(*, test_name, test_description, scope_type, persona_
             evidence_context,
             "",
             "[반환 JSON]",
-            '{"keyElements":[{"name":"string","importance":1.5,"relatedMetrics":["명확성"],"reason":"string"}],"analysisEvents":[{"testType":"screen","metric":"명확성","subMetric":"직관성","targetElement":"string","matchedKeyElement":null,"polarity":"negative","severity":3,"elementImportance":1.0,"personaRelevance":3,"confidence":0.8,"mappingRole":"primary","impactMultiplier":1.0,"screenIndex":0,"stepIndex":null,"reason":"string","sourceComment":"string"}]}',
+            '{"keyElements":[{"name":"string","importance":1.5,"relatedMetrics":["혼란도"],"reason":"string"}],"analysisEvents":[{"testType":"flow","metric":"혼란도","subMetric":"직관성","targetElement":"string","matchedKeyElement":null,"polarity":"negative","severity":3,"elementImportance":1.0,"personaRelevance":3,"confidence":0.8,"mappingRole":"primary","impactMultiplier":1.0,"screenIndex":0,"stepIndex":0,"reason":"string","sourceComment":"string"}]}'
+            if is_flow
+            else '{"keyElements":[{"name":"string","importance":1.5,"relatedMetrics":["명확성"],"reason":"string"}],"analysisEvents":[{"testType":"screen","metric":"명확성","subMetric":"직관성","targetElement":"string","matchedKeyElement":null,"polarity":"negative","severity":3,"elementImportance":1.0,"personaRelevance":3,"confidence":0.8,"mappingRole":"primary","impactMultiplier":1.0,"screenIndex":0,"stepIndex":null,"reason":"string","sourceComment":"string"}]}',
         ]
         if part
     )
