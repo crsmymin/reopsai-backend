@@ -5,7 +5,15 @@ import threading
 import time
 from types import SimpleNamespace
 
-from reopsai.application.persona_service import PersonaService
+from reopsai.application.persona_service import (
+    PersonaService,
+    _apply_structured_flow_analysis_scores,
+    _apply_structured_scoring,
+    _aggregate_flow_step_risk,
+    _normalize_ui_scoring_analysis,
+    _score_flow_completion_from_flow_analysis,
+    _score_flow_completion_metric,
+)
 from reopsai.infrastructure.persona_capture import PersonaCapture, normalize_capture_url
 
 
@@ -1158,13 +1166,13 @@ def test_interview_questions_use_default_model_and_request_override():
 def test_interview_pack_cache_hit_reuses_cached_pack_without_llm_call():
     persona = _persona_record()
     service = _service()
-    model = "gemini-2.5-pro"
-    source_text = service._persona_interview_source(object(), company_id=100, persona=persona)
+    model = service._default_model_for_stage("persona_interview_pack")
+    source_text = service._persona_interview_source(object(), company_id=100, persona=persona, include_activities=False)
     cached_pack = {"identity": {"name": "cached"}, "source_persona_id": "20"}
     persona.interview_pack = cached_pack
     persona.interview_pack_source_hash = service._pack_source_hash(persona_text=source_text, model=model)
     persona.interview_pack_model = model
-    persona.interview_pack_version = "persona_interview_pack_v1"
+    persona.interview_pack_version = "persona_interview_pack_v2"
     adapter = FakeLlmAdapter()
 
     pack = _service(llm_adapter=adapter)._get_or_create_persona_interview_pack(
@@ -1177,6 +1185,30 @@ def test_interview_pack_cache_hit_reuses_cached_pack_without_llm_call():
 
     assert pack == cached_pack
     assert not any("인터뷰 응답에 적합한 메모리로 정제" in prompt for prompt in adapter.prompts)
+
+
+def test_interview_pack_cache_ignores_activity_history():
+    persona = _persona_record()
+    service = _service()
+    model = service._default_model_for_stage("persona_interview_pack")
+    profile_text = service._persona_interview_source(object(), company_id=100, persona=persona, include_activities=False)
+    cached_pack = {"identity": {"name": "cached"}, "source_persona_id": "20"}
+    persona.interview_pack = cached_pack
+    persona.interview_pack_source_hash = service._pack_source_hash(persona_text=profile_text, model=model)
+    persona.interview_pack_model = model
+    persona.interview_pack_version = "persona_interview_pack_v2"
+    adapter = FakeLlmAdapter()
+
+    pack = service._get_or_create_persona_interview_pack(
+        object(),
+        company_id=100,
+        user_id=10,
+        persona=persona,
+        model=model,
+    )
+
+    assert pack == cached_pack
+    assert not adapter.prompts
 
 
 def test_interview_run_records_failed_persona_without_failing_request():
@@ -1277,6 +1309,147 @@ def test_interview_run_does_not_replace_malformed_response_with_generic_answers(
     assert result.data["data"]["results"][0]["turns"] == []
     assert "2회 재시도했지만 실패했습니다" in result.data["data"]["results"][0]["errorMessage"]
     assert "제 상황에서는 근거와 다음 행동" not in json.dumps(result.data, ensure_ascii=False)
+
+
+def _flow_scoring_event(screen_index, metric="혼란도", polarity="negative", severity=4):
+    return {
+        "testType": "flow",
+        "metric": metric,
+        "subMetric": "직관성",
+        "targetElement": "CTA",
+        "matchedKeyElement": None,
+        "polarity": polarity,
+        "severity": severity,
+        "elementImportance": 1.0,
+        "personaRelevance": 4,
+        "confidence": 0.85,
+        "mappingRole": "primary",
+        "impactMultiplier": 1.0,
+        "screenIndex": screen_index,
+        "stepIndex": screen_index,
+        "reason": "test",
+        "sourceComment": "test comment",
+    }
+
+
+def test_normalize_ui_scoring_analysis_separates_flow_and_screen_metrics():
+    flow_payload = {
+        "analysisEvents": [
+            {
+                "testType": "screen",
+                "metric": "명확성",
+                "subMetric": "직관성",
+                "targetElement": "CTA",
+                "polarity": "negative",
+                "severity": 3,
+                "elementImportance": 1.0,
+                "personaRelevance": 3,
+                "confidence": 0.8,
+                "mappingRole": "primary",
+                "impactMultiplier": 1.0,
+                "screenIndex": 0,
+                "stepIndex": 0,
+                "reason": "ignored",
+                "sourceComment": "screen comment",
+            },
+            {
+                "testType": "flow",
+                "metric": "혼란도",
+                "subMetric": "직관성",
+                "targetElement": "CTA",
+                "polarity": "negative",
+                "severity": 4,
+                "elementImportance": 1.0,
+                "personaRelevance": 4,
+                "confidence": 0.85,
+                "mappingRole": "primary",
+                "impactMultiplier": 1.0,
+                "screenIndex": 0,
+                "stepIndex": 0,
+                "reason": "kept",
+                "sourceComment": "flow comment",
+            },
+        ]
+    }
+    flow_events = _normalize_ui_scoring_analysis(flow_payload, is_flow_test=True)["analysisEvents"]
+    assert len(flow_events) == 1
+    assert flow_events[0]["testType"] == "flow"
+    assert flow_events[0]["metric"] == "혼란도"
+
+    screen_payload = {
+        "analysisEvents": [
+            {
+                "testType": "flow",
+                "metric": "혼란도",
+                "subMetric": "직관성",
+                "targetElement": "CTA",
+                "polarity": "negative",
+                "severity": 4,
+                "elementImportance": 1.0,
+                "personaRelevance": 4,
+                "confidence": 0.85,
+                "mappingRole": "primary",
+                "impactMultiplier": 1.0,
+                "screenIndex": 0,
+                "stepIndex": 0,
+                "reason": "ignored",
+                "sourceComment": "flow comment",
+            },
+            {
+                "testType": "screen",
+                "metric": "명확성",
+                "subMetric": "직관성",
+                "targetElement": "CTA",
+                "polarity": "negative",
+                "severity": 3,
+                "elementImportance": 1.0,
+                "personaRelevance": 3,
+                "confidence": 0.8,
+                "mappingRole": "primary",
+                "impactMultiplier": 1.0,
+                "screenIndex": 0,
+                "stepIndex": None,
+                "reason": "kept",
+                "sourceComment": "screen comment",
+            },
+        ]
+    }
+    screen_events = _normalize_ui_scoring_analysis(screen_payload, is_flow_test=False)["analysisEvents"]
+    assert len(screen_events) == 1
+    assert screen_events[0]["testType"] == "screen"
+    assert screen_events[0]["metric"] == "명확성"
+
+
+def test_flow_completion_score_uses_structured_flow_analysis_steps():
+    screens = [{"id": "screen-1", "name": "A"}, {"id": "screen-2", "name": "B"}]
+    events = [_flow_scoring_event(0, severity=4)]
+    flow_analysis = _service()._normalize_ui_flow_analysis(
+        feedback={"flowAnalysis": [{"screenIndex": 0, "confusionScore": 10, "dropoffRisk": 10}]},
+        screens=screens,
+        is_flow=True,
+    )
+    flow_analysis = _apply_structured_flow_analysis_scores(flow_analysis=flow_analysis, analysis_events=events)
+
+    legacy_score = _score_flow_completion_metric(events, total_step_count=2)
+    unified_score = _score_flow_completion_from_flow_analysis(flow_analysis, events, total_step_count=2)
+    structured = _apply_structured_scoring(
+        fallback_scores={"clarity": 70, "usability": 70, "appeal": 65, "overall": 68, "overallFlowScore": None},
+        analysis_events=events,
+        is_flow_test=True,
+        flow_step_count=2,
+        flow_analysis=flow_analysis,
+    )
+
+    assert legacy_score != unified_score
+    assert structured["overallFlowScore"] == unified_score
+    assert flow_analysis[1]["confusionScore"] == 35
+    assert flow_analysis[1]["dropoffRisk"] == 30
+
+    card_confusion = _aggregate_flow_step_risk([item["confusionScore"] for item in flow_analysis])
+    card_dropoff = _aggregate_flow_step_risk([item["dropoffRisk"] for item in flow_analysis])
+    failure_risk = card_confusion * 0.45 + card_dropoff * 0.55
+    risk_ceiling = max(0, min(99 if failure_risk > 0 else 100, 100 - failure_risk * 0.65))
+    assert unified_score <= risk_ceiling
 
 
 def test_detail_payloads_embed_results_and_original_camel_case_aliases():
