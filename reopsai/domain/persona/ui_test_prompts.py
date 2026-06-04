@@ -101,7 +101,8 @@ def _evaluation_criteria(is_flow_test):
             "- 명확성은 직관성(입력 정보, 버튼 기능, 콘텐츠 내용을 이해하기 쉬운가)과 인지 용이성(현재 상태가 즉각적으로 명확한가)을 기준으로 평가하세요.",
             "- 사용성은 유용성(실제 니즈와 task 완료에 필요한 정보/기능을 제공하는가), 유연성(초보자/숙련자와 다양한 환경에 대응하는가), 행동 유도성(다음 액션을 취하고 싶게 만드는가)을 기준으로 평가하세요.",
             "- 디자인 만족도는 UI, 컬러, 콘텐츠 이미지가 이 퍼소나에게 얼마나 매력적으로 느껴지는지를 기준으로 평가하세요.",
-            "- 서비스 신뢰도는 개인정보 침해, 사기, 데이터 유출 위험 없이 서비스 제공사를 신뢰할 수 있게 보이는지를 기준으로 평가하되, 별도 점수 필드가 없으므로 feedback과 pinComments에 반영하세요.",
+            "- 서비스 신뢰도는 개인정보 침해, 사기, 데이터 유출 위험 없이 서비스 제공사를 신뢰할 수 있게 보이는지를 기준으로 평가하세요.",
+            "- 디자인 만족도와 서비스 신뢰도는 이후 scoring 단계의 만족도 metric(디자인 매력도/서비스 신뢰도 subMetric)으로 집계되므로, pinComments에 매력·신뢰·브랜드·칭찬 근거를 분명히 남기세요.",
             "- 단일 화면은 현재 화면 안에서 정보 구조, 기능 이해, 다음 액션 유도, 신뢰 단서를 중심으로 평가하세요.",
         ]
     )
@@ -484,6 +485,22 @@ def build_ui_scoring_evidence_context(*, screens, screen_feedbacks, pin_comments
     )
 
 
+UI_SCORING_SEVERITY_RUBRIC = """[영향 강도(severity) 기준 — polarity와 독립, 1~5 전 구간을 적극 사용]
+[긍정 강도 — polarity=positive]
+- 1 (미온적 만족 / 사소한 가점): 과업 수행에 영향 없이 시각적 정돈·문구 깔끔함 등 주관적 호감. (예: "디자인 테마가 전반적으로 정돈되어 있어 보기 편합니다.")
+- 2 (선택적 만족 / 일반 가점): 특정 UI·부가 정보 배치가 적절해 유용함을 인지. (예: "상세 유의사항 텍스트가 적절한 위치에 있어서 쉽게 이해했습니다.")
+- 3 (명확한 긍정 / 주요 가점): 마찰 없이 다음 행동이 유도되거나 시스템 피드백을 즉각 인지. (예: "다음 버튼이 바로 눈에 띄어 헤매지 않고 자연스럽게 눌렀습니다.")
+- 4 (높은 유용성 / 핵심 가점): 가입·구매 판단 단서를 얻거나 퍼소나 니즈·불안(보안, 개인정보 등)을 효과적으로 해소. (예: "요금제 가격 비교표가 명확하여 나에게 딱 맞는 상품임을 확신하고 선택했습니다.")
+- 5 (극도의 만족 / 최상위 가점): 최종 과업 성공 동기를 부여하거나 마찰 없는 완결성으로 강한 신뢰·매력. (예: "인증부터 신청까지 한 번의 막힘도 없이 물 흐르듯 가입이 완료되어 매우 만족스럽습니다.")
+[부정 강도 — polarity=negative]
+- 1 (미온적 아쉬움 / 단순 개선): 과업 수행에 지장 없는 선호 차이·미세한 시각적 아쉬움. (예: "폰트 굵기가 조금 더 진하면 가독성이 더 좋을 것 같습니다.")
+- 2 (경미한 마찰 / 약한 부정): 동선은 유지되나 주의력 분산·약한 시각·인지 노이즈. (예: "보조 안내 문구가 다소 장황하여 핵심 정보를 읽을 때 시선이 조금 분산됩니다.")
+- 3 (인지적 장벽 / 중간 부정): 피드백 불명확·순간 혼란으로 행동 주저·다음 단계 망설임. (예: "다음 버튼 안내 레이블이 약해서 누르기 전에 잠깐 망설였습니다.")
+- 4 (기능적 방해 / 높은 위험): 주요 UI 시인성 부족·필수 의사결정 정보 결핍으로 동선 상실·이탈 고민. (예: "요금제 혜택 조건이 가려져 있어 가입을 그냥 그만둘까 고민했습니다.")
+- 5 (치명적 장벽 / 과업 실패): 핵심 CTA 인지 불가·시스템 오작동 등으로 여정 차단·과업 실패. (예: "어디를 눌러야 최종 신청이 되는지 전혀 알 수 없어 결국 진행을 멈췄습니다.")
+- 2~3에 몰리지 말고, 코멘트 강도에 맞는 단계를 골라 severity를 벌려 쓰세요."""
+
+
 def build_ui_scoring_prompt(*, test_name, test_description, scope_type, persona_context, screens, screen_feedbacks, pin_comments, flow_analysis):
     is_flow = scope_type == "flow" and len(screens) > 1
     evidence_context = build_ui_scoring_evidence_context(
@@ -520,11 +537,32 @@ def build_ui_scoring_prompt(*, test_name, test_description, scope_type, persona_
             "- Flow 평가에서는 testType=flow만 사용하고, 명확성/사용성/만족도 metric은 절대 쓰지 마세요."
             if is_flow
             else "- 화면 평가에서는 testType=screen만 사용하고, 혼란도/이탈 위험/효율성 metric은 절대 쓰지 마세요.",
+            "- 화면 metric 분리: 이해·헷갈림·정보 구조→명확성, task 완료·행동 유도·유용함→사용성, 시각적 매력·브랜드·칭찬·신뢰·안심/불안→만족도."
+            if not is_flow
+            else None,
+            "- 만족도 subMetric: UI/컬러/이미지/톤 매력→디자인 매력도, 개인정보·사기·추천/AI·요금·약관·브랜드 신뢰→서비스 신뢰도."
+            if not is_flow
+            else None,
+            "- 칭찬(praise)이나 '좋다/눈에 띈다/신뢰된다'류 코멘트도 만족도 매핑 후보입니다. 이해·사용성이 primary여도, 매력·신뢰 측면이 있으면 만족도를 secondary(impactMultiplier=0.6)로 함께 매핑하세요."
+            if not is_flow
+            else None,
+            "- 같은 화면의 같은 문제라도 퍼소나 프로필에 근거한 민감도가 다르면 severity를 다르게 산정하세요. 예: 개인정보 경계가 큰 퍼소나는 동의/인증 불명확성에 더 민감하고, 가격 비교 성향이 큰 퍼소나는 혜택/요금 정보 부족에 더 민감합니다."
+            if not is_flow
+            else None,
+            "- personaRelevance는 해당 코멘트가 퍼소나의 성향, 관심사, 기존 경험, 불안, 선택 기준에서 직접 추론될수록 4~5로 두고, 일반 사용성 관찰이면 1~2로 두세요."
+            if not is_flow
+            else None,
+            "- 단, 차이를 만들기 위한 임의 가정은 금지합니다. sourceComment에 드러난 퍼소나 근거 또는 persona pack의 명시 정보와 연결될 때만 severity/personaRelevance를 높이세요."
+            if not is_flow
+            else None,
+            "- 같은 코멘트에서 이해/사용/매력·신뢰 측면이 겹치면 primary 1개 + secondary 1~2개로 나누세요. 같은 측면을 두 metric에 중복 매핑하지 마세요."
+            if not is_flow
+            else None,
             "- 이탈 위험은 사용성 마찰뿐 아니라, 혜택/가치/필요성이 와닿지 않아 계속 진행할 동기가 떨어지는 코멘트도 포함하세요.",
             "- Flow 평가에서 positive 이벤트는 일반적인 칭찬이 아니라, 혼란도/이탈 위험을 낮추거나 효율성을 높이는 명확한 진행 지원 근거가 있을 때만 사용하세요."
             if is_flow
             else None,
-            "- 이탈 위험 severity는 퍼소나 렌즈로 적극적으로 벌려 쓰세요. 단순 불편/취향은 1~2, 퍼소나의 관심사·숙련도·기존 경험 때문에 계속 진행할 이유가 약해지는 경우는 3, 가격/혜택/신뢰/개인정보/시간 부담이 퍼소나의 핵심 기준과 충돌해 중단을 고민하면 4, 대체 서비스 탐색이나 진행 포기에 가까우면 5입니다."
+            "- 이탈 위험 metric은 '계속할 동기·신뢰·가치' 충돌 렌즈로 아래 severity 기준을 적용하세요. 단순 불편/취향은 1~2, 진행 동기 약화는 3, 중단 고민은 4, 진행 포기·대체 탐색은 5입니다."
             if is_flow
             else None,
             "- 같은 화면의 같은 문제라도 퍼소나 프로필에 근거한 민감도가 다르면 severity를 다르게 산정하세요. 예: 개인정보 경계가 큰 퍼소나는 동의/인증 불명확성에 더 민감하고, 가격 비교 성향이 큰 퍼소나는 혜택/요금 정보 부족에 더 민감합니다."
@@ -546,6 +584,8 @@ def build_ui_scoring_prompt(*, test_name, test_description, scope_type, persona_
             if is_flow
             else None,
             "",
+            UI_SCORING_SEVERITY_RUBRIC,
+            "",
             "[구조화 규칙]",
             "- keyElements는 조사 목적과 화면 목록을 바탕으로 중요한 UI/UX 요소를 3~8개 추출하세요.",
             "- polarity는 positive 또는 negative만 사용하세요.",
@@ -555,7 +595,6 @@ def build_ui_scoring_prompt(*, test_name, test_description, scope_type, persona_
             "- secondary metric은 최대 2개까지 두고 impactMultiplier=0.6으로 둡니다.",
             "- 모든 pinComments.content는 최소 1개의 analysisEvent로 매핑하세요. 칭찬 코멘트도 중요한 핵심 요소라면 높은 severity/elementImportance를 줄 수 있습니다.",
             "- severity는 1~5, elementImportance는 0.5~1.5, personaRelevance는 1~5, confidence는 0~1입니다.",
-            "- severity는 코멘트 강도에 따라 범위를 적극적으로 쓰세요. 사소한 표현 선호는 1~2, 행동 중단/신뢰 저하/목표 실패 가능성은 4~5입니다.",
             "- personaRelevance는 일반 사용성 코멘트면 1~2, 퍼소나의 직업/경험/니즈/불안/선택 기준과 직접 연결되면 4~5로 두세요.",
             "- elementImportance는 테스트 목적과 task 성공에 직접 연결되는 핵심 요소면 1.2~1.5, 보조 장식/문구 수준이면 0.5~0.9로 두세요.",
             "- 주요 요소와 매칭되면 matchedKeyElement에 이름을 넣고 그 importance를 우선 사용하세요.",
@@ -571,7 +610,7 @@ def build_ui_scoring_prompt(*, test_name, test_description, scope_type, persona_
             "[반환 JSON]",
             '{"keyElements":[{"name":"string","importance":1.5,"relatedMetrics":["혼란도"],"reason":"string"}],"analysisEvents":[{"testType":"flow","metric":"혼란도","subMetric":"직관성","targetElement":"string","matchedKeyElement":null,"polarity":"negative","severity":3,"elementImportance":1.0,"personaRelevance":3,"confidence":0.8,"mappingRole":"primary","impactMultiplier":1.0,"screenIndex":0,"stepIndex":0,"reason":"string","sourceComment":"string"}]}'
             if is_flow
-            else '{"keyElements":[{"name":"string","importance":1.5,"relatedMetrics":["명확성"],"reason":"string"}],"analysisEvents":[{"testType":"screen","metric":"명확성","subMetric":"직관성","targetElement":"string","matchedKeyElement":null,"polarity":"negative","severity":3,"elementImportance":1.0,"personaRelevance":3,"confidence":0.8,"mappingRole":"primary","impactMultiplier":1.0,"screenIndex":0,"stepIndex":null,"reason":"string","sourceComment":"string"}]}',
+            else '{"keyElements":[{"name":"string","importance":1.5,"relatedMetrics":["명확성","만족도"],"reason":"string"}],"analysisEvents":[{"testType":"screen","metric":"명확성","subMetric":"직관성","targetElement":"string","matchedKeyElement":null,"polarity":"positive","severity":2,"elementImportance":1.0,"personaRelevance":2,"confidence":0.8,"mappingRole":"primary","impactMultiplier":1.0,"screenIndex":0,"stepIndex":null,"reason":"string","sourceComment":"string"},{"testType":"screen","metric":"만족도","subMetric":"디자인 매력도","targetElement":"string","matchedKeyElement":null,"polarity":"positive","severity":2,"elementImportance":0.8,"personaRelevance":2,"confidence":0.75,"mappingRole":"secondary","impactMultiplier":0.6,"screenIndex":0,"stepIndex":null,"reason":"string","sourceComment":"string"}]}',
         ]
         if part
     )

@@ -9,7 +9,9 @@ from reopsai.application.persona_service import (
     PersonaService,
     _apply_structured_flow_analysis_scores,
     _apply_structured_scoring,
+    _apply_structured_screen_scores,
     _aggregate_flow_step_risk,
+    _get_comment_score,
     _normalize_ui_scoring_analysis,
     _score_flow_completion_from_flow_analysis,
     _score_flow_completion_metric,
@@ -1492,3 +1494,43 @@ def test_detail_payloads_embed_results_and_original_camel_case_aliases():
     assert interview["questionSet"]["tasks"][0]["questions"][0] == "무엇을 확인하나요?"
     assert interview["results"][0]["interviewId"] == 3
     assert interview["results"][0]["error"] is None
+
+
+def test_comment_score_uses_severity_only_per_design_doc():
+    assert _get_comment_score(
+        {
+            "testType": "screen",
+            "metric": "명확성",
+            "polarity": "positive",
+            "severity": 2,
+        }
+    ) == 74
+    assert _get_comment_score(
+        {
+            "testType": "screen",
+            "metric": "명확성",
+            "polarity": "negative",
+            "severity": 3,
+        }
+    ) == 26
+
+
+def test_apply_structured_screen_scores_uses_events_or_ai_base():
+    events = [
+        {
+            "testType": "screen",
+            "metric": "만족도",
+            "polarity": "positive",
+            "severity": 3,
+            "elementImportance": 1.0,
+            "personaRelevance": 3,
+            "confidence": 0.8,
+            "impactMultiplier": 1.0,
+            "screenIndex": 0,
+        }
+    ]
+    screen_scores = [{"screenIndex": 0, "clarity": 72, "usability": 68, "appeal": 78}]
+    updated = _apply_structured_screen_scores(screen_scores=screen_scores, analysis_events=events)
+    assert updated[0]["clarity"] == 72
+    assert updated[0]["usability"] == 68
+    assert updated[0]["appeal"] == 86
