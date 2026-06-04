@@ -121,7 +121,11 @@ class PersonaFigmaClient:
         except Exception as exc:
             raise PersonaFigmaClientError("figma_error", str(exc), 502) from exc
 
-        return response.json()
+        payload = response.json()
+        role = str(payload.get("role") or "").strip().lower()
+        if role and role != "owner":
+            raise PersonaFigmaClientError("figma_permission", "해당 링크의 파일 권한을 확인해주세요", 403)
+        return payload
 
     def fetch_node_images(self, *, file_key: str, node_ids: list[str], access_token: str, scale: int = 2, image_format: str = "png") -> dict:
         if not node_ids:

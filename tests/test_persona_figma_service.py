@@ -1,7 +1,10 @@
 from contextlib import contextmanager
+import sys
 from types import SimpleNamespace
 
-from reopsai.infrastructure.persona_figma_client import PersonaFigmaClientError
+import pytest
+
+from reopsai.infrastructure.persona_figma_client import PersonaFigmaClient, PersonaFigmaClientError
 
 from reopsai.application.persona_service import PersonaService
 
@@ -260,7 +263,48 @@ def test_sync_figma_file_requires_prototype_flow():
 
     assert result.status == "missing_flow"
     assert result.status_code == 400
-    assert result.error == "파일 내 프로토 타입 Flow가 연결되어 있는지 확인해주세요."
+    assert result.error == "파일 내 프로토타입 Flow가 연결되어 있는지 확인해주세요."
+
+
+def test_sync_figma_file_propagates_figma_permission_error():
+    FakeRepository.upserted_files = []
+    service = PersonaService(repository=FakeRepository, session_factory=fake_session_factory, figma_client=FakeFigmaClient)
+
+    result = service.sync_figma_file(
+        company_id=100,
+        user_id=10,
+        data={"figma_file_key": "forbidden", "figma_file_name": "Forbidden", "figma_file_link": "https://figma.com/design/forbidden/a"},
+    )
+
+    assert result.status == "figma_permission"
+    assert result.status_code == 403
+    assert result.error == "해당 링크의 파일 권한을 확인해주세요"
+
+
+def test_figma_client_requires_owner_role(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"name": "Shared file", "role": "viewer", "document": {"children": []}}
+
+    def fake_get(*args, **kwargs):
+        return FakeResponse()
+
+    monkeypatch.setitem(sys.modules, "requests", SimpleNamespace(get=fake_get))
+    client = PersonaFigmaClient()
+
+    with pytest.raises(PersonaFigmaClientError) as exc_info:
+        client.fetch_file(file_key="file-a", access_token="access-token")
+
+    assert exc_info.value.code == "figma_permission"
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.message == "해당 링크의 파일 권한을 확인해주세요"
 
 
 def test_refresh_figma_file_refetches_file_and_replaces_flows():

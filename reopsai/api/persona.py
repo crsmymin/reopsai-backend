@@ -19,6 +19,8 @@ def _json_body():
 
 def _response(result: PersonaServiceResult):
     body = {"success": result.status == "ok"}
+    if result.status != "ok":
+        body["status"] = result.status
     if result.data:
         body.update(result.data)
     if result.error:
