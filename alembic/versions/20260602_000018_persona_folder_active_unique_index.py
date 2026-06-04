@@ -1,7 +1,7 @@
 """use active-only unique index for persona folder names
 
-Revision ID: 20260602_000016
-Revises: 20260601_000015
+Revision ID: 20260602_000018
+Revises: 20260602_000017
 Create Date: 2026-06-02
 """
 
@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260602_000016"
-down_revision = "20260601_000015"
+revision = "20260602_000018"
+down_revision = "20260602_000017"
 branch_labels = None
 depends_on = None
 
