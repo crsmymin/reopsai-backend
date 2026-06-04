@@ -14,6 +14,8 @@ import os
 from types import SimpleNamespace
 from typing import Any, Mapping, Optional
 
+from sqlalchemy.exc import IntegrityError
+
 from reopsai.domain.persona.generation import (
     PersonaGenerationQualityError,
     build_curated_interview_evidence_bundle,
@@ -3910,7 +3912,13 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         if not self._require_name(data):
             return self._error("invalid", "name is required", 400)
         with self.session_factory() as db_session:
-            folder = self.repository.create_folder(db_session, company_id=company_id, user_id=user_id, data=data)
+            if self.repository.folder_name_exists(db_session, company_id=company_id, name=data["name"]):
+                return self._error("duplicate", "이미 존재하는 폴더명입니다.", 409)
+            try:
+                folder = self.repository.create_folder(db_session, company_id=company_id, user_id=user_id, data=data)
+            except IntegrityError:
+                db_session.rollback()
+                return self._error("duplicate", "이미 존재하는 폴더명입니다.", 409)
             return self._ok({"data": self.folder_payload(folder)}, 201)
 
     def update_folder(self, *, company_id: int, user_id: int, folder_id: int, data: dict):
@@ -3920,7 +3928,21 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 return self._error("not_found", "folder not found", 404)
             if not self._can_modify(db_session, folder, company_id=company_id, user_id=user_id):
                 return self._error("forbidden", "insufficient permissions", 403)
-            updated = self.repository.update_folder(db_session, folder, user_id=user_id, data=data)
+            if "name" in data:
+                if not self._require_name(data):
+                    return self._error("invalid", "name is required", 400)
+                if self.repository.folder_name_exists(
+                    db_session,
+                    company_id=company_id,
+                    name=data["name"],
+                    exclude_folder_id=folder_id,
+                ):
+                    return self._error("duplicate", "이미 존재하는 폴더명입니다.", 409)
+            try:
+                updated = self.repository.update_folder(db_session, folder, user_id=user_id, data=data)
+            except IntegrityError:
+                db_session.rollback()
+                return self._error("duplicate", "이미 존재하는 폴더명입니다.", 409)
             return self._ok({"data": self.folder_payload(updated)})
 
     def delete_folder(self, *, company_id: int, user_id: int, folder_id: int):
