@@ -130,14 +130,21 @@ class PersonaRepository:
 
     @staticmethod
     def soft_delete_folder(session, folder, *, user_id: int):
-        folder.deleted_at = utcnow()
+        now = utcnow()
+        folder.deleted_at = now
         folder.updated_by_user_id = int(user_id)
-        folder.updated_at = utcnow()
+        folder.updated_at = now
         session.query(Persona).filter(
             Persona.company_id == folder.company_id,
             Persona.folder_id == folder.id,
             Persona.deleted_at.is_(None),
-        ).update({Persona.folder_id: None, Persona.updated_by_user_id: int(user_id), Persona.updated_at: utcnow()})
+        ).update(
+            {
+                Persona.deleted_at: now,
+                Persona.updated_by_user_id: int(user_id),
+                Persona.updated_at: now,
+            }
+        )
         session.flush()
 
     @staticmethod
