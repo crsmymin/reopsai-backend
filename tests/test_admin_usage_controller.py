@@ -38,6 +38,26 @@ class FakeAdminUsageService:
             },
         )
 
+    def reset_company_token_metering(self, **kwargs):
+        return SimpleNamespace(
+            status="ok",
+            data={
+                "company": {"id": kwargs["company_id"], "name": "Acme", "status": "active"},
+                "ledger": {
+                    "id": 2,
+                    "company_id": kwargs["company_id"],
+                    "delta_weighted_tokens": 100_000,
+                    "reason": "initial_grant",
+                    "created_by": kwargs["created_by"],
+                    "note": kwargs["note"],
+                    "created_at": None,
+                },
+                "granted_weighted_tokens": 100_000,
+                "used_weighted_tokens": 0,
+                "remaining_weighted_tokens": 100_000,
+            },
+        )
+
     def list_model_prices(self, **kwargs):
         return SimpleNamespace(
             status="ok",
@@ -111,6 +131,15 @@ def test_admin_usage_controller_response_shapes(monkeypatch):
     assert topup.status_code == 201
     assert topup.get_json()["ledger"]["delta_weighted_tokens"] == 50
     assert topup.get_json()["remaining_weighted_tokens"] == 900
+
+    reset = client.post(
+        "/api/admin/companies/100/token-reset",
+        headers=headers,
+        json={"note": "cycle reset"},
+    )
+    assert reset.status_code == 200
+    assert reset.get_json()["ledger"]["delta_weighted_tokens"] == 100_000
+    assert reset.get_json()["remaining_weighted_tokens"] == 100_000
 
     prices = client.get("/api/admin/llm-model-prices?provider=openai", headers=headers)
     assert prices.status_code == 200

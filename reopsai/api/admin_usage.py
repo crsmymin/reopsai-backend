@@ -174,6 +174,31 @@ def get_company_token_balance_route(company_id: int):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@admin_module.admin_bp.route("/api/admin/companies/<int:company_id>/token-reset", methods=["POST"])
+@tier_required(["super"])
+def reset_company_token_metering(company_id: int):
+    try:
+        if not admin_module._ensure_db():
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+        data = request.json or {}
+        note = (data.get("note") or "").strip() or None
+        created_by = admin_module._to_int_or_none(get_jwt_identity())
+
+        result = admin_module.admin_usage_service.reset_company_token_metering(
+            company_id=company_id,
+            created_by=created_by,
+            note=note,
+        )
+        if result.status == "db_unavailable":
+            return jsonify({"success": False, "error": "데이터베이스 연결이 필요합니다."}), 500
+        if result.status == "not_found":
+            return jsonify({"success": False, "error": "회사를 찾을 수 없습니다."}), 404
+        return jsonify({"success": True, **result.data}), 200
+    except Exception as e:
+        admin_module.log_error(e, f"Admin - 회사 토큰 기록 초기화 실패 (company_id: {company_id})")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @admin_module.admin_bp.route("/api/admin/companies/<int:company_id>/token-topups", methods=["POST"])
 @tier_required(["super"])
 def create_company_token_topup(company_id: int):

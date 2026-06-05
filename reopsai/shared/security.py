@@ -7,7 +7,11 @@ import uuid
 from flask import g, jsonify, request
 from flask_jwt_extended import get_jwt, verify_jwt_in_request
 
-from reopsai.shared.usage_metering import classify_feature_key, is_company_quota_exceeded
+from reopsai.shared.usage_metering import (
+    QUOTA_EXCEEDED_MESSAGE,
+    classify_feature_key,
+    is_company_quota_exceeded,
+)
 
 
 PASSWORD_CHANGE_ALLOWED_PATHS = {
@@ -92,7 +96,7 @@ def register_request_guards(app):
                         {
                             "success": False,
                             "error": "quota_exceeded",
-                            "message": "기업의 사용 가능한 weighted token 한도를 초과했습니다.",
+                            "message": QUOTA_EXCEEDED_MESSAGE,
                             "remaining_weighted_tokens": 0,
                         }
                     ),
