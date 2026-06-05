@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import math
+import re
 import traceback
 import uuid
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Callable, Dict, Iterable, Iterator, Optional, Tuple, TypeVar
 
 from flask import g, has_request_context, request
@@ -45,10 +45,27 @@ FEATURE_PREFIXES = {
     "artifact_ai": ["/api/artifacts/", "/api/artifact-ai"],
     "screener": ["/api/screener"],
     "workspace_ai": ["/api/workspace/generate-"],
+    "persona_ai": [],
 }
 
+PERSONA_LLM_EXACT_ENDPOINTS = frozenset({"/api/persona/personas"})
+PERSONA_LLM_PREFIXES = (
+    "/api/persona/personas/generate",
+    "/api/persona/personas/segments",
+    "/api/persona/interviews/questions",
+    "/api/persona/interview-sources/",
+    "/api/persona/interview-evidence/search",
+)
+
 INITIAL_COMPANY_WEIGHTED_TOKEN_GRANT = 100_000
-BASE_WEIGHT_PRICE_PER_1M_USD = Decimal("0.15")
+SERVICE_TOKEN_USD = Decimal("0.00625")
+# Fractional service-token amounts at or below this are not billed (avoids ceil-to-1 on tiny calls).
+MIN_BILLABLE_SERVICE_TOKEN_FRACTION = Decimal("0.01")
+QUOTA_EXCEEDED_MESSAGE = (
+    "사용 가능한 토큰이 부족합니다. 관리자에게 문의하거나 토큰을 추가해 주세요."
+)
+# Deprecated alias kept for imports that still reference the old constant name.
+BASE_WEIGHT_PRICE_PER_1M_USD = SERVICE_TOKEN_USD * Decimal(1_000_000)
 _LLM_USAGE_CONTEXT: ContextVar[Optional[Dict[str, Any]]] = ContextVar("llm_usage_context", default=None)
 _T = TypeVar("_T")
 
@@ -272,18 +289,42 @@ def extract_gemini_usage(usage_obj: Any) -> Dict[str, int]:
     }
 
 
+def _model_price_lookup_candidates(model: str) -> list[str]:
+    normalized = (model or "").strip()
+    if not normalized:
+        return []
+    candidates = [normalized]
+    without_snapshot = re.sub(r"-\d{4}-\d{2}-\d{2}$", "", normalized)
+    if without_snapshot != normalized:
+        candidates.append(without_snapshot)
+    return candidates
+
+
 def _find_price(db_session, provider: str, model: str, occurred_at: datetime) -> Optional[LlmModelPrice]:
-    return db_session.execute(
-        select(LlmModelPrice)
-        .where(
-            LlmModelPrice.provider == provider,
-            LlmModelPrice.model == model,
-            LlmModelPrice.effective_from <= occurred_at,
-            (LlmModelPrice.effective_to.is_(None) | (LlmModelPrice.effective_to > occurred_at)),
-        )
-        .order_by(LlmModelPrice.effective_from.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+    for candidate in _model_price_lookup_candidates(model):
+        price = db_session.execute(
+            select(LlmModelPrice)
+            .where(
+                LlmModelPrice.provider == provider,
+                LlmModelPrice.model == candidate,
+                LlmModelPrice.effective_from <= occurred_at,
+                (LlmModelPrice.effective_to.is_(None) | (LlmModelPrice.effective_to > occurred_at)),
+            )
+            .order_by(LlmModelPrice.effective_from.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if price is not None:
+            return price
+    return None
+
+
+def billable_service_tokens_from_cost(estimated_cost: Decimal) -> int:
+    if estimated_cost <= 0:
+        return 0
+    raw_tokens = estimated_cost / SERVICE_TOKEN_USD
+    if raw_tokens <= MIN_BILLABLE_SERVICE_TOKEN_FRACTION:
+        return 0
+    return int(raw_tokens.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def calculate_cost_and_weighted_tokens(
@@ -304,17 +345,14 @@ def calculate_cost_and_weighted_tokens(
         cached_rate = input_rate
     output_rate = _to_decimal(price.output_per_1m)
 
-    weighted_decimal = (
-        (Decimal(non_cached_prompt_tokens) * input_rate / BASE_WEIGHT_PRICE_PER_1M_USD)
-        + (Decimal(cached_tokens) * cached_rate / BASE_WEIGHT_PRICE_PER_1M_USD)
-        + (Decimal(completion_tokens) * output_rate / BASE_WEIGHT_PRICE_PER_1M_USD)
-    )
     estimated_cost = (
         (Decimal(non_cached_prompt_tokens) * input_rate)
         + (Decimal(cached_tokens) * cached_rate)
         + (Decimal(completion_tokens) * output_rate)
     ) / Decimal(1_000_000)
-    return estimated_cost, int(math.ceil(weighted_decimal))
+    if estimated_cost <= 0:
+        return estimated_cost, 0
+    return estimated_cost, billable_service_tokens_from_cost(estimated_cost)
 
 
 def get_company_token_balance(db_session, company_id: int) -> int:
@@ -409,6 +447,11 @@ def record_llm_call(
     try:
         with session_scope() as db_session:
             price = _find_price(db_session, provider, model, occurred_at)
+            if price is None and (prompt_tokens or completion_tokens):
+                print(
+                    f"[WARN] record_llm_call: missing price catalog entry "
+                    f"provider={provider} model={model}"
+                )
             estimated_cost, weighted_tokens = calculate_cost_and_weighted_tokens(
                 price=price,
                 prompt_tokens=prompt_tokens,
@@ -502,11 +545,26 @@ def record_llm_call(
     return event_id
 
 
+def is_persona_llm_endpoint(endpoint: str) -> bool:
+    normalized = (endpoint or "").strip().lower()
+    if not normalized.startswith("/api/persona/"):
+        return False
+    if normalized in PERSONA_LLM_EXACT_ENDPOINTS:
+        return True
+    if normalized.endswith("/run") or normalized.endswith("/image") or normalized.endswith("/embed"):
+        return True
+    return any(normalized.startswith(prefix.lower()) for prefix in PERSONA_LLM_PREFIXES)
+
+
 def classify_feature_key(endpoint: str) -> Optional[str]:
     endpoint = (endpoint or "").strip().lower()
     if not endpoint:
         return None
+    if is_persona_llm_endpoint(endpoint):
+        return "persona_ai"
     for feature, prefixes in FEATURE_PREFIXES.items():
+        if not prefixes:
+            continue
         if any(endpoint.startswith(prefix.lower()) for prefix in prefixes):
             return feature
     return None

@@ -127,6 +127,18 @@ class FakeAdminUsageRepository:
         )
 
     @staticmethod
+    def reset_company_token_metering(session, *, company_id, created_by=None, note=None):
+        return SimpleNamespace(
+            id=2,
+            company_id=company_id,
+            delta_weighted_tokens=100_000,
+            reason="initial_grant",
+            created_by=created_by,
+            note=note,
+            created_at=None,
+        )
+
+    @staticmethod
     def list_model_prices(session, *, provider="", active_only=True):
         return [
             SimpleNamespace(
@@ -202,3 +214,11 @@ def test_admin_usage_service_token_price_and_cleanup_shapes():
     cleanup = service.delete_expired_llm_usage_events(retention_days=90)
     assert cleanup.status == "ok"
     assert cleanup.data == {"retention_days": 90, "deleted_count": 7}
+
+    assert service.reset_company_token_metering(company_id=404).status == "not_found"
+    reset = service.reset_company_token_metering(company_id=100, created_by=10, note="cycle reset")
+    assert reset.status == "ok"
+    assert reset.data["ledger"]["delta_weighted_tokens"] == 100_000
+    assert reset.data["granted_weighted_tokens"] == 1000
+    assert reset.data["used_weighted_tokens"] == 100
+    assert reset.data["remaining_weighted_tokens"] == 900

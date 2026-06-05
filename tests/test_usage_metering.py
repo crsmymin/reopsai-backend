@@ -47,6 +47,22 @@ def test_feature_classification_covers_hidden_llm_routes():
     assert usage_metering.classify_feature_key("/api/unknown") is None
 
 
+def test_feature_classification_covers_persona_llm_routes():
+    assert usage_metering.classify_feature_key("/api/persona/personas") == "persona_ai"
+    assert usage_metering.classify_feature_key("/api/persona/personas/generate") == "persona_ai"
+    assert usage_metering.classify_feature_key("/api/persona/personas/segments") == "persona_ai"
+    assert usage_metering.classify_feature_key("/api/persona/tests/42/run") == "persona_ai"
+    assert usage_metering.classify_feature_key("/api/persona/ab-tests/7/run") == "persona_ai"
+    assert usage_metering.classify_feature_key("/api/persona/interviews/questions") == "persona_ai"
+    assert usage_metering.classify_feature_key("/api/persona/interviews/9/run") == "persona_ai"
+    assert usage_metering.classify_feature_key("/api/persona/personas/12/image") == "persona_ai"
+    assert usage_metering.classify_feature_key("/api/persona/interview-sources/3/embed") == "persona_ai"
+    assert usage_metering.classify_feature_key("/api/persona/personas/save") is None
+    assert usage_metering.classify_feature_key("/api/persona/personas/manual") is None
+    assert usage_metering.classify_feature_key("/api/persona/tests") is None
+    assert usage_metering.classify_feature_key("/api/persona/folders") is None
+
+
 def test_usage_context_propagates_without_request_context():
     context = {
         "account_type": None,
@@ -105,7 +121,7 @@ def test_build_llm_usage_context_uses_request_claims_and_explicit_values():
     }
 
 
-def test_cost_and_weighted_tokens_preserve_existing_formula():
+def test_cost_and_weighted_tokens_use_service_token_anchor():
     price = SimpleNamespace(
         input_per_1m=Decimal("0.30"),
         cached_input_per_1m=Decimal("0.03"),
@@ -119,7 +135,131 @@ def test_cost_and_weighted_tokens_preserve_existing_formula():
     )
 
     assert estimated_cost == Decimal("0.000546")
-    assert weighted_tokens == 3640
+    assert weighted_tokens == 0
+
+
+def test_billable_service_tokens_skip_micro_charges_and_round_half_up():
+    assert usage_metering.billable_service_tokens_from_cost(Decimal("0")) == 0
+    # 0.01 service tokens worth of cost -> not billed
+    assert usage_metering.billable_service_tokens_from_cost(
+        usage_metering.SERVICE_TOKEN_USD * Decimal("0.01")
+    ) == 0
+    # just above threshold -> round half up
+    assert usage_metering.billable_service_tokens_from_cost(
+        usage_metering.SERVICE_TOKEN_USD * Decimal("0.51")
+    ) == 1
+    assert usage_metering.billable_service_tokens_from_cost(
+        usage_metering.SERVICE_TOKEN_USD * Decimal("1.49")
+    ) == 1
+    assert usage_metering.billable_service_tokens_from_cost(
+        usage_metering.SERVICE_TOKEN_USD * Decimal("1.50")
+    ) == 2
+
+
+def test_persona_single_gemini_flash_usage_matches_service_token_benchmark():
+    price = SimpleNamespace(
+        input_per_1m=Decimal("0.30"),
+        cached_input_per_1m=Decimal("0.03"),
+        output_per_1m=Decimal("2.50"),
+    )
+    estimated_cost, weighted_tokens = usage_metering.calculate_cost_and_weighted_tokens(
+        price=price,
+        prompt_tokens=11_262,
+        completion_tokens=3_306,
+        cached_input_tokens=0,
+    )
+
+    assert estimated_cost == Decimal("0.0116436")
+    assert weighted_tokens == 2
+
+
+def test_service_token_burn_rates_per_1k_llm_tokens():
+    def burn_rate_per_1k(*, input_per_1m, output_per_1m, cached_input_per_1m, prompt, completion, cached):
+        price = SimpleNamespace(
+            input_per_1m=Decimal(str(input_per_1m)),
+            cached_input_per_1m=Decimal(str(cached_input_per_1m)),
+            output_per_1m=Decimal(str(output_per_1m)),
+        )
+        estimated_cost, _ = usage_metering.calculate_cost_and_weighted_tokens(
+            price=price,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            cached_input_tokens=cached,
+        )
+        return estimated_cost / usage_metering.SERVICE_TOKEN_USD
+
+    assert burn_rate_per_1k(
+        input_per_1m=0.30,
+        cached_input_per_1m=0.03,
+        output_per_1m=2.50,
+        prompt=1_000,
+        completion=0,
+        cached=0,
+    ) == Decimal("0.048")
+    assert burn_rate_per_1k(
+        input_per_1m=0.30,
+        cached_input_per_1m=0.03,
+        output_per_1m=2.50,
+        prompt=0,
+        completion=1_000,
+        cached=0,
+    ) == Decimal("0.40")
+    assert burn_rate_per_1k(
+        input_per_1m=2.50,
+        cached_input_per_1m=0.25,
+        output_per_1m=15.00,
+        prompt=1_000,
+        completion=0,
+        cached=0,
+    ) == Decimal("0.40")
+    assert burn_rate_per_1k(
+        input_per_1m=2.50,
+        cached_input_per_1m=0.25,
+        output_per_1m=15.00,
+        prompt=1_000,
+        completion=0,
+        cached=1_000,
+    ) == Decimal("0.04")
+    assert burn_rate_per_1k(
+        input_per_1m=2.50,
+        cached_input_per_1m=0.25,
+        output_per_1m=15.00,
+        prompt=0,
+        completion=1_000,
+        cached=0,
+    ) == Decimal("2.40")
+    assert burn_rate_per_1k(
+        input_per_1m=0.75,
+        cached_input_per_1m=0.075,
+        output_per_1m=4.50,
+        prompt=1_000,
+        completion=0,
+        cached=0,
+    ) == Decimal("0.12")
+    assert burn_rate_per_1k(
+        input_per_1m=0.75,
+        cached_input_per_1m=0.075,
+        output_per_1m=4.50,
+        prompt=1_000,
+        completion=0,
+        cached=1_000,
+    ) == Decimal("0.012")
+    assert burn_rate_per_1k(
+        input_per_1m=0.75,
+        cached_input_per_1m=0.075,
+        output_per_1m=4.50,
+        prompt=0,
+        completion=1_000,
+        cached=0,
+    ) == Decimal("0.72")
+
+
+def test_model_price_lookup_candidates_strip_snapshot_suffix():
+    assert usage_metering._model_price_lookup_candidates("gpt-5.4-2026-03-05") == [
+        "gpt-5.4-2026-03-05",
+        "gpt-5.4",
+    ]
+    assert usage_metering._model_price_lookup_candidates("gemini-2.5-flash") == ["gemini-2.5-flash"]
 
 
 def test_root_usage_metering_wrapper_reexports_absorbed_helpers():
@@ -128,3 +268,4 @@ def test_root_usage_metering_wrapper_reexports_absorbed_helpers():
     assert legacy_usage_metering.record_llm_call is usage_metering.record_llm_call
     assert legacy_usage_metering.extract_openai_usage is usage_metering.extract_openai_usage
     assert legacy_usage_metering.FEATURE_PREFIXES is usage_metering.FEATURE_PREFIXES
+    assert legacy_usage_metering.SERVICE_TOKEN_USD == usage_metering.SERVICE_TOKEN_USD
