@@ -87,7 +87,7 @@ def b2b_get_membership_usage():
         if result.status == "no_company":
             return jsonify({"success": False, "error": "이 계정에 연결된 회사가 없습니다."}), 404
         if result.status == "forbidden":
-            return jsonify({"success": False, "error": "멤버십 사용량은 회사 owner만 조회할 수 있습니다."}), 403
+            return jsonify({"success": False, "error": "멤버십 사용량은 같은 회사 멤버만 조회할 수 있습니다."}), 403
         if result.status == "company_not_found":
             return jsonify({"success": False, "error": "회사 정보를 찾을 수 없습니다."}), 404
 

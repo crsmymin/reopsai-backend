@@ -64,6 +64,33 @@ class FakeB2bRepository:
         return SimpleNamespace(user_id=user_id, role=role, joined_at=None)
 
     @staticmethod
+    def get_usage_payload(session, *, company_id, owner_user_id, period, start_date, end_date):
+        if company_id == 404:
+            return None
+        return {
+            "company": SimpleNamespace(id=company_id, name="Acme", status="active"),
+            "owner": SimpleNamespace(id=10, tier="enterprise"),
+            "granted": 1000,
+            "used": -250,
+            "balance": 750,
+            "totals": SimpleNamespace(request_count=3, billable_weighted_tokens=250),
+            "by_period_rows": [
+                SimpleNamespace(period="2026-06-05", request_count=3, billable_weighted_tokens=250)
+            ],
+            "by_user_rows": [
+                SimpleNamespace(
+                    user_id=11,
+                    email="member@example.com",
+                    name="Member",
+                    department=None,
+                    request_count=3,
+                    billable_weighted_tokens=250,
+                    last_used_at=None,
+                )
+            ],
+        }
+
+    @staticmethod
     def get_user_by_id(session, user_id):
         if user_id == 404:
             return None
@@ -136,6 +163,46 @@ def test_b2b_team_service_statuses():
     assert result.status == "ok"
     assert result.data["company"]["name"] == "Acme"
     assert result.data["members"][0]["role"] == "owner"
+
+
+def test_b2b_membership_usage_allows_company_members():
+    service = make_service()
+
+    assert service.get_membership_usage(
+        user_id=404,
+        company_id_claim=None,
+        period="daily",
+        start_date=None,
+        end_date=None,
+    ).status == "no_company"
+
+    assert service.get_membership_usage(
+        user_id=11,
+        company_id_claim=404,
+        period="daily",
+        start_date=None,
+        end_date=None,
+    ).status == "company_not_found"
+
+    owner_result = service.get_membership_usage(
+        user_id=10,
+        company_id_claim=100,
+        period="daily",
+        start_date=None,
+        end_date=None,
+    )
+    assert owner_result.status == "ok"
+    assert owner_result.data["token_balance"]["used_weighted_tokens"] == 250
+
+    member_result = service.get_membership_usage(
+        user_id=11,
+        company_id_claim=100,
+        period="daily",
+        start_date=None,
+        end_date=None,
+    )
+    assert member_result.status == "ok"
+    assert member_result.data["token_balance"]["remaining_weighted_tokens"] == 750
 
 
 def test_b2b_add_update_reset_remove_role_service_statuses():

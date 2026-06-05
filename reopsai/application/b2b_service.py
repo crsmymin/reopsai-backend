@@ -78,7 +78,7 @@ class B2bService:
             company_id = self._company_id_for(db_session, user_id=user_id, company_id_claim=company_id_claim)
             if not company_id:
                 return B2bResult("no_company")
-            if not self.repository.require_owner(db_session, company_id, user_id):
+            if not self.repository.get_membership(db_session, company_id, user_id):
                 return B2bResult("forbidden")
             usage = self.repository.get_usage_payload(
                 db_session,
