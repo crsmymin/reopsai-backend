@@ -36,6 +36,11 @@ from reopsai.domain.persona.interview_evidence import (
     search_interview_evidence_chunks,
     upsert_interview_source_embeddings,
 )
+from reopsai.domain.persona.ab_test_prompts import (
+    AB_TEST_PROMPT_VERSION,
+    build_ab_persona_preference_prompt,
+    build_ab_screen_analysis_prompt,
+)
 from reopsai.domain.persona.ui_test_prompts import build_ui_chunk_prompt, build_ui_scoring_prompt, build_ui_summary_prompt, build_ui_test_prompt
 from reopsai.infrastructure.persistence.engine import session_scope
 from reopsai.infrastructure.persistence.repositories.persona_repository import PersonaRepository
@@ -155,6 +160,13 @@ PERSONA_LLM_STAGE_CONFIGS = {
         temperature=0.7,
         max_output_tokens=8192,
         env_prefix="PERSONA_LLM_AB_TEST",
+    ),
+    "persona_ab_test_analysis": PersonaLlmStageConfig(
+        provider="gemini",
+        model="gemini-2.5-flash",
+        temperature=0.3,
+        max_output_tokens=8192,
+        env_prefix="PERSONA_LLM_AB_TEST_ANALYSIS",
     ),
 }
 
@@ -2731,21 +2743,241 @@ class PersonaService:
                 results[future_to_index[future]] = future.result()
         return results
 
-    def _build_ab_prompt(self, *, test, persona):
-        return "\n".join(
-            [
-                "You are comparing A/B UX variants from the perspective of the given persona.",
-                "Return only JSON with keys: scores, feedback. scores must include winner(A/B/tie) and reasonForChoice.",
-                "For flow tests include journeyComparison and stepAnalysis inside scores.",
-                f"Test: {test.name}",
-                f"Purpose: {test.purpose or ''}",
-                f"Mode: {test.mode}",
-                f"Screens: {json.dumps(test.screens or {}, ensure_ascii=False)}",
-                f"Context: {json.dumps(test.context_data or {}, ensure_ascii=False)}",
-                "[Persona]",
-                self._persona_context(persona),
-            ]
+    def _ab_is_flow(self, test) -> bool:
+        return getattr(test, "mode", None) == "flow"
+
+    def _ab_context_data(self, test) -> dict:
+        return _as_dict(_clean_mapping(getattr(test, "context_data", None)))
+
+    def _ab_device_type(self, test) -> str | None:
+        context = self._ab_context_data(test)
+        return _first_text(context.get("device_type"), context.get("deviceType"))
+
+    def _ab_flow_purpose(self, test) -> str | None:
+        context = self._ab_context_data(test)
+        source_data = _as_dict(context.get("source_data") or context.get("sourceData"))
+        return _first_text(
+            context.get("flow_purpose"),
+            context.get("flowPurpose"),
+            source_data.get("flow_purpose"),
+            source_data.get("flowPurpose"),
+            context.get("description"),
         )
+
+    def _ab_variant_key(self, screen: dict) -> str:
+        return str(screen.get("key") or screen.get("variant") or screen.get("version") or "").strip().upper()
+
+    def _sort_ab_screens(self, screens: list[dict]) -> list[dict]:
+        def order_key(screen: dict) -> int:
+            try:
+                return int(screen.get("order", screen.get("stepIndex", screen.get("step_index", 0))) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        return sorted(screens, key=order_key)
+
+    def _ab_variant_screens(self, test) -> tuple[list[dict], list[dict]]:
+        context = self._ab_context_data(test)
+        source_data = _as_dict(context.get("source_data") or context.get("sourceData"))
+        variants = _as_dict(source_data.get("variants"))
+        screens_a = self._sort_ab_screens(_as_list(variants.get("A") or variants.get("a")))
+        screens_b = self._sort_ab_screens(_as_list(variants.get("B") or variants.get("b")))
+        if screens_a or screens_b:
+            return screens_a, screens_b
+
+        raw_screens = getattr(test, "screens", None)
+        if isinstance(raw_screens, dict):
+            return (
+                self._sort_ab_screens(_as_list(raw_screens.get("A") or raw_screens.get("flowA"))),
+                self._sort_ab_screens(_as_list(raw_screens.get("B") or raw_screens.get("flowB"))),
+            )
+
+        flat_screens = _as_list(raw_screens)
+        screens_a = self._sort_ab_screens([screen for screen in flat_screens if self._ab_variant_key(screen) == "A"])
+        screens_b = self._sort_ab_screens([screen for screen in flat_screens if self._ab_variant_key(screen) == "B"])
+        return screens_a, screens_b
+
+    def _append_ab_screen_media(self, media_parts: list[dict], *, db_session, company_id: int, version: str, step_index: int, screen: dict):
+        source = self._screen_image_source(screen)
+        if not source:
+            return
+        screen_label = (
+            f"Version {version} / stepIndex {step_index} / 화면 {step_index + 1} / "
+            f"id={screen.get('id')} / name={screen.get('name') or f'화면 {step_index + 1}'}"
+        )
+        if isinstance(source, str) and source.startswith("data:") and ";base64," in source:
+            header, data_base64 = source.split(";base64,", 1)
+            media_parts.append({"type": "text", "text": screen_label, "screenIndex": step_index, "variant": version})
+            media_parts.append(
+                {
+                    "type": "image",
+                    "screenIndex": step_index,
+                    "variant": version,
+                    "mime_type": header.removeprefix("data:") or "image/png",
+                    "data_base64": data_base64,
+                }
+            )
+            return
+
+        asset_id = _storage_asset_id_from_url(source)
+        if not asset_id:
+            return
+        try:
+            asset = self.repository.get_asset(db_session, company_id=company_id, asset_id=asset_id)
+            if not asset:
+                return
+            path = self.storage.resolve_local_path(asset.storage_key)
+            if not path.exists() or not path.is_file():
+                return
+            mime_type = asset.mime_type or mimetypes.guess_type(str(path))[0] or "image/png"
+            media_parts.append({"type": "text", "text": screen_label, "screenIndex": step_index, "variant": version})
+            media_parts.append(
+                {
+                    "type": "image",
+                    "screenIndex": step_index,
+                    "variant": version,
+                    "mime_type": mime_type,
+                    "data_base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+                }
+            )
+        except Exception:
+            return
+
+    def _build_ab_media_parts(self, db_session, *, company_id: int, screens_a: list[dict], screens_b: list[dict]) -> list[dict]:
+        media_parts: list[dict] = []
+        for step_index, screen in enumerate(screens_a):
+            self._append_ab_screen_media(media_parts, db_session=db_session, company_id=company_id, version="A", step_index=step_index, screen=screen)
+        for step_index, screen in enumerate(screens_b):
+            self._append_ab_screen_media(media_parts, db_session=db_session, company_id=company_id, version="B", step_index=step_index, screen=screen)
+        return media_parts
+
+    def _normalize_ab_inventory_strings(self, value) -> list[str]:
+        return [str(item).strip() for item in _as_list(value) if str(item).strip()]
+
+    def _fallback_ab_screen_brief(self, *, test, screens_a: list[dict], screens_b: list[dict]) -> dict:
+        is_flow = self._ab_is_flow(test)
+
+        def variant_steps(screens: list[dict]) -> list[dict]:
+            return [
+                {
+                    "stepIndex": index,
+                    "name": screen.get("name") or f"화면 {index + 1}",
+                    "visibleHeadings": [],
+                    "ctaLabels": [],
+                    "uiElements": [],
+                    "textBlocks": [],
+                    "structureNotes": ["화면 inventory를 생성하지 못했습니다."],
+                }
+                for index, screen in enumerate(screens)
+            ]
+
+        brief = {
+            "mode": "flow" if is_flow else "single",
+            "elementDifferences": [],
+            "variants": {"A": variant_steps(screens_a), "B": variant_steps(screens_b)},
+        }
+        if is_flow:
+            brief["stepElementDifferences"] = []
+        return brief
+
+    def _normalize_ab_inventory_step(self, step: dict, *, index: int, screen: dict) -> dict:
+        legacy_cta = _first_text(step.get("primaryCta"), step.get("primary_cta"))
+        legacy_structure = [
+            _first_text(step.get("layoutSummary"), step.get("layout_summary")),
+            _first_text(step.get("infoHierarchy"), step.get("info_hierarchy")),
+        ]
+        cta_labels = self._normalize_ab_inventory_strings(step.get("ctaLabels") or step.get("cta_labels"))
+        if legacy_cta and legacy_cta not in cta_labels:
+            cta_labels.insert(0, legacy_cta)
+        structure_notes = self._normalize_ab_inventory_strings(step.get("structureNotes") or step.get("structure_notes"))
+        structure_notes.extend(item for item in legacy_structure if item and item not in structure_notes)
+        return {
+            "stepIndex": index,
+            "name": _first_text(step.get("name"), screen.get("name")) or f"화면 {index + 1}",
+            "visibleHeadings": self._normalize_ab_inventory_strings(step.get("visibleHeadings") or step.get("visible_headings")),
+            "ctaLabels": cta_labels,
+            "uiElements": self._normalize_ab_inventory_strings(step.get("uiElements") or step.get("ui_elements")),
+            "textBlocks": self._normalize_ab_inventory_strings(step.get("textBlocks") or step.get("text_blocks")),
+            "structureNotes": structure_notes or ["inventory 없음"],
+        }
+
+    def _normalize_ab_screen_brief(self, parsed, *, test, screens_a: list[dict], screens_b: list[dict]) -> dict:
+        fallback = self._fallback_ab_screen_brief(test=test, screens_a=screens_a, screens_b=screens_b)
+        if not isinstance(parsed, dict):
+            return fallback
+
+        variants = _as_dict(parsed.get("variants"))
+        normalized_variants = {"A": [], "B": []}
+        for version, screens in (("A", screens_a), ("B", screens_b)):
+            parsed_steps = _as_list(variants.get(version))
+            for index, screen in enumerate(screens):
+                step = parsed_steps[index] if index < len(parsed_steps) and isinstance(parsed_steps[index], dict) else {}
+                normalized_variants[version].append(self._normalize_ab_inventory_step(step, index=index, screen=screen))
+
+        element_differences = self._normalize_ab_inventory_strings(
+            parsed.get("elementDifferences") or parsed.get("element_differences") or parsed.get("keyDifferences") or parsed.get("key_differences")
+        )
+        comparison_summary = _first_text(parsed.get("comparisonSummary"), parsed.get("comparison_summary"))
+        if comparison_summary and not element_differences:
+            element_differences = [comparison_summary]
+
+        brief = {
+            "mode": "flow" if self._ab_is_flow(test) else "single",
+            "elementDifferences": element_differences,
+            "variants": normalized_variants,
+        }
+        if self._ab_is_flow(test):
+            step_differences = []
+            for step in _as_list(parsed.get("stepElementDifferences") or parsed.get("step_element_differences") or parsed.get("stepComparisons") or parsed.get("step_comparisons")):
+                if not isinstance(step, dict):
+                    continue
+                try:
+                    step_index = int(step.get("stepIndex", step.get("step_index", 0)) or 0)
+                except (TypeError, ValueError):
+                    step_index = 0
+                facts = self._normalize_ab_inventory_strings(step.get("facts") or step.get("differences"))
+                step_differences.append({"stepIndex": step_index, "facts": facts})
+            brief["stepElementDifferences"] = step_differences
+        return brief
+
+    def _run_ab_screen_analysis(
+        self,
+        *,
+        db_session,
+        company_id: int,
+        user_id: int,
+        test,
+        screens_a: list[dict],
+        screens_b: list[dict],
+        media_parts: list[dict],
+    ) -> dict:
+        prompt = build_ab_screen_analysis_prompt(
+            test_name=test.name,
+            purpose=test.purpose,
+            service_context=test.service_context,
+            mode="flow" if self._ab_is_flow(test) else "single",
+            device_type=self._ab_device_type(test),
+            flow_purpose=self._ab_flow_purpose(test),
+            screens_a=screens_a,
+            screens_b=screens_b,
+        )
+        try:
+            parsed, usage = self._generate_json(
+                prompt,
+                feature_key="persona_ab_test_analysis",
+                company_id=company_id,
+                user_id=user_id,
+                media_parts=media_parts or None,
+            )
+        except ValueError:
+            parsed, usage = {}, {"model": "fallback"}
+        brief = self._normalize_ab_screen_brief(parsed, test=test, screens_a=screens_a, screens_b=screens_b)
+        brief["analysisMeta"] = {
+            "promptVersion": AB_TEST_PROMPT_VERSION,
+            "model": usage.get("model"),
+            "imageEvidenceCount": len([part for part in media_parts if isinstance(part, dict) and part.get("type") == "image"]),
+        }
+        return brief
 
     def _fallback_ab_feedback(self, *, test, persona):
         persona_name = getattr(persona, "name", "Persona")
@@ -2804,10 +3036,29 @@ class PersonaService:
         normalized["stepAnalysis"] = step_analysis
         return normalized
 
-    def _run_ab_persona_evaluation(self, *, company_id: int, user_id: int, test, persona):
+    def _run_ab_persona_evaluation(
+        self,
+        *,
+        company_id: int,
+        user_id: int,
+        test,
+        persona,
+        variant_brief: dict,
+        persona_pack: Optional[dict] = None,
+    ):
+        prompt = build_ab_persona_preference_prompt(
+            test_name=test.name,
+            purpose=test.purpose,
+            service_context=test.service_context,
+            mode="flow" if self._ab_is_flow(test) else "single",
+            device_type=self._ab_device_type(test),
+            flow_purpose=self._ab_flow_purpose(test),
+            variant_brief=variant_brief,
+            persona_context=self._persona_context(persona, persona_pack=persona_pack),
+        )
         try:
             parsed, usage = self._generate_json(
-                self._build_ab_prompt(test=test, persona=persona),
+                prompt,
                 feature_key="persona_ab_test",
                 company_id=company_id,
                 user_id=user_id,
@@ -2817,13 +3068,20 @@ class PersonaService:
         feedback = parsed if isinstance(parsed, dict) else self._fallback_ab_feedback(test=test, persona=persona)
         scores = feedback.get("scores") if isinstance(feedback.get("scores"), dict) else self._fallback_ab_feedback(test=test, persona=persona)["scores"]
         scores = self._normalize_ab_scores(scores, mode=test.mode)
+        feedback_items = [str(item).strip() for item in _as_list(feedback.get("feedback")) if str(item).strip()][:2]
+        if not feedback_items:
+            feedback_items = [_first_text(scores.get("reasonForChoice")) or "비교 평가가 완료되었습니다."]
         return {
             "persona_snapshot": self._persona_snapshot_payload(persona),
             "scores": scores,
-            "feedback": _as_list(feedback.get("feedback")) or [scores.get("reasonForChoice", "비교 평가가 완료되었습니다.")],
-            "confidence": {"model": usage.get("model"), "promptVersion": "persona_test_v2"},
-            "evidence_ids": ["promptVersion:persona_test_v2"],
-            "raw_response": {"parsed": feedback, "usage": usage},
+            "feedback": feedback_items,
+            "confidence": {
+                "model": usage.get("model"),
+                "promptVersion": AB_TEST_PROMPT_VERSION,
+                "usedPersonaPack": bool(persona_pack),
+            },
+            "evidence_ids": [f"promptVersion:{AB_TEST_PROMPT_VERSION}"],
+            "raw_response": {"parsed": feedback, "usage": usage, "variantBrief": variant_brief},
         }
 
     def _ab_summary(self, results: list[dict], mode: str):
@@ -4587,15 +4845,48 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 self.repository.update_ab_test(db_session, test, user_id=user_id, data={"status": "failed", "progress": 100, "error_message": "No personas available for A/B test"})
                 return self._error("invalid", "No personas available for A/B test", 400)
             try:
+                screens_a, screens_b = self._ab_variant_screens(test)
+                media_parts = self._build_ab_media_parts(db_session, company_id=company_id, screens_a=screens_a, screens_b=screens_b)
+                variant_brief = self._run_ab_screen_analysis(
+                    db_session=db_session,
+                    company_id=company_id,
+                    user_id=user_id,
+                    test=test,
+                    screens_a=screens_a,
+                    screens_b=screens_b,
+                    media_parts=media_parts,
+                )
                 self.repository.delete_ab_test_results(db_session, company_id=company_id, ab_test_id=test.id)
                 results = []
                 result_inputs = []
                 for persona in personas:
-                    result_data = self._run_ab_persona_evaluation(company_id=company_id, user_id=user_id, test=test, persona=persona)
+                    try:
+                        persona_pack = self._get_or_create_persona_interview_pack(
+                            db_session,
+                            company_id=company_id,
+                            user_id=user_id,
+                            persona=persona,
+                        )
+                    except Exception as exc:
+                        _log_persona_interview_event(
+                            "ab_test_pack_fallback",
+                            persona_id=getattr(persona, "id", None),
+                            error=str(exc),
+                        )
+                        persona_pack = _clean_mapping(getattr(persona, "interview_pack", None)) or None
+                    result_data = self._run_ab_persona_evaluation(
+                        company_id=company_id,
+                        user_id=user_id,
+                        test=test,
+                        persona=persona,
+                        variant_brief=variant_brief,
+                        persona_pack=persona_pack,
+                    )
                     result = self.repository.create_ab_test_result(db_session, company_id=company_id, ab_test_id=test.id, persona_id=persona.id, data=result_data)
                     result_inputs.append(result_data)
                     results.append(self.ab_result_payload(result))
                 summary = self._ab_summary(result_inputs, test.mode)
+                summary["variantBrief"] = variant_brief
                 self.repository.update_ab_test(db_session, test, user_id=user_id, data={"status": "completed", "progress": 100, "summary": summary})
             except Exception as exc:
                 self.repository.update_ab_test(db_session, test, user_id=user_id, data={"status": "failed", "progress": 100, "error_message": str(exc)})

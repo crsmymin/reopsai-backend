@@ -126,7 +126,51 @@ class FakeLlmAdapter:
     def generate_response(self, prompt, generation_config=None, model_name=None):
         self.prompts.append(prompt)
         self.model_names.append(model_name)
-        if "A/B UX variants" in prompt:
+        if "STAGE: ab_screen_analysis" in prompt:
+            content = {
+                "mode": "flow" if "모드: flow" in prompt else "single",
+                "elementDifferences": [
+                    "A: CTA '가입하기' 1개 / B: CTA '요금제 변경' 1개",
+                    "A: 카드 4개 / B: 비교표 1개",
+                ],
+                "variants": {
+                    "A": [
+                        {
+                            "stepIndex": 0,
+                            "name": "A안",
+                            "visibleHeadings": ["멤버십 혜택"],
+                            "ctaLabels": ["가입하기"],
+                            "uiElements": ["카드 4개", "2열 그리드"],
+                            "textBlocks": ["누적 할인액"],
+                            "structureNotes": ["상단 헤더", "세로 스크롤"],
+                        }
+                    ],
+                    "B": [
+                        {
+                            "stepIndex": 0,
+                            "name": "B안",
+                            "visibleHeadings": ["요금제 비교"],
+                            "ctaLabels": ["요금제 변경"],
+                            "uiElements": ["비교표 1개", "텍스트 블록 8개"],
+                            "textBlocks": ["월 요금"],
+                            "structureNotes": ["상단 헤더", "긴 스크롤"],
+                        }
+                    ],
+                },
+                "stepElementDifferences": [{"stepIndex": 0, "facts": ["A: 카드 4개", "B: 비교표 1개"]}],
+            }
+        elif "STAGE: ab_persona_preference" in prompt:
+            content = {
+                "scores": {
+                    "winner": "A",
+                    "reasonForChoice": "A안 대비 B안은 제가 찾는 혜택 정보를 더 빨리 확인할 수 있어요. B안은 요금제 비교에 초점이 맞아 지금 목적과는 거리가 있어요.",
+                },
+                "feedback": [
+                    "A안 대비 B안은 카테고리 탐색이 더 바로 보여요.",
+                    "B안 대비 A안은 개인화된 멤버십 정보가 먼저 보여요.",
+                ],
+            }
+        elif "A/B UX variants" in prompt:
             content = {
                 "scores": {"winner": "A", "reasonForChoice": "A안이 더 명확합니다."},
                 "feedback": ["A안 대비 B안은 다음 행동 근거가 약합니다."],
@@ -188,6 +232,8 @@ class FakeLlmAdapter:
 class MalformedAbFlowAdapter(FakeLlmAdapter):
     def generate_response(self, prompt, generation_config=None, model_name=None):
         self.prompts.append(prompt)
+        if "STAGE: ab_screen_analysis" in prompt:
+            return super().generate_response(prompt, generation_config=generation_config, model_name=model_name)
         content = {
             "scores": {
                 "winner": "A",
@@ -1024,8 +1070,57 @@ def test_ab_test_uses_default_gemini_flash_model():
     result = _service(llm_adapter=adapter).run_ab_test(company_id=100, user_id=10, ab_test_id=2, data={})
 
     assert result.status_code == 200
-    assert adapter.model_names == ["gemini-2.5-flash"]
+    assert adapter.model_names == ["gemini-2.5-flash", "gemini-2.5-flash"]
     assert result.data["results"][0]["confidence"]["model"] == "gemini-2.5-flash"
+    assert result.data["results"][0]["confidence"]["promptVersion"] == "ab_test_v4"
+    assert result.data["data"]["summary"]["variantBrief"]["elementDifferences"]
+
+
+def test_ab_test_run_sends_screen_images_once_for_analysis(tmp_path):
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"fake image bytes")
+    FakeStorage.local_paths = {"company-100/upload/screen.png": image_path}
+    FakeRepository.asset = SimpleNamespace(
+        id=88,
+        company_id=100,
+        storage_key="company-100/upload/screen.png",
+        mime_type="image/png",
+    )
+    FakeRepository.ab_test = _test_record(
+        id=2,
+        purpose="가입 화면 비교",
+        service_context="가입",
+        mode="single",
+        screens=[
+            {"key": "A", "name": "A안", "imageUrl": "/api/persona/storage/88"},
+            {"key": "B", "name": "B안", "imageUrl": "/api/persona/storage/88"},
+        ],
+        transitions=None,
+        context_data={
+            "personaSelection": {"useAllPersonas": False, "selectedPersonaIds": [20]},
+            "source_data": {
+                "variants": {
+                    "A": [{"key": "A", "name": "A안", "imageUrl": "/api/persona/storage/88"}],
+                    "B": [{"key": "B", "name": "B안", "imageUrl": "/api/persona/storage/88"}],
+                }
+            },
+        },
+        enable_consistency_validation=False,
+        consistency_run_count=3,
+    )
+    adapter = FakeLlmAdapter()
+
+    result = _service(llm_adapter=adapter, storage=FakeStorage()).run_ab_test(company_id=100, user_id=10, ab_test_id=2, data={})
+
+    assert result.status_code == 200
+    assert len(adapter.media_parts) == 1
+    assert adapter.media_parts[0][0]["variant"] == "A"
+    assert adapter.media_parts[0][1]["type"] == "image"
+    assert adapter.media_parts[0][2]["variant"] == "B"
+    assert "STAGE: ab_screen_analysis" in adapter.prompts[0]
+    assert "STAGE: ab_persona_preference" in adapter.prompts[1]
+    assert "UI inventory" in adapter.prompts[1]
+    assert result.data["data"]["summary"]["variantBrief"]["analysisMeta"]["imageEvidenceCount"] == 2
 
 
 def test_ab_flow_summary_skips_malformed_llm_journey_and_step_items():

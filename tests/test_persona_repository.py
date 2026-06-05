@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from reopsai.infrastructure.persistence.models.persona import Persona
 from reopsai.infrastructure.persistence.repositories.persona_repository import PersonaRepository
 
 
@@ -97,6 +98,35 @@ def test_replace_figma_flows_updates_existing_start_nodes_instead_of_reinserting
     assert existing_flow.figma_flow_name == "홈에서 상품서비스"
     assert existing_flow.metadata_ == {"source": "figma_api"}
     assert session.added[0].figma_start_node_id == "49:197"
+
+
+def test_soft_delete_folder_also_soft_deletes_contained_personas():
+    folder = SimpleNamespace(
+        id=10,
+        company_id=5,
+        deleted_at=None,
+        updated_by_user_id=None,
+        updated_at=None,
+    )
+    persona = SimpleNamespace(
+        id=1,
+        company_id=5,
+        folder_id=10,
+        deleted_at=None,
+        updated_by_user_id=None,
+        updated_at=None,
+    )
+    session = FakeSession([persona])
+
+    PersonaRepository.soft_delete_folder(session, folder, user_id=99)
+
+    assert folder.deleted_at is not None
+    assert folder.updated_by_user_id == 99
+    assert persona.deleted_at is not None
+    assert persona.updated_by_user_id == 99
+    assert session.flushed is True
+    assert Persona.deleted_at in session.bulk_update_values
+    assert Persona.folder_id not in session.bulk_update_values
 
 
 def test_folder_name_exists_only_checks_active_folders():
