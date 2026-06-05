@@ -50,6 +50,72 @@ class FolderRepository(DuplicateFolderRepository):
         return folder
 
 
+class DefaultFolderRepository(FolderRepository):
+    @staticmethod
+    def get_folder(session, *, company_id, folder_id):
+        return SimpleNamespace(
+            id=folder_id,
+            company_id=company_id,
+            created_by_user_id=10,
+            is_default=True,
+        )
+
+    @staticmethod
+    def soft_delete_folder(session, folder, *, user_id):
+        raise AssertionError("soft_delete_folder should not be called for default folders")
+
+
+class DefaultSourcePersonaRepository:
+    @staticmethod
+    def get_persona(session, *, company_id, persona_id):
+        return SimpleNamespace(
+            id=persona_id,
+            company_id=company_id,
+            folder_id=4,
+            created_by_user_id=10,
+        )
+
+    @staticmethod
+    def can_modify_record(session, record, *, company_id, user_id):
+        return True
+
+    @staticmethod
+    def get_folder(session, *, company_id, folder_id):
+        return SimpleNamespace(
+            id=folder_id,
+            company_id=company_id,
+            is_default=True,
+        )
+
+    @staticmethod
+    def update_persona(session, persona, *, user_id, data):
+        raise AssertionError("update_persona should not be called when moving out of a default folder")
+
+
+class DefaultTargetPersonaRepository(DefaultSourcePersonaRepository):
+    @staticmethod
+    def get_persona(session, *, company_id, persona_id):
+        return SimpleNamespace(
+            id=persona_id,
+            company_id=company_id,
+            folder_id=None,
+            created_by_user_id=10,
+        )
+
+    @staticmethod
+    def get_visible_folder(session, *, company_id, user_id, folder_id):
+        return SimpleNamespace(
+            id=folder_id,
+            company_id=company_id,
+            created_by_user_id=None,
+            is_default=True,
+        )
+
+    @staticmethod
+    def update_persona(session, persona, *, user_id, data):
+        raise AssertionError("update_persona should not be called when moving into a default folder")
+
+
 def test_update_folder_rejects_duplicate_company_folder_name():
     service = PersonaService(repository=DuplicateFolderRepository, session_factory=fake_session_factory)
 
@@ -78,3 +144,43 @@ def test_update_folder_allows_same_folder_name_when_no_duplicate():
     assert result.status == "ok"
     assert result.status_code == 200
     assert result.data["data"]["name"] == "skt"
+
+
+def test_delete_folder_rejects_default_folder():
+    service = PersonaService(repository=DefaultFolderRepository, session_factory=fake_session_factory)
+
+    result = service.delete_folder(company_id=5, user_id=10, folder_id=4)
+
+    assert result.status == "forbidden"
+    assert result.status_code == 403
+    assert result.error == "default folder cannot be deleted"
+
+
+def test_update_persona_rejects_moving_out_of_default_folder():
+    service = PersonaService(repository=DefaultSourcePersonaRepository, session_factory=fake_session_factory)
+
+    result = service.update_persona(
+        company_id=5,
+        user_id=10,
+        persona_id=20,
+        data={"folder_id": None},
+    )
+
+    assert result.status == "forbidden"
+    assert result.status_code == 403
+    assert result.error == "default folder personas cannot be moved"
+
+
+def test_update_persona_rejects_moving_into_default_folder():
+    service = PersonaService(repository=DefaultTargetPersonaRepository, session_factory=fake_session_factory)
+
+    result = service.update_persona(
+        company_id=5,
+        user_id=10,
+        persona_id=20,
+        data={"folder_id": 4},
+    )
+
+    assert result.status == "forbidden"
+    assert result.status_code == 403
+    assert result.error == "personas cannot be moved into default folders"

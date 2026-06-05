@@ -143,3 +143,43 @@ def test_folder_name_exists_only_checks_active_folders():
     assert exists is False
     assert "persona_folders.deleted_at IS NULL" in compiled
     assert "persona_folders.id != 4" in compiled
+
+
+def test_list_folders_filters_to_owned_or_default_folders():
+    session = FakeSession([])
+
+    PersonaRepository.list_folders(session, company_id=5, user_id=10)
+
+    compiled = str(session.last_statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "persona_folders.company_id = 5" in compiled
+    assert "persona_folders.deleted_at IS NULL" in compiled
+    assert "persona_folders.created_by_user_id = 10" in compiled
+    assert "persona_folders.is_default IS true" in compiled
+
+
+def test_visible_persona_filter_allows_owned_or_default_folder_personas():
+    compiled = str(
+        PersonaRepository._visible_persona_filter(company_id=5, user_id=10).compile(
+            compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "personas.created_by_user_id = 10" in compiled
+    assert "personas.folder_id IN" in compiled
+    assert "persona_folders.company_id = 5" in compiled
+    assert "persona_folders.is_default IS true" in compiled
+    assert "persona_folders.deleted_at IS NULL" in compiled
+
+
+def test_test_and_interview_lists_filter_to_creator_when_user_is_given():
+    expectations = [
+        (PersonaRepository.list_ui_tests, "persona_ui_tests.created_by_user_id = 10"),
+        (PersonaRepository.list_ab_tests, "persona_ab_tests.created_by_user_id = 10"),
+        (PersonaRepository.list_interviews, "persona_interviews.created_by_user_id = 10"),
+    ]
+
+    for list_method, expected_sql in expectations:
+        session = FakeSession([])
+        list_method(session, company_id=5, user_id=10)
+        compiled = str(session.last_statement.compile(compile_kwargs={"literal_binds": True}))
+        assert expected_sql in compiled

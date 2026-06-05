@@ -80,7 +80,7 @@ def list_folders():
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.list_folders(company_id=context["company_id"]))
+    return _response(persona_service.list_folders(company_id=context["company_id"], user_id=context["user_id"]))
 
 
 @persona_bp.route("/folders", methods=["POST"])
@@ -122,6 +122,7 @@ def list_personas():
     return _response(
         persona_service.list_personas(
             company_id=context["company_id"],
+            user_id=context["user_id"],
             page=page,
             limit=limit,
             search=request.args.get("search"),
@@ -185,7 +186,7 @@ def get_persona(persona_id: int):
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.get_persona(company_id=context["company_id"], persona_id=persona_id))
+    return _response(persona_service.get_persona(company_id=context["company_id"], user_id=context["user_id"], persona_id=persona_id))
 
 
 @persona_bp.route("/personas/<int:persona_id>", methods=["PATCH"])
@@ -212,7 +213,7 @@ def get_persona_memory(persona_id: int):
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.get_memory(company_id=context["company_id"], persona_id=persona_id))
+    return _response(persona_service.get_memory(company_id=context["company_id"], user_id=context["user_id"], persona_id=persona_id))
 
 
 @persona_bp.route("/personas/<int:persona_id>/memory/settings", methods=["PATCH"])
@@ -293,7 +294,7 @@ def list_ui_tests():
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.list_ui_tests(company_id=context["company_id"]))
+    return _response(persona_service.list_ui_tests(company_id=context["company_id"], user_id=context["user_id"]))
 
 
 @persona_bp.route("/tests", methods=["POST"])
@@ -347,7 +348,7 @@ def list_ui_test_results(test_id: int):
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.list_ui_results(company_id=context["company_id"], test_id=test_id))
+    return _response(persona_service.list_ui_results(company_id=context["company_id"], user_id=context["user_id"], test_id=test_id))
 
 
 @persona_bp.route("/tests/capture-url", methods=["POST"])
@@ -365,7 +366,7 @@ def list_combined_tests():
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.list_combined_tests(company_id=context["company_id"]))
+    return _response(persona_service.list_combined_tests(company_id=context["company_id"], user_id=context["user_id"]))
 
 
 @persona_bp.route("/ab-tests", methods=["GET"])
@@ -374,7 +375,7 @@ def list_ab_tests():
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.list_ab_tests(company_id=context["company_id"]))
+    return _response(persona_service.list_ab_tests(company_id=context["company_id"], user_id=context["user_id"]))
 
 
 @persona_bp.route("/ab-tests", methods=["POST"])
@@ -392,7 +393,7 @@ def get_ab_test(ab_test_id: int):
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.get_ab_test(company_id=context["company_id"], ab_test_id=ab_test_id))
+    return _response(persona_service.get_ab_test(company_id=context["company_id"], user_id=context["user_id"], ab_test_id=ab_test_id))
 
 
 @persona_bp.route("/ab-tests/<int:ab_test_id>", methods=["PATCH"])
@@ -428,7 +429,7 @@ def list_ab_test_results(ab_test_id: int):
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.list_ab_results(company_id=context["company_id"], ab_test_id=ab_test_id))
+    return _response(persona_service.list_ab_results(company_id=context["company_id"], user_id=context["user_id"], ab_test_id=ab_test_id))
 
 
 @persona_bp.route("/interviews", methods=["GET"])
@@ -437,7 +438,7 @@ def list_interviews():
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.list_interviews(company_id=context["company_id"]))
+    return _response(persona_service.list_interviews(company_id=context["company_id"], user_id=context["user_id"]))
 
 
 @persona_bp.route("/interviews", methods=["POST"])
@@ -464,7 +465,7 @@ def list_interview_personas():
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.list_interview_personas(company_id=context["company_id"]))
+    return _response(persona_service.list_interview_personas(company_id=context["company_id"], user_id=context["user_id"]))
 
 
 @persona_bp.route("/interview-sources", methods=["GET"])
@@ -568,7 +569,7 @@ def get_interview(interview_id: int):
     context, error_response = _require_context()
     if error_response:
         return error_response
-    return _response(persona_service.get_interview(company_id=context["company_id"], interview_id=interview_id))
+    return _response(persona_service.get_interview(company_id=context["company_id"], user_id=context["user_id"], interview_id=interview_id))
 
 
 @persona_bp.route("/interviews/<int:interview_id>", methods=["DELETE"])

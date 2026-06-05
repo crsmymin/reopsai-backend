@@ -44,6 +44,25 @@ def normalize_persona_tag(value):
 
 class PersonaRepository:
     @staticmethod
+    def _personal_record_filter(model, *, user_id: int):
+        return model.created_by_user_id == int(user_id)
+
+    @staticmethod
+    def _visible_persona_filter(*, company_id: int, user_id: int):
+        default_folder_ids = (
+            select(PersonaFolder.id)
+            .where(
+                PersonaFolder.company_id == int(company_id),
+                PersonaFolder.is_default.is_(True),
+                PersonaFolder.deleted_at.is_(None),
+            )
+        )
+        return or_(
+            Persona.created_by_user_id == int(user_id),
+            Persona.folder_id.in_(default_folder_ids),
+        )
+
+    @staticmethod
     def get_membership(session, *, company_id: int, user_id: int):
         return session.execute(
             select(CompanyMember)
@@ -68,10 +87,14 @@ class PersonaRepository:
         return PersonaRepository.is_company_admin(session, company_id=company_id, user_id=user_id)
 
     @staticmethod
-    def list_folders(session, *, company_id: int):
+    def list_folders(session, *, company_id: int, user_id: int):
         return session.execute(
             select(PersonaFolder)
-            .where(PersonaFolder.company_id == int(company_id), PersonaFolder.deleted_at.is_(None))
+            .where(
+                PersonaFolder.company_id == int(company_id),
+                PersonaFolder.deleted_at.is_(None),
+                or_(PersonaFolder.created_by_user_id == int(user_id), PersonaFolder.is_default.is_(True)),
+            )
             .order_by(PersonaFolder.is_default.desc(), PersonaFolder.created_at.asc(), PersonaFolder.id.asc())
         ).scalars().all()
 
@@ -83,6 +106,19 @@ class PersonaRepository:
                 PersonaFolder.company_id == int(company_id),
                 PersonaFolder.id == int(folder_id),
                 PersonaFolder.deleted_at.is_(None),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def get_visible_folder(session, *, company_id: int, user_id: int, folder_id: int):
+        return session.execute(
+            select(PersonaFolder)
+            .where(
+                PersonaFolder.company_id == int(company_id),
+                PersonaFolder.id == int(folder_id),
+                PersonaFolder.deleted_at.is_(None),
+                or_(PersonaFolder.created_by_user_id == int(user_id), PersonaFolder.is_default.is_(True)),
             )
             .limit(1)
         ).scalar_one_or_none()
@@ -152,13 +188,18 @@ class PersonaRepository:
         session,
         *,
         company_id: int,
+        user_id: int,
         page: int,
         limit: int,
         search: Optional[str] = None,
         folder_id: Optional[int] = None,
         no_folder: bool = False,
     ):
-        filters = [Persona.company_id == int(company_id), Persona.deleted_at.is_(None)]
+        filters = [
+            Persona.company_id == int(company_id),
+            Persona.deleted_at.is_(None),
+            PersonaRepository._visible_persona_filter(company_id=company_id, user_id=user_id),
+        ]
         if search:
             pattern = f"%{search.strip()}%"
             filters.append(or_(Persona.name.ilike(pattern), Persona.tag.ilike(pattern), Persona.title.ilike(pattern)))
@@ -178,10 +219,13 @@ class PersonaRepository:
         return items, int(total or 0)
 
     @staticmethod
-    def list_existing_persona_summaries(session, *, company_id: int, limit: Optional[int] = None):
+    def list_existing_persona_summaries(session, *, company_id: int, user_id: Optional[int] = None, limit: Optional[int] = None):
+        filters = [Persona.company_id == int(company_id), Persona.deleted_at.is_(None)]
+        if user_id is not None:
+            filters.append(PersonaRepository._visible_persona_filter(company_id=company_id, user_id=user_id))
         query = (
             select(Persona)
-            .where(Persona.company_id == int(company_id), Persona.deleted_at.is_(None))
+            .where(*filters)
             .order_by(Persona.created_at.desc(), Persona.id.desc())
         )
         if limit is not None:
@@ -203,29 +247,37 @@ class PersonaRepository:
         return summaries
 
     @staticmethod
-    def list_personas_by_ids(session, *, company_id: int, persona_ids: Iterable[int]):
+    def list_personas_by_ids(session, *, company_id: int, persona_ids: Iterable[int], user_id: Optional[int] = None):
         ids = [int(persona_id) for persona_id in persona_ids if persona_id is not None]
         if not ids:
             return []
+        filters = [Persona.company_id == int(company_id), Persona.id.in_(ids), Persona.deleted_at.is_(None)]
+        if user_id is not None:
+            filters.append(PersonaRepository._visible_persona_filter(company_id=company_id, user_id=user_id))
         return session.execute(
             select(Persona)
-            .where(Persona.company_id == int(company_id), Persona.id.in_(ids), Persona.deleted_at.is_(None))
+            .where(*filters)
             .order_by(Persona.created_at.desc(), Persona.id.desc())
         ).scalars().all()
 
     @staticmethod
-    def list_all_personas(session, *, company_id: int):
+    def list_all_personas(session, *, company_id: int, user_id: Optional[int] = None):
+        filters = [Persona.company_id == int(company_id), Persona.deleted_at.is_(None)]
+        if user_id is not None:
+            filters.append(PersonaRepository._visible_persona_filter(company_id=company_id, user_id=user_id))
         return session.execute(
             select(Persona)
-            .where(Persona.company_id == int(company_id), Persona.deleted_at.is_(None))
+            .where(*filters)
             .order_by(Persona.created_at.desc(), Persona.id.desc())
         ).scalars().all()
 
     @staticmethod
-    def get_persona(session, *, company_id: int, persona_id: int, include_deleted: bool = False):
+    def get_persona(session, *, company_id: int, persona_id: int, include_deleted: bool = False, user_id: Optional[int] = None):
         filters = [Persona.company_id == int(company_id), Persona.id == int(persona_id)]
         if not include_deleted:
             filters.append(Persona.deleted_at.is_(None))
+        if user_id is not None:
+            filters.append(PersonaRepository._visible_persona_filter(company_id=company_id, user_id=user_id))
         return session.execute(select(Persona).where(*filters).limit(1)).scalar_one_or_none()
 
     @staticmethod
@@ -502,22 +554,28 @@ class PersonaRepository:
         return persona
 
     @staticmethod
-    def list_ui_tests(session, *, company_id: int):
+    def list_ui_tests(session, *, company_id: int, user_id: Optional[int] = None):
+        filters = [PersonaUITest.company_id == int(company_id), PersonaUITest.deleted_at.is_(None)]
+        if user_id is not None:
+            filters.append(PersonaRepository._personal_record_filter(PersonaUITest, user_id=user_id))
         return session.execute(
             select(PersonaUITest)
-            .where(PersonaUITest.company_id == int(company_id), PersonaUITest.deleted_at.is_(None))
+            .where(*filters)
             .order_by(PersonaUITest.created_at.desc(), PersonaUITest.id.desc())
         ).scalars().all()
 
     @staticmethod
-    def get_ui_test(session, *, company_id: int, test_id: int):
+    def get_ui_test(session, *, company_id: int, test_id: int, user_id: Optional[int] = None):
+        filters = [
+            PersonaUITest.company_id == int(company_id),
+            PersonaUITest.id == int(test_id),
+            PersonaUITest.deleted_at.is_(None),
+        ]
+        if user_id is not None:
+            filters.append(PersonaRepository._personal_record_filter(PersonaUITest, user_id=user_id))
         return session.execute(
             select(PersonaUITest)
-            .where(
-                PersonaUITest.company_id == int(company_id),
-                PersonaUITest.id == int(test_id),
-                PersonaUITest.deleted_at.is_(None),
-            )
+            .where(*filters)
             .limit(1)
         ).scalar_one_or_none()
 
@@ -629,22 +687,28 @@ class PersonaRepository:
         session.flush()
 
     @staticmethod
-    def list_ab_tests(session, *, company_id: int):
+    def list_ab_tests(session, *, company_id: int, user_id: Optional[int] = None):
+        filters = [PersonaABTest.company_id == int(company_id), PersonaABTest.deleted_at.is_(None)]
+        if user_id is not None:
+            filters.append(PersonaRepository._personal_record_filter(PersonaABTest, user_id=user_id))
         return session.execute(
             select(PersonaABTest)
-            .where(PersonaABTest.company_id == int(company_id), PersonaABTest.deleted_at.is_(None))
+            .where(*filters)
             .order_by(PersonaABTest.created_at.desc(), PersonaABTest.id.desc())
         ).scalars().all()
 
     @staticmethod
-    def get_ab_test(session, *, company_id: int, ab_test_id: int):
+    def get_ab_test(session, *, company_id: int, ab_test_id: int, user_id: Optional[int] = None):
+        filters = [
+            PersonaABTest.company_id == int(company_id),
+            PersonaABTest.id == int(ab_test_id),
+            PersonaABTest.deleted_at.is_(None),
+        ]
+        if user_id is not None:
+            filters.append(PersonaRepository._personal_record_filter(PersonaABTest, user_id=user_id))
         return session.execute(
             select(PersonaABTest)
-            .where(
-                PersonaABTest.company_id == int(company_id),
-                PersonaABTest.id == int(ab_test_id),
-                PersonaABTest.deleted_at.is_(None),
-            )
+            .where(*filters)
             .limit(1)
         ).scalar_one_or_none()
 
@@ -738,22 +802,28 @@ class PersonaRepository:
         session.flush()
 
     @staticmethod
-    def list_interviews(session, *, company_id: int):
+    def list_interviews(session, *, company_id: int, user_id: Optional[int] = None):
+        filters = [PersonaInterview.company_id == int(company_id), PersonaInterview.deleted_at.is_(None)]
+        if user_id is not None:
+            filters.append(PersonaRepository._personal_record_filter(PersonaInterview, user_id=user_id))
         return session.execute(
             select(PersonaInterview)
-            .where(PersonaInterview.company_id == int(company_id), PersonaInterview.deleted_at.is_(None))
+            .where(*filters)
             .order_by(PersonaInterview.created_at.desc(), PersonaInterview.id.desc())
         ).scalars().all()
 
     @staticmethod
-    def get_interview(session, *, company_id: int, interview_id: int):
+    def get_interview(session, *, company_id: int, interview_id: int, user_id: Optional[int] = None):
+        filters = [
+            PersonaInterview.company_id == int(company_id),
+            PersonaInterview.id == int(interview_id),
+            PersonaInterview.deleted_at.is_(None),
+        ]
+        if user_id is not None:
+            filters.append(PersonaRepository._personal_record_filter(PersonaInterview, user_id=user_id))
         return session.execute(
             select(PersonaInterview)
-            .where(
-                PersonaInterview.company_id == int(company_id),
-                PersonaInterview.id == int(interview_id),
-                PersonaInterview.deleted_at.is_(None),
-            )
+            .where(*filters)
             .limit(1)
         ).scalar_one_or_none()
 

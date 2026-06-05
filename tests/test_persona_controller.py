@@ -12,7 +12,7 @@ from reopsai.infrastructure.persona_figma_client import FIGMA_OAUTH_SCOPE, Perso
 
 
 class FakePersonaService:
-    def list_folders(self, *, company_id):
+    def list_folders(self, *, company_id, user_id):
         return PersonaServiceResult(status="ok", data={"data": [{"id": 1, "company_id": company_id, "name": "Default"}]})
 
     def create_persona(self, *, company_id, user_id, data):
@@ -61,7 +61,7 @@ class FakePersonaService:
             },
         )
 
-    def get_persona(self, *, company_id, persona_id):
+    def get_persona(self, *, company_id, user_id, persona_id):
         return PersonaServiceResult(
             status="ok",
             data={
@@ -88,7 +88,7 @@ class FakePersonaService:
             },
         )
 
-    def list_combined_tests(self, *, company_id):
+    def list_combined_tests(self, *, company_id, user_id):
         return PersonaServiceResult(status="ok", data={"data": [{"id": 1, "kind": "ui-test", "company_id": company_id}]})
 
     def update_ab_test(self, *, company_id, user_id, ab_test_id, data):
@@ -115,7 +115,7 @@ class FakePersonaService:
     def create_interview(self, *, company_id, user_id, data):
         return PersonaServiceResult(status="ok", status_code=201, data={"data": {"id": 7, "company_id": company_id, "name": data["name"], "goal": data["goal"], "results": []}})
 
-    def get_interview(self, *, company_id, interview_id):
+    def get_interview(self, *, company_id, user_id, interview_id):
         return PersonaServiceResult(status="ok", data={"data": {"id": interview_id, "company_id": company_id, "results": []}, "results": []})
 
     def delete_interview(self, *, company_id, user_id, interview_id):
@@ -124,10 +124,10 @@ class FakePersonaService:
     def run_interview(self, *, company_id, user_id, interview_id, data):
         return PersonaServiceResult(status="ok", data={"data": {"id": interview_id, "status": "completed", "results": []}, "results": []})
 
-    def list_interviews(self, *, company_id):
+    def list_interviews(self, *, company_id, user_id):
         return PersonaServiceResult(status="ok", data={"data": [{"id": 7, "company_id": company_id, "results": []}]})
 
-    def list_interview_personas(self, *, company_id):
+    def list_interview_personas(self, *, company_id, user_id):
         return PersonaServiceResult(status="ok", data={"data": [{"id": 10, "company_id": company_id}]})
 
     def figma_connect_url(self, *, company_id, user_id, redirect_uri):
@@ -785,8 +785,8 @@ class ExistingSummaryRepository:
     calls = []
 
     @staticmethod
-    def list_existing_persona_summaries(session, *, company_id, limit=None):
-        ExistingSummaryRepository.calls.append({"company_id": company_id, "limit": limit})
+    def list_existing_persona_summaries(session, *, company_id, user_id=None, limit=None):
+        ExistingSummaryRepository.calls.append({"company_id": company_id, "user_id": user_id, "limit": limit})
         return [
             {
                 "name": "Persona A",
@@ -804,7 +804,7 @@ def fake_session_factory():
     yield object()
 
 
-def test_persona_generation_uses_company_scoped_existing_summary_by_default():
+def test_persona_generation_uses_visible_existing_summary_by_default():
     ExistingSummaryRepository.calls = []
     service = PersonaService(
         repository=ExistingSummaryRepository,
@@ -828,7 +828,7 @@ def test_persona_generation_uses_company_scoped_existing_summary_by_default():
     )
 
     assert result.status_code == 200
-    assert ExistingSummaryRepository.calls == [{"company_id": 200, "limit": None}]
+    assert ExistingSummaryRepository.calls == [{"company_id": 200, "user_id": 10, "limit": None}]
 
 
 def test_persona_generation_skips_db_summary_when_requested():

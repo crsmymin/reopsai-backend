@@ -59,6 +59,7 @@ def _persona_record(**overrides):
         folder_id=None,
         created_by_user_id=10,
         name="김민수",
+        tag=None,
         title="직장인",
         age=34,
         gender="남자",
@@ -377,7 +378,7 @@ class FakeRepository:
         return None
 
     @staticmethod
-    def get_ui_test(session, *, company_id, test_id):
+    def get_ui_test(session, *, company_id, test_id, user_id=None):
         return FakeRepository.ui_test
 
     @staticmethod
@@ -420,13 +421,13 @@ class FakeRepository:
         ]
 
     @staticmethod
-    def list_personas_by_ids(session, *, company_id, persona_ids):
+    def list_personas_by_ids(session, *, company_id, persona_ids, user_id=None):
         if FakeRepository.personas is not None:
             return [row for row in FakeRepository.personas if row.id in set(int(item) for item in persona_ids)]
         return [_persona_record()]
 
     @staticmethod
-    def list_all_personas(session, *, company_id):
+    def list_all_personas(session, *, company_id, user_id=None):
         return FakeRepository.personas or [_persona_record()]
 
     @staticmethod
@@ -484,7 +485,7 @@ class FakeRepository:
         ]
 
     @staticmethod
-    def get_ab_test(session, *, company_id, ab_test_id):
+    def get_ab_test(session, *, company_id, ab_test_id, user_id=None):
         return FakeRepository.ab_test
 
     @staticmethod
@@ -522,11 +523,11 @@ class FakeRepository:
         return SimpleNamespace(id=12, ab_test_id=ab_test_id, persona_id=persona_id, status="completed", created_at=_now(), updated_at=_now(), error_message=None, **data)
 
     @staticmethod
-    def get_interview(session, *, company_id, interview_id):
+    def get_interview(session, *, company_id, interview_id, user_id=None):
         return FakeRepository.interview
 
     @staticmethod
-    def list_interviews(session, *, company_id):
+    def list_interviews(session, *, company_id, user_id=None):
         return [FakeRepository.interview]
 
     @staticmethod
@@ -1573,9 +1574,9 @@ def test_detail_payloads_embed_results_and_original_camel_case_aliases():
     )
     service = _service()
 
-    ui = service.get_ui_test(company_id=100, test_id=1).data["data"]
-    ab = service.get_ab_test(company_id=100, ab_test_id=2).data["data"]
-    interview = service.get_interview(company_id=100, interview_id=3).data["data"]
+    ui = service.get_ui_test(company_id=100, user_id=10, test_id=1).data["data"]
+    ab = service.get_ab_test(company_id=100, user_id=10, ab_test_id=2).data["data"]
+    interview = service.get_interview(company_id=100, user_id=10, interview_id=3).data["data"]
 
     assert ui["deviceType"] == "pc"
     assert ui["sourceData"]["imageEntries"][0]["id"] == "screen-1"
