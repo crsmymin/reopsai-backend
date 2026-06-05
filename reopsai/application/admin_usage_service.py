@@ -337,6 +337,40 @@ class AdminUsageService:
                 },
             )
 
+    def reset_company_token_metering(self, *, company_id, created_by=None, note=None):
+        if not self.db_ready():
+            return AdminUsageResult("db_unavailable")
+        with self.session_factory() as db_session:
+            company = self.repository.get_company(db_session, company_id)
+            if not company:
+                return AdminUsageResult("not_found")
+            ledger = self.repository.reset_company_token_metering(
+                db_session,
+                company_id=company_id,
+                created_by=created_by,
+                note=note,
+            )
+            granted, used = self.repository.company_token_totals(db_session, company_id)
+            balance = self.repository.company_token_balance(db_session, company_id)
+            return AdminUsageResult(
+                "ok",
+                {
+                    "company": {"id": company.id, "name": company.name, "status": company.status},
+                    "ledger": {
+                        "id": ledger.id,
+                        "company_id": ledger.company_id,
+                        "delta_weighted_tokens": ledger.delta_weighted_tokens,
+                        "reason": ledger.reason,
+                        "created_by": ledger.created_by,
+                        "note": ledger.note,
+                        "created_at": serialize_dt(ledger.created_at),
+                    },
+                    "granted_weighted_tokens": granted,
+                    "used_weighted_tokens": used,
+                    "remaining_weighted_tokens": balance,
+                },
+            )
+
     def list_model_prices(self, *, provider="", active_only=True):
         if not self.db_ready():
             return AdminUsageResult("db_unavailable")

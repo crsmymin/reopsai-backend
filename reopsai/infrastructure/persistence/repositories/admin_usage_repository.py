@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from reopsai.infrastructure.persistence.models.core import (
     Company,
@@ -16,6 +16,7 @@ from reopsai.infrastructure.persistence.models.core import (
     User,
 )
 from reopsai.shared.usage_metering import (
+    INITIAL_COMPANY_WEIGHTED_TOKEN_GRANT,
     cleanup_old_llm_usage_events,
     ensure_company_initial_grant,
     get_company_token_balance,
@@ -153,6 +154,27 @@ class AdminUsageRepository:
             reason="top_up",
             created_by=created_by,
             note=note,
+        )
+        session.add(ledger)
+        session.flush()
+        return ledger
+
+    @staticmethod
+    def reset_company_token_metering(session, *, company_id, created_by=None, note=None):
+        company_id = int(company_id)
+        session.execute(
+            delete(CompanyTokenLedger).where(CompanyTokenLedger.company_id == company_id)
+        )
+        session.execute(
+            delete(LlmUsageDailyAggregate).where(LlmUsageDailyAggregate.company_id == company_id)
+        )
+        session.execute(delete(LlmUsageEvent).where(LlmUsageEvent.company_id == company_id))
+        ledger = CompanyTokenLedger(
+            company_id=company_id,
+            delta_weighted_tokens=INITIAL_COMPANY_WEIGHTED_TOKEN_GRANT,
+            reason="initial_grant",
+            created_by=created_by,
+            note=note or "Admin token meter reset",
         )
         session.add(ledger)
         session.flush()
