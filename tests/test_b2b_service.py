@@ -10,6 +10,8 @@ def fake_session_factory():
 
 
 class FakeB2bRepository:
+    cleanup_calls = []
+
     @staticmethod
     def get_my_company_id(session, user_id_int, company_id_claim=None):
         if user_id_int == 404:
@@ -142,6 +144,21 @@ class FakeB2bRepository:
     def remove_membership(session, membership):
         return None
 
+    @classmethod
+    def delete_member_created_outputs(cls, session, *, company_id, member_user_id, deleted_by_user_id):
+        call = {
+            "company_id": company_id,
+            "member_user_id": member_user_id,
+            "deleted_by_user_id": deleted_by_user_id,
+        }
+        cls.cleanup_calls.append(call)
+        return {
+            "projects": 1,
+            "studies": 2,
+            "artifacts": 3,
+            "persona": {"persona_ui_tests": 1},
+        }
+
     @staticmethod
     def promote_member_to_owner(session, *, company_id, member_user_id):
         if member_user_id == 404:
@@ -150,6 +167,7 @@ class FakeB2bRepository:
 
 
 def make_service():
+    FakeB2bRepository.cleanup_calls = []
     return B2bService(repository=FakeB2bRepository, session_factory=fake_session_factory)
 
 
@@ -260,7 +278,12 @@ def test_b2b_add_update_reset_remove_role_service_statuses():
     assert service.reset_team_member_password(user_id=10, company_id_claim=100, member_user_id=11).status == "ok"
 
     assert service.remove_team_member(user_id=10, company_id_claim=100, member_user_id=10).status == "self_remove"
-    assert service.remove_team_member(user_id=10, company_id_claim=100, member_user_id=11).status == "ok"
+    removed = service.remove_team_member(user_id=10, company_id_claim=100, member_user_id=11)
+    assert removed.status == "ok"
+    assert removed.data["deleted_outputs"]["artifacts"] == 3
+    assert FakeB2bRepository.cleanup_calls == [
+        {"company_id": 100, "member_user_id": 11, "deleted_by_user_id": 10}
+    ]
 
     assert service.change_team_member_role(user_id=10, company_id_claim=100, member_user_id=11, new_role="member").status == "unsupported_role"
     assert service.change_team_member_role(user_id=10, company_id_claim=100, member_user_id=10, new_role="owner").status == "self_role_change"

@@ -116,6 +116,54 @@ class DefaultTargetPersonaRepository(DefaultSourcePersonaRepository):
         raise AssertionError("update_persona should not be called when moving into a default folder")
 
 
+class ListFoldersRepository:
+    @staticmethod
+    def list_folders(session, *, company_id, user_id):
+        return [
+            SimpleNamespace(
+                id=1,
+                company_id=company_id,
+                team_id=None,
+                name="기본 폴더",
+                description=None,
+                color=None,
+                is_default=True,
+                created_by_user_id=None,
+                created_at=None,
+                updated_at=None,
+            ),
+            SimpleNamespace(
+                id=2,
+                company_id=company_id,
+                team_id=None,
+                name="커스텀 폴더",
+                description=None,
+                color=None,
+                is_default=False,
+                created_by_user_id=user_id,
+                created_at=None,
+                updated_at=None,
+            ),
+        ]
+
+    @staticmethod
+    def count_visible_personas_by_folder_ids(session, *, company_id, user_id, folder_ids):
+        return {1: 4, 2: 7}
+
+
+def test_list_folders_includes_persona_counts_for_all_folder_types():
+    service = PersonaService(repository=ListFoldersRepository, session_factory=fake_session_factory)
+
+    result = service.list_folders(company_id=5, user_id=10)
+
+    assert result.status == "ok"
+    assert result.data["data"][0]["is_default"] is True
+    assert result.data["data"][0]["persona_count"] == 4
+    assert result.data["data"][0]["personaCount"] == 4
+    assert result.data["data"][1]["is_default"] is False
+    assert result.data["data"][1]["persona_count"] == 7
+
+
 def test_update_folder_rejects_duplicate_company_folder_name():
     service = PersonaService(repository=DuplicateFolderRepository, session_factory=fake_session_factory)
 

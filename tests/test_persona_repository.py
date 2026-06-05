@@ -171,6 +171,25 @@ def test_visible_persona_filter_allows_owned_or_default_folder_personas():
     assert "persona_folders.deleted_at IS NULL" in compiled
 
 
+def test_count_visible_personas_by_folder_ids_uses_visible_persona_scope():
+    session = FakeSession([])
+
+    counts = PersonaRepository.count_visible_personas_by_folder_ids(
+        session,
+        company_id=5,
+        user_id=10,
+        folder_ids=[1, 2],
+    )
+
+    compiled = str(session.last_statement.compile(compile_kwargs={"literal_binds": True}))
+    assert counts == {}
+    assert "personas.company_id = 5" in compiled
+    assert "personas.deleted_at IS NULL" in compiled
+    assert "personas.folder_id IN (1, 2)" in compiled
+    assert "personas.created_by_user_id = 10" in compiled
+    assert "persona_folders.is_default IS true" in compiled
+
+
 def test_test_and_interview_lists_filter_to_creator_when_user_is_given():
     expectations = [
         (PersonaRepository.list_ui_tests, "persona_ui_tests.created_by_user_id = 10"),

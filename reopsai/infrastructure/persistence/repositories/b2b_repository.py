@@ -1,18 +1,32 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from werkzeug.security import generate_password_hash
 
 from reopsai.infrastructure.persistence.models.core import (
+    Artifact,
     Company,
     CompanyMember,
     CompanyTokenLedger,
     LlmUsageDailyAggregate,
     LlmUsageEvent,
+    Project,
+    Study,
+    StudySchedule,
     User,
+)
+from reopsai.infrastructure.persistence.models.persona import (
+    Persona,
+    PersonaABTest,
+    PersonaAsset,
+    PersonaFigmaAccount,
+    PersonaFolder,
+    PersonaInterview,
+    PersonaInterviewSource,
+    PersonaUITest,
 )
 from reopsai.shared.usage_metering import ensure_company_initial_grant, get_company_token_balance
 
@@ -249,6 +263,79 @@ class B2bRepository:
         session.delete(membership)
 
     @staticmethod
+    def delete_member_created_outputs(session, *, company_id, member_user_id, deleted_by_user_id):
+        member_user_id = int(member_user_id)
+        company_id = int(company_id)
+        deleted_by_user_id = int(deleted_by_user_id)
+        now = datetime.now(timezone.utc)
+
+        owned_project_ids = session.execute(
+            select(Project.id).where(Project.owner_id == member_user_id)
+        ).scalars().all()
+        owned_study_ids = []
+        if owned_project_ids:
+            owned_study_ids = session.execute(
+                select(Study.id).where(Study.project_id.in_(owned_project_ids))
+            ).scalars().all()
+
+        artifact_filters = [Artifact.owner_id == member_user_id]
+        if owned_study_ids:
+            artifact_filters.append(Artifact.study_id.in_(owned_study_ids))
+        artifact_count = session.execute(
+            select(func.count()).select_from(Artifact).where(or_(*artifact_filters))
+        ).scalar_one()
+
+        session.execute(delete(Artifact).where(or_(*artifact_filters)))
+        if owned_study_ids:
+            session.execute(delete(StudySchedule).where(StudySchedule.study_id.in_(owned_study_ids)))
+            session.execute(delete(Study).where(Study.id.in_(owned_study_ids)))
+        project_result = session.execute(delete(Project).where(Project.owner_id == member_user_id))
+
+        soft_delete_models = (
+            PersonaFolder,
+            Persona,
+            PersonaAsset,
+            PersonaUITest,
+            PersonaABTest,
+            PersonaInterviewSource,
+            PersonaInterview,
+        )
+        soft_deleted_counts = {}
+        for model in soft_delete_models:
+            result = session.execute(
+                update(model)
+                .where(
+                    model.company_id == company_id,
+                    model.created_by_user_id == member_user_id,
+                    model.deleted_at.is_(None),
+                )
+                .values(
+                    deleted_at=now,
+                    updated_by_user_id=deleted_by_user_id,
+                    updated_at=now,
+                )
+            )
+            soft_deleted_counts[model.__tablename__] = int(result.rowcount or 0)
+
+        figma_account_result = session.execute(
+            update(PersonaFigmaAccount)
+            .where(
+                PersonaFigmaAccount.company_id == company_id,
+                PersonaFigmaAccount.created_by_user_id == member_user_id,
+                PersonaFigmaAccount.deleted_at.is_(None),
+            )
+            .values(deleted_at=now, updated_at=now)
+        )
+        soft_deleted_counts[PersonaFigmaAccount.__tablename__] = int(figma_account_result.rowcount or 0)
+
+        return {
+            "projects": int(project_result.rowcount or 0),
+            "studies": len(owned_study_ids),
+            "artifacts": int(artifact_count or 0),
+            "persona": soft_deleted_counts,
+        }
+
+    @staticmethod
     def promote_member_to_owner(session, *, company_id, member_user_id):
         membership = B2bRepository.get_membership(session, company_id, member_user_id)
         if not membership:
@@ -265,4 +352,3 @@ class B2bRepository:
             .values(tier="enterprise", account_type=BUSINESS_ACCOUNT_TYPE, company_id=int(company_id))
         )
         return membership
-

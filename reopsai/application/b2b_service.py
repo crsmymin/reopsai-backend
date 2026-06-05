@@ -261,8 +261,14 @@ class B2bService:
                 return B2bResult("ok")
             if (membership.role or "member") == "owner":
                 return B2bResult("target_owner")
+            cleanup = self.repository.delete_member_created_outputs(
+                db_session,
+                company_id=company_id,
+                member_user_id=member_user_id,
+                deleted_by_user_id=user_id,
+            )
             self.repository.remove_membership(db_session, membership)
-            return B2bResult("ok")
+            return B2bResult("ok", {"deleted_outputs": cleanup})
 
     def change_team_member_role(self, *, user_id: int, company_id_claim: Optional[int], member_user_id: int, new_role: str) -> B2bResult:
         if new_role != "owner":

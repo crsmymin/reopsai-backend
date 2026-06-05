@@ -99,6 +99,23 @@ class PersonaRepository:
         ).scalars().all()
 
     @staticmethod
+    def count_visible_personas_by_folder_ids(session, *, company_id: int, user_id: int, folder_ids: Iterable[int]):
+        ids = [int(folder_id) for folder_id in folder_ids if folder_id is not None]
+        if not ids:
+            return {}
+        rows = session.execute(
+            select(Persona.folder_id, func.count(Persona.id))
+            .where(
+                Persona.company_id == int(company_id),
+                Persona.deleted_at.is_(None),
+                Persona.folder_id.in_(ids),
+                PersonaRepository._visible_persona_filter(company_id=company_id, user_id=user_id),
+            )
+            .group_by(Persona.folder_id)
+        ).all()
+        return {int(folder_id): int(count or 0) for folder_id, count in rows if folder_id is not None}
+
+    @staticmethod
     def get_folder(session, *, company_id: int, folder_id: int):
         return session.execute(
             select(PersonaFolder)
