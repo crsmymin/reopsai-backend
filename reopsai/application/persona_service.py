@@ -5426,41 +5426,62 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 model=model,
                 pack_model=pack_model,
             )
-            generated_results = self._run_interviews_for_personas(
-                company_id=company_id,
-                user_id=user_id,
-                interview_context=interview_context,
-                persona_ids=persona_ids_to_run,
-                persona_snapshots=persona_snapshots,
-                pack_model=pack_model,
-                model_override=model,
-            )
-            results = []
-            for persona_id, result_data in generated_results:
-                result = self.repository.create_interview_result(db_session, company_id=company_id, interview_id=interview.id, persona_id=persona_id, data=result_data)
-                results.append(self.interview_result_payload(result))
-            has_failures = any(row.get("status") == "failed" or row.get("error") for row in results)
-            summary = {
-                "totalResponses": len(results),
-                "completedResponses": sum(1 for row in results if row.get("status") != "failed"),
-                "failedResponses": sum(1 for row in results if row.get("status") == "failed" or row.get("error")),
-                "completedAt": datetime.now(timezone.utc).isoformat(),
-            }
-            self.repository.update_interview(
-                db_session,
-                interview,
-                user_id=user_id,
-                data={
-                    "status": "completed_with_errors" if has_failures else "completed",
-                    "progress": 100,
-                    "completed_at": datetime.now(timezone.utc),
-                    "summary": summary,
-                    "persona_ids": [row.id for row in personas],
-                    "error_message": None,
-                },
-            )
-            payload = self.interview_payload(interview, results=results)
-            return self._ok({"data": payload, "results": results})
+            try:
+                generated_results = self._run_interviews_for_personas(
+                    company_id=company_id,
+                    user_id=user_id,
+                    interview_context=interview_context,
+                    persona_ids=persona_ids_to_run,
+                    persona_snapshots=persona_snapshots,
+                    pack_model=pack_model,
+                    model_override=model,
+                )
+                results = []
+                for persona_id, result_data in generated_results:
+                    result = self.repository.create_interview_result(db_session, company_id=company_id, interview_id=interview.id, persona_id=persona_id, data=result_data)
+                    results.append(self.interview_result_payload(result))
+                has_failures = any(row.get("status") == "failed" or row.get("error") for row in results)
+                completed_responses = sum(1 for row in results if row.get("status") != "failed")
+                summary = {
+                    "totalResponses": len(results),
+                    "completedResponses": completed_responses,
+                    "failedResponses": sum(1 for row in results if row.get("status") == "failed" or row.get("error")),
+                    "completedAt": datetime.now(timezone.utc).isoformat(),
+                }
+                if completed_responses == 0 and has_failures:
+                    final_status = "failed"
+                elif has_failures:
+                    final_status = "completed_with_errors"
+                else:
+                    final_status = "completed"
+                self.repository.update_interview(
+                    db_session,
+                    interview,
+                    user_id=user_id,
+                    data={
+                        "status": final_status,
+                        "progress": 100,
+                        "completed_at": datetime.now(timezone.utc),
+                        "summary": summary,
+                        "persona_ids": [row.id for row in personas],
+                        "error_message": None if final_status != "failed" else "All interview personas failed",
+                    },
+                )
+                payload = self.interview_payload(interview, results=results)
+                return self._ok({"data": payload, "results": results})
+            except Exception as exc:
+                self.repository.update_interview(
+                    db_session,
+                    interview,
+                    user_id=user_id,
+                    data={
+                        "status": "failed",
+                        "progress": 100,
+                        "completed_at": datetime.now(timezone.utc),
+                        "error_message": str(exc),
+                    },
+                )
+                return self._error("failed", str(exc), 500)
 
     def figma_status(self, *, company_id: int, user_id: int):
         with self.session_factory() as db_session:
