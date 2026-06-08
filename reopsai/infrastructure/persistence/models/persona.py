@@ -187,6 +187,25 @@ class PersonaAsset(Base):
     deleted_at: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
 
+class PersonaResultShare(Base):
+    __tablename__ = "persona_result_shares"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_persona_result_shares_token_hash"),
+        Index("ix_persona_result_shares_resource", "company_id", "resource_type", "resource_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    company_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True)
+    resource_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    resource_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    token_salt: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    expires_at: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    revoked_at: Mapped[Optional[DateTime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
 class PersonaFigmaAccount(Base):
     __tablename__ = "persona_figma_accounts"
     __table_args__ = (

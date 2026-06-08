@@ -282,6 +282,43 @@ def get_persona_asset(asset_id: int):
     )
 
 
+@persona_bp.route("/share-links", methods=["POST"])
+@tier_required(["enterprise"])
+def create_result_share_link():
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.create_result_share(company_id=context["company_id"], user_id=context["user_id"], data=_json_body()))
+
+
+@persona_bp.route("/share-links/<path:token>", methods=["DELETE"])
+@tier_required(["enterprise"])
+def revoke_result_share_link(token: str):
+    context, error_response = _require_context()
+    if error_response:
+        return error_response
+    return _response(persona_service.revoke_result_share(company_id=context["company_id"], user_id=context["user_id"], token=token))
+
+
+@persona_bp.route("/share-links/<path:token>/assets/<int:asset_id>", methods=["GET"])
+def get_shared_result_asset(token: str, asset_id: int):
+    result = persona_service.get_shared_asset(token=token, asset_id=asset_id)
+    if result.status != "ok":
+        return _response(result)
+    asset = result.data["asset"]
+    content = result.data["content"]
+    return send_file(
+        BytesIO(content.bytes),
+        mimetype=asset.mime_type or content.mime_type,
+        download_name=asset.original_filename,
+    )
+
+
+@persona_bp.route("/share-links/<path:token>", methods=["GET"])
+def get_shared_result(token: str):
+    return _response(persona_service.get_shared_result(token=token))
+
+
 @persona_bp.route("/personas/<int:persona_id>/image", methods=["POST"])
 @tier_required(["enterprise"])
 def attach_persona_image(persona_id: int):
