@@ -106,9 +106,17 @@ class Config:
     PERSONA_FIGMA_CLIENT_ID = os.getenv('PERSONA_FIGMA_CLIENT_ID') or os.getenv('FIGMA_CLIENT_ID')
     PERSONA_FIGMA_CLIENT_SECRET = os.getenv('PERSONA_FIGMA_CLIENT_SECRET') or os.getenv('FIGMA_CLIENT_SECRET')
     PERSONA_FIGMA_ENCRYPTION_KEY = os.getenv('PERSONA_FIGMA_ENCRYPTION_KEY') or os.getenv('FIGMA_ENCRYPTION_KEY')
-    PERSONA_STORAGE_BACKEND = os.getenv('PERSONA_STORAGE_BACKEND', 'local')
+    _PERSONA_S3_BUCKET = os.getenv('PERSONA_S3_BUCKET') or os.getenv('AWS_S3_BUCKET')
+    PERSONA_STORAGE_BACKEND = os.getenv(
+        'PERSONA_STORAGE_BACKEND',
+        's3' if _PERSONA_S3_BUCKET else 'local',
+    )
     PERSONA_STORAGE_LOCAL_DIR = os.getenv('PERSONA_STORAGE_LOCAL_DIR', str(BASE_DIR / 'uploads' / 'persona_assets'))
-    PERSONA_S3_BUCKET = os.getenv('PERSONA_S3_BUCKET')
+    PERSONA_S3_BUCKET = _PERSONA_S3_BUCKET
+    PERSONA_S3_PREFIX = (os.getenv('PERSONA_S3_PREFIX') or os.getenv('AWS_S3_PREFIX') or '').strip('/')
+    PERSONA_S3_REGION = os.getenv('PERSONA_S3_REGION') or os.getenv('AWS_REGION') or os.getenv('AWS_DEFAULT_REGION')
+    PERSONA_S3_ENDPOINT_URL = os.getenv('PERSONA_S3_ENDPOINT_URL')
+    PERSONA_S3_LOCAL_FALLBACK = os.getenv('PERSONA_S3_LOCAL_FALLBACK', 'true').lower() not in {'0', 'false', 'no'}
     PERSONA_PLAYWRIGHT_TIMEOUT_MS = int(os.getenv('PERSONA_PLAYWRIGHT_TIMEOUT_MS', '15000'))
     
     # CORS 허용 출처 설정

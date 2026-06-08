@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from flask import Blueprint, jsonify, redirect, request, send_file
@@ -273,10 +274,12 @@ def get_persona_asset(asset_id: int):
     if result.status != "ok":
         return _response(result)
     asset = result.data["asset"]
-    path = result.data["path"]
-    if not path.exists():
-        return jsonify({"success": False, "error": "asset file not found"}), 404
-    return send_file(path, mimetype=asset.mime_type, download_name=asset.original_filename)
+    content = result.data["content"]
+    return send_file(
+        BytesIO(content.bytes),
+        mimetype=asset.mime_type or content.mime_type,
+        download_name=asset.original_filename,
+    )
 
 
 @persona_bp.route("/personas/<int:persona_id>/image", methods=["POST"])

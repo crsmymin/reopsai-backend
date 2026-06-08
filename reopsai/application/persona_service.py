@@ -1563,17 +1563,15 @@ class PersonaService:
                 asset = self.repository.get_asset(db_session, company_id=company_id, asset_id=asset_id)
                 if not asset:
                     continue
-                path = self.storage.resolve_local_path(asset.storage_key)
-                if not path.exists() or not path.is_file():
-                    continue
-                mime_type = asset.mime_type or mimetypes.guess_type(str(path))[0] or "image/png"
+                content = self.storage.read_asset_bytes(asset)
+                mime_type = asset.mime_type or content.mime_type or mimetypes.guess_type(asset.storage_key)[0] or "image/png"
                 media_parts.append({"type": "text", "text": screen_label, "screenIndex": screen_index})
                 media_parts.append(
                     {
                         "type": "image",
                         "screenIndex": screen_index,
                         "mime_type": mime_type,
-                        "data_base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+                        "data_base64": base64.b64encode(content.bytes).decode("ascii"),
                     }
                 )
             except Exception:
@@ -2826,10 +2824,8 @@ class PersonaService:
             asset = self.repository.get_asset(db_session, company_id=company_id, asset_id=asset_id)
             if not asset:
                 return
-            path = self.storage.resolve_local_path(asset.storage_key)
-            if not path.exists() or not path.is_file():
-                return
-            mime_type = asset.mime_type or mimetypes.guess_type(str(path))[0] or "image/png"
+            content = self.storage.read_asset_bytes(asset)
+            mime_type = asset.mime_type or content.mime_type or mimetypes.guess_type(asset.storage_key)[0] or "image/png"
             media_parts.append({"type": "text", "text": screen_label, "screenIndex": step_index, "variant": version})
             media_parts.append(
                 {
@@ -2837,7 +2833,7 @@ class PersonaService:
                     "screenIndex": step_index,
                     "variant": version,
                     "mime_type": mime_type,
-                    "data_base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+                    "data_base64": base64.b64encode(content.bytes).decode("ascii"),
                 }
             )
         except Exception:
@@ -4631,7 +4627,11 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             asset = self.repository.get_asset(db_session, company_id=company_id, asset_id=asset_id)
             if not asset:
                 return self._error("not_found", "asset not found", 404)
-            return self._ok({"asset": asset, "path": self.storage.resolve_local_path(asset.storage_key)})
+            try:
+                content = self.storage.read_asset_bytes(asset)
+            except FileNotFoundError:
+                return self._error("not_found", "asset file not found", 404)
+            return self._ok({"asset": asset, "content": content})
 
     def attach_persona_image(self, *, company_id: int, user_id: int, persona_id: int, data: dict):
         if not data.get("asset_id") and not data.get("image_url"):

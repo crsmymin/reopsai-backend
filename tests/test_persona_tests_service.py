@@ -650,6 +650,11 @@ class FakeStorage:
     def resolve_local_path(storage_key):
         return FakeStorage.local_paths[storage_key]
 
+    @staticmethod
+    def read_asset_bytes(asset):
+        path = FakeStorage.resolve_local_path(asset.storage_key)
+        return SimpleNamespace(bytes=path.read_bytes(), mime_type=asset.mime_type, source_backend="local")
+
 
 class FakeFigmaClient:
     @staticmethod

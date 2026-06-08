@@ -210,6 +210,12 @@ curl http://localhost:5001/health
 | `FRONTEND_URL` | 프론트엔드 URL | http://localhost:3000 |
 | `BACKEND_URL` | 백엔드 URL | http://localhost:5001 |
 | `ALLOWED_ORIGINS` | CORS 허용 오리진 (콤마 구분) | http://localhost:3000 |
+| `PERSONA_STORAGE_BACKEND` | 퍼소나/테스트 이미지 저장소 (`local` 또는 `s3`). 미설정 시 S3 bucket env가 있으면 `s3`, 없으면 `local` | s3 |
+| `PERSONA_S3_BUCKET` / `AWS_S3_BUCKET` | S3 버킷. `PERSONA_S3_BUCKET` 우선 | reopsai-persona-assets |
+| `PERSONA_S3_PREFIX` / `AWS_S3_PREFIX` | S3 object key prefix. `PERSONA_S3_PREFIX` 우선 | prod |
+| `PERSONA_S3_REGION` / `AWS_REGION` | S3 리전. `PERSONA_S3_REGION` 우선 | ap-northeast-2 |
+| `PERSONA_S3_ENDPOINT_URL` | S3 호환 스토리지 endpoint (선택) | https://... |
+| `PERSONA_S3_LOCAL_FALLBACK` | S3 read 실패 시 기존 로컬 파일 fallback 허용 | true |
 
 ## 마이그레이션
 
@@ -225,6 +231,26 @@ alembic downgrade -1
 
 # 마이그레이션 스크립트 생성
 alembic revision --autogenerate -m "description"
+```
+
+### 퍼소나/테스트 이미지 S3 이전
+
+`persona_assets` 기반 이미지 저장소는 hybrid 모드로 동작합니다. `PERSONA_STORAGE_BACKEND=s3`를 설정하면 신규 퍼소나 이미지, UI 테스트 이미지, A/B 테스트 이미지, URL 캡처, Figma 미리보기 캐시는 S3에 저장됩니다. 기존 `storage_backend=local` 파일은 같은 `/api/persona/storage/{asset_id}` URL로 로컬 볼륨에서 계속 읽을 수 있습니다.
+
+기존 로컬 파일은 다음 순서로 이전합니다. 스크립트는 로컬 파일을 삭제하지 않으며, S3 업로드 후 `HEAD` 크기 검증이 끝난 row만 `storage_backend=s3`로 전환합니다.
+
+```bash
+# 1. S3 설정과 DB 연결을 넣고 dry-run
+PERSONA_STORAGE_BACKEND=s3 \
+AWS_S3_BUCKET=reopsai-persona-assets \
+DATABASE_URL=postgresql+psycopg2://... \
+python scripts/migrate_persona_assets_to_s3.py --limit 100
+
+# 2. 실제 복사 및 검증된 row 전환
+PERSONA_STORAGE_BACKEND=s3 \
+AWS_S3_BUCKET=reopsai-persona-assets \
+DATABASE_URL=postgresql+psycopg2://... \
+python scripts/migrate_persona_assets_to_s3.py --commit
 ```
 
 ## 최초 최고 관리자 계정 생성
