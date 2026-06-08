@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import concurrent.futures
 import hashlib
+import hmac
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import mimetypes
 import re
+import secrets
 import threading
 import time
 import os
@@ -16,6 +19,7 @@ from typing import Any, Mapping, Optional
 
 from sqlalchemy.exc import IntegrityError
 
+from config import Config
 from reopsai.domain.persona.generation import (
     PersonaGenerationQualityError,
     build_curated_interview_evidence_bundle,
@@ -71,6 +75,21 @@ DEFAULT_INTERVIEW_MAX_CONCURRENCY = 4
 DEFAULT_INTERVIEW_RETRY_ATTEMPTS = 2
 DEFAULT_UI_TEST_MAX_CONCURRENCY = 4
 PERSONA_TAG_MAX_LENGTH = 20
+PERSONA_SHARE_RESOURCE_TYPES = {"ui_test", "ab_test", "interview"}
+PERSONA_SHARE_RESOURCE_ALIASES = {
+    "ui": "ui_test",
+    "ui-test": "ui_test",
+    "ui_test": "ui_test",
+    "ab": "ab_test",
+    "ab-test": "ab_test",
+    "ab_test": "ab_test",
+    "interview": "interview",
+}
+PERSONA_SHARE_FRONTEND_PATHS = {
+    "ui_test": "/tests/ui/shareview/{token}",
+    "ab_test": "/tests/ab/shareview/{token}",
+    "interview": "/tests/interview/shareview/{token}",
+}
 
 
 @dataclass(frozen=True)
@@ -1029,6 +1048,57 @@ def _storage_asset_id_from_url(value):
     return int(match.group(1))
 
 
+def _normalize_share_resource_type(value):
+    key = str(value or "").strip().lower()
+    return PERSONA_SHARE_RESOURCE_ALIASES.get(key)
+
+
+def _share_secret() -> bytes:
+    secret = Config.JWT_SECRET_KEY or os.getenv("SECRET_KEY") or "persona-result-share-dev-secret"
+    return str(secret).encode("utf-8")
+
+
+def _share_token_hash(token: str) -> str:
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def _share_token_for_salt(*, resource_type: str, resource_id: int, token_salt: str) -> str:
+    message = f"{resource_type}:{int(resource_id)}:{token_salt}".encode("utf-8")
+    digest = hmac.new(_share_secret(), message, hashlib.sha256).digest()
+    encoded = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return f"{token_salt}.{encoded}"
+
+
+def _storage_asset_ids_from_payload(value) -> set[int]:
+    ids: set[int] = set()
+    if isinstance(value, str):
+        for match in re.finditer(r"/api/persona/storage/(\d+)", value):
+            ids.add(int(match.group(1)))
+        return ids
+    if isinstance(value, dict):
+        for child in value.values():
+            ids.update(_storage_asset_ids_from_payload(child))
+        return ids
+    if isinstance(value, list):
+        for child in value:
+            ids.update(_storage_asset_ids_from_payload(child))
+    return ids
+
+
+def _rewrite_storage_urls_for_share(value, *, token: str):
+    if isinstance(value, str):
+        return re.sub(
+            r"/api/persona/storage/(\d+)",
+            lambda match: f"/api/persona/share-links/{token}/assets/{match.group(1)}",
+            value,
+        )
+    if isinstance(value, dict):
+        return {key: _rewrite_storage_urls_for_share(child, token=token) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_rewrite_storage_urls_for_share(child, token=token) for child in value]
+    return value
+
+
 def _camelize_result_aliases(payload: dict) -> dict:
     aliases = {
         "test_id": "testId",
@@ -1103,7 +1173,16 @@ def _parse_image_data_url(value: str | None):
     match = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", value.strip(), re.DOTALL)
     if not match:
         return None
-    return match.group(1), base64.b64decode(match.group(2))
+    try:
+        return match.group(1), base64.b64decode(match.group(2), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _image_extension(mime_type: str | None) -> str:
+    if not mime_type:
+        return "png"
+    return mime_type.split("/")[-1].split("+")[0] or "png"
 
 
 class PersonaService:
@@ -3962,7 +4041,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         if not parsed:
             return persona_data
         mime_type, image_bytes = parsed
-        extension = mime_type.split("/")[-1].split("+")[0] or "png"
+        extension = _image_extension(mime_type)
         storage_data = self.storage.save_bytes(
             image_bytes,
             company_id=company_id,
@@ -3975,9 +4054,85 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             **persona_data,
             "image_asset_id": asset.id,
             "image_url": f"/api/persona/storage/{asset.id}",
-            "image_data": image_bytes,
+            "image_data": None,
             "image_mime_type": mime_type,
         }
+
+    def _persist_inline_images_in_payload(self, db_session, *, company_id: int, user_id: int, payload, asset_type: str):
+        if isinstance(payload, str):
+            parsed = _parse_image_data_url(payload)
+            if not parsed:
+                return payload
+            mime_type, image_bytes = parsed
+            extension = _image_extension(mime_type)
+            storage_data = self.storage.save_bytes(
+                image_bytes,
+                company_id=company_id,
+                filename=f"inline-image.{extension}",
+                mime_type=mime_type,
+                asset_type=asset_type,
+            )
+            asset = self.repository.create_asset(db_session, company_id=company_id, user_id=user_id, data=storage_data)
+            return f"/api/persona/storage/{asset.id}"
+        if isinstance(payload, list):
+            return [
+                self._persist_inline_images_in_payload(
+                    db_session,
+                    company_id=company_id,
+                    user_id=user_id,
+                    payload=item,
+                    asset_type=asset_type,
+                )
+                for item in payload
+            ]
+        if isinstance(payload, dict):
+            return {
+                key: self._persist_inline_images_in_payload(
+                    db_session,
+                    company_id=company_id,
+                    user_id=user_id,
+                    payload=value,
+                    asset_type=asset_type,
+                )
+                for key, value in payload.items()
+            }
+        return payload
+
+    def _persist_inline_ui_images_in_data(self, db_session, *, company_id: int, user_id: int, data: dict):
+        normalized = dict(data)
+        source_data = normalized.get("source_data") if "source_data" in normalized else normalized.get("sourceData")
+        if source_data is not None:
+            normalized["source_data"] = self._persist_inline_images_in_payload(
+                db_session,
+                company_id=company_id,
+                user_id=user_id,
+                payload=source_data,
+                asset_type="test_source_inline",
+            )
+            normalized.pop("sourceData", None)
+        return normalized
+
+    def _persist_inline_ab_images_in_data(self, db_session, *, company_id: int, user_id: int, data: dict):
+        normalized = dict(data)
+        if "screens" in normalized:
+            normalized["screens"] = self._persist_inline_images_in_payload(
+                db_session,
+                company_id=company_id,
+                user_id=user_id,
+                payload=normalized["screens"],
+                asset_type="ab_test_source_inline",
+            )
+        context_data = normalized.get("context_data") if "context_data" in normalized else normalized.get("contextData")
+        if context_data is not None:
+            normalized["context_data"] = self._persist_inline_images_in_payload(
+                db_session,
+                company_id=company_id,
+                user_id=user_id,
+                payload=context_data,
+                asset_type="ab_test_source_inline",
+            )
+            normalized.pop("contextData", None)
+        return normalized
 
     def memory_payload(self, settings, activities, traits):
         return {
@@ -4664,6 +4819,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         if not data.get("source_type"):
             return self._error("invalid", "source_type is required", 400)
         with self.session_factory() as db_session:
+            data = self._persist_inline_ui_images_in_data(db_session, company_id=company_id, user_id=user_id, data=data)
             test = self.repository.create_ui_test(db_session, company_id=company_id, user_id=user_id, data=data)
             return self._ok({"data": self.ui_test_payload(test)}, 201)
 
@@ -4698,6 +4854,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 return self._error("not_found", "test not found", 404)
             if not self._can_modify(db_session, test, company_id=company_id, user_id=user_id):
                 return self._error("forbidden", "insufficient permissions", 403)
+            data = self._persist_inline_ui_images_in_data(db_session, company_id=company_id, user_id=user_id, data=data)
             updated = self.repository.update_ui_test(db_session, test, user_id=user_id, data=data)
             return self._ok({"data": self.ui_test_payload(updated)})
 
@@ -4830,10 +4987,177 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         except Exception as exc:
             return self._error("capture_failed", str(exc), 502)
 
+    def _share_frontend_url(self, *, resource_type: str, token: str) -> str:
+        path = PERSONA_SHARE_FRONTEND_PATHS[resource_type].format(token=token)
+        return f"{Config.FRONTEND_URL.rstrip('/')}{path}"
+
+    def _share_link_payload(self, share, *, token: str) -> dict:
+        return {
+            "token": token,
+            "shareUrl": self._share_frontend_url(resource_type=share.resource_type, token=token),
+            "resourceType": share.resource_type,
+            "resourceId": share.resource_id,
+            "createdAt": _dt(share.created_at),
+            "expiresAt": _dt(share.expires_at),
+        }
+
+    def _get_share_resource(self, db_session, *, company_id: int, resource_type: str, resource_id: int, user_id: int | None = None):
+        if resource_type == "ui_test":
+            return self.repository.get_ui_test(db_session, company_id=company_id, test_id=resource_id, user_id=user_id)
+        if resource_type == "ab_test":
+            return self.repository.get_ab_test(db_session, company_id=company_id, ab_test_id=resource_id, user_id=user_id)
+        if resource_type == "interview":
+            return self.repository.get_interview(db_session, company_id=company_id, interview_id=resource_id, user_id=user_id)
+        return None
+
+    def _share_resource_payload(self, db_session, *, company_id: int, resource_type: str, resource):
+        if resource_type == "ui_test":
+            rows = self.repository.list_ui_test_results(db_session, company_id=company_id, test_id=resource.id)
+            payload = self.ui_test_payload(resource)
+            payload["results"] = [self.ui_result_payload(row) for row in rows]
+            return payload
+        if resource_type == "ab_test":
+            rows = self.repository.list_ab_test_results(db_session, company_id=company_id, ab_test_id=resource.id)
+            payload = self.ab_test_payload(resource)
+            payload["results"] = [self.ab_result_payload(row) for row in rows]
+            return payload
+        if resource_type == "interview":
+            rows = self.repository.list_interview_results(db_session, company_id=company_id, interview_id=resource.id)
+            return self.interview_payload(resource, results=[self.interview_result_payload(row) for row in rows])
+        return None
+
+    def create_result_share(self, *, company_id: int, user_id: int, data: dict):
+        resource_type = _normalize_share_resource_type(data.get("resourceType") or data.get("resource_type"))
+        if not resource_type:
+            return self._error("invalid", "resourceType is required", 400)
+        try:
+            resource_id = int(data.get("resourceId") or data.get("resource_id"))
+        except Exception:
+            return self._error("invalid", "resourceId is required", 400)
+        with self.session_factory() as db_session:
+            resource = self._get_share_resource(
+                db_session,
+                company_id=company_id,
+                user_id=user_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+            if not resource:
+                return self._error("not_found", "result not found", 404)
+            share = self.repository.get_active_result_share(
+                db_session,
+                company_id=company_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+            if share:
+                token = _share_token_for_salt(
+                    resource_type=share.resource_type,
+                    resource_id=share.resource_id,
+                    token_salt=share.token_salt,
+                )
+                return self._ok({"data": self._share_link_payload(share, token=token)}, 201)
+            for _ in range(3):
+                token_salt = secrets.token_urlsafe(16)
+                token = _share_token_for_salt(resource_type=resource_type, resource_id=resource_id, token_salt=token_salt)
+                try:
+                    share = self.repository.create_result_share(
+                        db_session,
+                        company_id=company_id,
+                        user_id=user_id,
+                        data={
+                            "resource_type": resource_type,
+                            "resource_id": resource_id,
+                            "token_hash": _share_token_hash(token),
+                            "token_salt": token_salt,
+                            "expires_at": None,
+                        },
+                    )
+                    return self._ok({"data": self._share_link_payload(share, token=token)}, 201)
+                except IntegrityError:
+                    db_session.rollback()
+            return self._error("failed", "failed to create share link", 500)
+
+    def revoke_result_share(self, *, company_id: int, user_id: int, token: str):
+        with self.session_factory() as db_session:
+            share = self.repository.get_result_share_by_hash(db_session, token_hash=_share_token_hash(token))
+            if not share or int(share.company_id) != int(company_id):
+                return self._error("not_found", "share link not found", 404)
+            resource = self._get_share_resource(
+                db_session,
+                company_id=company_id,
+                user_id=user_id,
+                resource_type=share.resource_type,
+                resource_id=share.resource_id,
+            )
+            if not resource:
+                return self._error("not_found", "result not found", 404)
+            self.repository.revoke_result_share(db_session, share)
+            return self._ok()
+
+    def get_shared_result(self, *, token: str):
+        with self.session_factory() as db_session:
+            share = self.repository.get_result_share_by_hash(db_session, token_hash=_share_token_hash(token))
+            if not share:
+                return self._error("not_found", "share link not found", 404)
+            resource = self._get_share_resource(
+                db_session,
+                company_id=share.company_id,
+                resource_type=share.resource_type,
+                resource_id=share.resource_id,
+            )
+            if not resource:
+                return self._error("not_found", "share link not found", 404)
+            payload = self._share_resource_payload(
+                db_session,
+                company_id=share.company_id,
+                resource_type=share.resource_type,
+                resource=resource,
+            )
+            payload = _rewrite_storage_urls_for_share(payload, token=token)
+            return self._ok({
+                "data": {
+                    "resourceType": share.resource_type,
+                    "resourceId": share.resource_id,
+                    "result": payload,
+                }
+            })
+
+    def get_shared_asset(self, *, token: str, asset_id: int):
+        with self.session_factory() as db_session:
+            share = self.repository.get_result_share_by_hash(db_session, token_hash=_share_token_hash(token))
+            if not share:
+                return self._error("not_found", "share link not found", 404)
+            resource = self._get_share_resource(
+                db_session,
+                company_id=share.company_id,
+                resource_type=share.resource_type,
+                resource_id=share.resource_id,
+            )
+            if not resource:
+                return self._error("not_found", "share link not found", 404)
+            payload = self._share_resource_payload(
+                db_session,
+                company_id=share.company_id,
+                resource_type=share.resource_type,
+                resource=resource,
+            )
+            if int(asset_id) not in _storage_asset_ids_from_payload(payload):
+                return self._error("not_found", "asset not found", 404)
+            asset = self.repository.get_asset(db_session, company_id=share.company_id, asset_id=asset_id)
+            if not asset:
+                return self._error("not_found", "asset not found", 404)
+            try:
+                content = self.storage.read_asset_bytes(asset)
+            except FileNotFoundError:
+                return self._error("not_found", "asset file not found", 404)
+            return self._ok({"asset": asset, "content": content})
+
     def create_ab_test(self, *, company_id: int, user_id: int, data: dict):
         if not self._require_name(data):
             return self._error("invalid", "name is required", 400)
         with self.session_factory() as db_session:
+            data = self._persist_inline_ab_images_in_data(db_session, company_id=company_id, user_id=user_id, data=data)
             test = self.repository.create_ab_test(db_session, company_id=company_id, user_id=user_id, data=data)
             return self._ok({"data": self.ab_test_payload(test)}, 201)
 
@@ -4858,6 +5182,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 return self._error("not_found", "ab test not found", 404)
             if not self._can_modify(db_session, test, company_id=company_id, user_id=user_id):
                 return self._error("forbidden", "insufficient permissions", 403)
+            data = self._persist_inline_ab_images_in_data(db_session, company_id=company_id, user_id=user_id, data=data)
             updated = self.repository.update_ab_test(db_session, test, user_id=user_id, data=data)
             return self._ok({"data": self.ab_test_payload(updated)})
 

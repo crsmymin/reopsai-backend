@@ -22,6 +22,7 @@ from reopsai.infrastructure.persistence.models.persona import (
     PersonaInterviewSource,
     PersonaLearnedTrait,
     PersonaMemorySettings,
+    PersonaResultShare,
     PersonaUITest,
     PersonaUITestResult,
 )
@@ -316,7 +317,7 @@ class PersonaRepository:
             source_data=data.get("source_data"),
             image_asset_id=data.get("image_asset_id"),
             image_url=data.get("image_url"),
-            image_data=data.get("image_data"),
+            image_data=None,
             image_mime_type=data.get("image_mime_type"),
             image_prompt=data.get("image_prompt"),
             schema_version=int(data.get("schema_version") or 3),
@@ -372,7 +373,6 @@ class PersonaRepository:
             "language",
             "source_data",
             "image_url",
-            "image_data",
             "image_mime_type",
             "image_prompt",
             "locale",
@@ -542,7 +542,7 @@ class PersonaRepository:
             mime_type=data.get("mime_type"),
             byte_size=data.get("byte_size"),
             metadata_=data.get("metadata"),
-            data=data.get("data"),
+            data=None,
         )
         session.add(asset)
         session.flush()
@@ -559,6 +559,56 @@ class PersonaRepository:
             )
             .limit(1)
         ).scalar_one_or_none()
+
+    @staticmethod
+    def get_active_result_share(session, *, company_id: int, resource_type: str, resource_id: int):
+        now = utcnow()
+        return session.execute(
+            select(PersonaResultShare)
+            .where(
+                PersonaResultShare.company_id == int(company_id),
+                PersonaResultShare.resource_type == str(resource_type),
+                PersonaResultShare.resource_id == int(resource_id),
+                PersonaResultShare.revoked_at.is_(None),
+                or_(PersonaResultShare.expires_at.is_(None), PersonaResultShare.expires_at > now),
+            )
+            .order_by(PersonaResultShare.created_at.desc(), PersonaResultShare.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def get_result_share_by_hash(session, *, token_hash: str):
+        now = utcnow()
+        return session.execute(
+            select(PersonaResultShare)
+            .where(
+                PersonaResultShare.token_hash == str(token_hash),
+                PersonaResultShare.revoked_at.is_(None),
+                or_(PersonaResultShare.expires_at.is_(None), PersonaResultShare.expires_at > now),
+            )
+            .limit(1)
+        ).scalar_one_or_none()
+
+    @staticmethod
+    def create_result_share(session, *, company_id: int, user_id: int, data: dict):
+        share = PersonaResultShare(
+            company_id=int(company_id),
+            resource_type=data["resource_type"],
+            resource_id=int(data["resource_id"]),
+            token_hash=data["token_hash"],
+            token_salt=data["token_salt"],
+            created_by_user_id=int(user_id),
+            expires_at=data.get("expires_at"),
+        )
+        session.add(share)
+        session.flush()
+        return share
+
+    @staticmethod
+    def revoke_result_share(session, share):
+        share.revoked_at = utcnow()
+        session.flush()
+        return share
 
     @staticmethod
     def attach_persona_image(session, persona, *, user_id: int, asset_id: Optional[int], image_url: Optional[str], image_prompt: Optional[str]):

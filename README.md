@@ -251,6 +251,24 @@ PERSONA_STORAGE_BACKEND=s3 \
 AWS_S3_BUCKET=reopsai-persona-assets \
 DATABASE_URL=postgresql+psycopg2://... \
 python scripts/migrate_persona_assets_to_s3.py --commit
+
+# 3. UI/A-B 테스트 JSONB에 inline data:image가 있으면 persona_assets로 분리
+PERSONA_STORAGE_BACKEND=s3 \
+AWS_S3_BUCKET=reopsai-persona-assets \
+DATABASE_URL=postgresql+psycopg2://... \
+python scripts/migrate_inline_image_payloads_to_assets.py --limit 100
+
+PERSONA_STORAGE_BACKEND=s3 \
+AWS_S3_BUCKET=reopsai-persona-assets \
+DATABASE_URL=postgresql+psycopg2://... \
+python scripts/migrate_inline_image_payloads_to_assets.py --commit
+
+# 4. asset-backed row에 중복 저장된 DB blob 정리
+DATABASE_URL=postgresql+psycopg2://... \
+python scripts/cleanup_persona_image_blobs.py --limit 100
+
+DATABASE_URL=postgresql+psycopg2://... \
+python scripts/cleanup_persona_image_blobs.py --commit
 ```
 
 ## 최초 최고 관리자 계정 생성

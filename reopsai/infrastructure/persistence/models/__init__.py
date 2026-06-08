@@ -33,6 +33,7 @@ from reopsai.infrastructure.persistence.models.persona import (
     PersonaInterviewSource,
     PersonaLearnedTrait,
     PersonaMemorySettings,
+    PersonaResultShare,
     PersonaUITest,
     PersonaUITestResult,
 )
@@ -58,6 +59,7 @@ __all__ = [
     "PersonaFolder",
     "Persona",
     "PersonaMemorySettings",
+    "PersonaResultShare",
     "PersonaActivity",
     "PersonaLearnedTrait",
     "PersonaAsset",
