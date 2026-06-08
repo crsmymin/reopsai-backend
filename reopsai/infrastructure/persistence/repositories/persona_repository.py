@@ -317,7 +317,7 @@ class PersonaRepository:
             source_data=data.get("source_data"),
             image_asset_id=data.get("image_asset_id"),
             image_url=data.get("image_url"),
-            image_data=data.get("image_data"),
+            image_data=None,
             image_mime_type=data.get("image_mime_type"),
             image_prompt=data.get("image_prompt"),
             schema_version=int(data.get("schema_version") or 3),
@@ -373,7 +373,6 @@ class PersonaRepository:
             "language",
             "source_data",
             "image_url",
-            "image_data",
             "image_mime_type",
             "image_prompt",
             "locale",
@@ -543,7 +542,7 @@ class PersonaRepository:
             mime_type=data.get("mime_type"),
             byte_size=data.get("byte_size"),
             metadata_=data.get("metadata"),
-            data=data.get("data"),
+            data=None,
         )
         session.add(asset)
         session.flush()

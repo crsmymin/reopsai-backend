@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import concurrent.futures
 import hashlib
 import hmac
@@ -1172,7 +1173,16 @@ def _parse_image_data_url(value: str | None):
     match = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", value.strip(), re.DOTALL)
     if not match:
         return None
-    return match.group(1), base64.b64decode(match.group(2))
+    try:
+        return match.group(1), base64.b64decode(match.group(2), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
+def _image_extension(mime_type: str | None) -> str:
+    if not mime_type:
+        return "png"
+    return mime_type.split("/")[-1].split("+")[0] or "png"
 
 
 class PersonaService:
@@ -4031,7 +4041,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         if not parsed:
             return persona_data
         mime_type, image_bytes = parsed
-        extension = mime_type.split("/")[-1].split("+")[0] or "png"
+        extension = _image_extension(mime_type)
         storage_data = self.storage.save_bytes(
             image_bytes,
             company_id=company_id,
@@ -4044,9 +4054,85 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
             **persona_data,
             "image_asset_id": asset.id,
             "image_url": f"/api/persona/storage/{asset.id}",
-            "image_data": image_bytes,
+            "image_data": None,
             "image_mime_type": mime_type,
         }
+
+    def _persist_inline_images_in_payload(self, db_session, *, company_id: int, user_id: int, payload, asset_type: str):
+        if isinstance(payload, str):
+            parsed = _parse_image_data_url(payload)
+            if not parsed:
+                return payload
+            mime_type, image_bytes = parsed
+            extension = _image_extension(mime_type)
+            storage_data = self.storage.save_bytes(
+                image_bytes,
+                company_id=company_id,
+                filename=f"inline-image.{extension}",
+                mime_type=mime_type,
+                asset_type=asset_type,
+            )
+            asset = self.repository.create_asset(db_session, company_id=company_id, user_id=user_id, data=storage_data)
+            return f"/api/persona/storage/{asset.id}"
+        if isinstance(payload, list):
+            return [
+                self._persist_inline_images_in_payload(
+                    db_session,
+                    company_id=company_id,
+                    user_id=user_id,
+                    payload=item,
+                    asset_type=asset_type,
+                )
+                for item in payload
+            ]
+        if isinstance(payload, dict):
+            return {
+                key: self._persist_inline_images_in_payload(
+                    db_session,
+                    company_id=company_id,
+                    user_id=user_id,
+                    payload=value,
+                    asset_type=asset_type,
+                )
+                for key, value in payload.items()
+            }
+        return payload
+
+    def _persist_inline_ui_images_in_data(self, db_session, *, company_id: int, user_id: int, data: dict):
+        normalized = dict(data)
+        source_data = normalized.get("source_data") if "source_data" in normalized else normalized.get("sourceData")
+        if source_data is not None:
+            normalized["source_data"] = self._persist_inline_images_in_payload(
+                db_session,
+                company_id=company_id,
+                user_id=user_id,
+                payload=source_data,
+                asset_type="test_source_inline",
+            )
+            normalized.pop("sourceData", None)
+        return normalized
+
+    def _persist_inline_ab_images_in_data(self, db_session, *, company_id: int, user_id: int, data: dict):
+        normalized = dict(data)
+        if "screens" in normalized:
+            normalized["screens"] = self._persist_inline_images_in_payload(
+                db_session,
+                company_id=company_id,
+                user_id=user_id,
+                payload=normalized["screens"],
+                asset_type="ab_test_source_inline",
+            )
+        context_data = normalized.get("context_data") if "context_data" in normalized else normalized.get("contextData")
+        if context_data is not None:
+            normalized["context_data"] = self._persist_inline_images_in_payload(
+                db_session,
+                company_id=company_id,
+                user_id=user_id,
+                payload=context_data,
+                asset_type="ab_test_source_inline",
+            )
+            normalized.pop("contextData", None)
+        return normalized
 
     def memory_payload(self, settings, activities, traits):
         return {
@@ -4733,6 +4819,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         if not data.get("source_type"):
             return self._error("invalid", "source_type is required", 400)
         with self.session_factory() as db_session:
+            data = self._persist_inline_ui_images_in_data(db_session, company_id=company_id, user_id=user_id, data=data)
             test = self.repository.create_ui_test(db_session, company_id=company_id, user_id=user_id, data=data)
             return self._ok({"data": self.ui_test_payload(test)}, 201)
 
@@ -4767,6 +4854,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 return self._error("not_found", "test not found", 404)
             if not self._can_modify(db_session, test, company_id=company_id, user_id=user_id):
                 return self._error("forbidden", "insufficient permissions", 403)
+            data = self._persist_inline_ui_images_in_data(db_session, company_id=company_id, user_id=user_id, data=data)
             updated = self.repository.update_ui_test(db_session, test, user_id=user_id, data=data)
             return self._ok({"data": self.ui_test_payload(updated)})
 
@@ -5069,6 +5157,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
         if not self._require_name(data):
             return self._error("invalid", "name is required", 400)
         with self.session_factory() as db_session:
+            data = self._persist_inline_ab_images_in_data(db_session, company_id=company_id, user_id=user_id, data=data)
             test = self.repository.create_ab_test(db_session, company_id=company_id, user_id=user_id, data=data)
             return self._ok({"data": self.ab_test_payload(test)}, 201)
 
@@ -5093,6 +5182,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 return self._error("not_found", "ab test not found", 404)
             if not self._can_modify(db_session, test, company_id=company_id, user_id=user_id):
                 return self._error("forbidden", "insufficient permissions", 403)
+            data = self._persist_inline_ab_images_in_data(db_session, company_id=company_id, user_id=user_id, data=data)
             updated = self.repository.update_ab_test(db_session, test, user_id=user_id, data=data)
             return self._ok({"data": self.ab_test_payload(updated)})
 
