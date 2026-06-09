@@ -13,6 +13,7 @@ from reopsai.infrastructure.persistence.models.core import (
     User,
     UserFeedback,
 )
+from reopsai.infrastructure.persistence.repositories.user_deletion import delete_user_account_data
 from reopsai.shared.usage_metering import ensure_company_initial_grant
 
 
@@ -118,7 +119,7 @@ class AdminBackofficeRepository:
 
     @staticmethod
     def delete_user(session, user):
-        session.delete(user)
+        return delete_user_account_data(session, user_id=user.id)
 
     @staticmethod
     def list_non_admin_users(session):

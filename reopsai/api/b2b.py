@@ -271,7 +271,9 @@ def b2b_remove_team_member(member_user_id: int):
             return jsonify({"success": False, "error": "owner 본인은 삭제할 수 없습니다."}), 400
         if result.status == "target_owner":
             return jsonify({"success": False, "error": "owner 계정은 삭제할 수 없습니다."}), 400
-        return jsonify({"success": True})
+        if result.status == "super_account":
+            return jsonify({"success": False, "error": "super 계정은 삭제할 수 없습니다."}), 403
+        return jsonify({"success": True, **(result.data or {})})
     except Exception as e:
         log_error(e, "B2B - 멤버 삭제 실패")
         return jsonify({"success": False, "error": str(e)}), 500

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import and_, delete, func, or_, select, update
@@ -28,6 +27,7 @@ from reopsai.infrastructure.persistence.models.persona import (
     PersonaInterviewSource,
     PersonaUITest,
 )
+from reopsai.infrastructure.persistence.repositories.user_deletion import delete_user_account_data
 from reopsai.shared.usage_metering import ensure_company_initial_grant, get_company_token_balance
 
 
@@ -263,10 +263,16 @@ class B2bRepository:
         session.delete(membership)
 
     @staticmethod
+    def delete_member_account(session, *, member_user_id):
+        return delete_user_account_data(session, user_id=member_user_id)
+
+    @staticmethod
     def delete_member_created_outputs(session, *, company_id, member_user_id, deleted_by_user_id):
         member_user_id = int(member_user_id)
         company_id = int(company_id)
         deleted_by_user_id = int(deleted_by_user_id)
+        from datetime import datetime, timezone
+
         now = datetime.now(timezone.utc)
 
         owned_project_ids = session.execute(

@@ -12,9 +12,9 @@ class FakeAdminBackofficeService:
                 "deleted_user": {"id": kwargs["user_id"], "email": "member@example.com"},
                 "affected": {
                     "company_memberships": 1,
-                    "owned_companies_released": 0,
-                    "owned_projects": 2,
-                    "usage_events_anonymized": 3,
+                    "research": {"projects": 2},
+                    "usage": {"company_usage_events": 3},
+                    "users": 1,
                 },
             },
         )
@@ -126,7 +126,7 @@ def test_admin_backoffice_controller_response_shapes(monkeypatch):
     deleted = client.delete("/api/admin/users/20", headers=headers)
     assert deleted.status_code == 200
     assert deleted.get_json()["deleted_user"] == {"id": 20, "email": "member@example.com"}
-    assert deleted.get_json()["affected"]["owned_projects"] == 2
+    assert deleted.get_json()["affected"]["research"]["projects"] == 2
 
     tier = client.put("/api/admin/users/20/tier", headers=headers, json={"tier": "premium"})
     assert tier.status_code == 200

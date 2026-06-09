@@ -162,17 +162,19 @@ class AdminBackofficeService:
             project_count = self.repository.count_user_projects(db_session, user_id)
             usage_event_count = self.repository.count_user_usage_events(db_session, user_id)
             payload = self._deleted_user_payload(db_session, target)
-            self.repository.delete_user(db_session, target)
+            affected = self.repository.delete_user(db_session, target) or {}
+            if not affected:
+                affected = {
+                    "company_memberships": int(membership_count),
+                    "owned_companies_released": int(owner_company_count),
+                    "research": {"projects": int(project_count)},
+                    "usage": {"company_usage_events": int(usage_event_count)},
+                }
             return AdminBackofficeResult(
                 "ok",
                 {
                     "deleted_user": payload,
-                    "affected": {
-                        "company_memberships": int(membership_count),
-                        "owned_companies_released": int(owner_company_count),
-                        "owned_projects": int(project_count),
-                        "usage_events_anonymized": int(usage_event_count),
-                    },
+                    "affected": affected,
                 },
             )
 

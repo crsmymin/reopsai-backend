@@ -11,6 +11,7 @@ def fake_session_factory():
 
 class FakeB2bRepository:
     cleanup_calls = []
+    account_delete_calls = []
 
     @staticmethod
     def get_my_company_id(session, user_id_int, company_id_claim=None):
@@ -145,6 +146,16 @@ class FakeB2bRepository:
         return None
 
     @classmethod
+    def delete_member_account(cls, session, *, member_user_id):
+        cls.account_delete_calls.append({"member_user_id": member_user_id})
+        return {
+            "company_memberships": 1,
+            "research": {"projects": 1, "studies": 2, "artifacts": 3},
+            "persona": {"ui_tests": 1},
+            "users": 1,
+        }
+
+    @classmethod
     def delete_member_created_outputs(cls, session, *, company_id, member_user_id, deleted_by_user_id):
         call = {
             "company_id": company_id,
@@ -168,6 +179,7 @@ class FakeB2bRepository:
 
 def make_service():
     FakeB2bRepository.cleanup_calls = []
+    FakeB2bRepository.account_delete_calls = []
     return B2bService(repository=FakeB2bRepository, session_factory=fake_session_factory)
 
 
@@ -280,10 +292,10 @@ def test_b2b_add_update_reset_remove_role_service_statuses():
     assert service.remove_team_member(user_id=10, company_id_claim=100, member_user_id=10).status == "self_remove"
     removed = service.remove_team_member(user_id=10, company_id_claim=100, member_user_id=11)
     assert removed.status == "ok"
-    assert removed.data["deleted_outputs"]["artifacts"] == 3
-    assert FakeB2bRepository.cleanup_calls == [
-        {"company_id": 100, "member_user_id": 11, "deleted_by_user_id": 10}
-    ]
+    assert removed.data["deleted_account"] is True
+    assert removed.data["affected"]["research"]["artifacts"] == 3
+    assert FakeB2bRepository.account_delete_calls == [{"member_user_id": 11}]
+    assert FakeB2bRepository.cleanup_calls == []
 
     assert service.change_team_member_role(user_id=10, company_id_claim=100, member_user_id=11, new_role="member").status == "unsupported_role"
     assert service.change_team_member_role(user_id=10, company_id_claim=100, member_user_id=10, new_role="owner").status == "self_role_change"

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from werkzeug.security import generate_password_hash
 
-from reopsai.infrastructure.persistence.models.core import Artifact, Company, Project, Study, Team, TeamMember, User
+from reopsai.infrastructure.persistence.models.core import Company, Team, TeamMember, User
+from reopsai.infrastructure.persistence.repositories.user_deletion import delete_user_account_data
 
 
 BUSINESS_ACCOUNT_TYPE = "business"
@@ -133,32 +134,11 @@ class AuthRepository:
 
     @staticmethod
     def delete_account_payload(session, *, user_id):
-        user_id_int = int(user_id)
-        project_ids = session.execute(
-            select(Project.id).where(Project.owner_id == user_id_int)
-        ).scalars().all()
-
-        if project_ids:
-            study_ids = session.execute(
-                select(Study.id).where(Study.project_id.in_(project_ids))
-            ).scalars().all()
-        else:
-            study_ids = []
-
-        if study_ids:
-            total_artifacts = (
-                session.execute(
-                    select(func.count()).select_from(Artifact).where(Artifact.study_id.in_(study_ids))
-                ).scalar_one()
-                or 0
-            )
-        else:
-            total_artifacts = 0
-
-        session.execute(delete(User).where(User.id == user_id_int))
+        affected = delete_user_account_data(session, user_id=user_id)
+        research = affected.get("research", {})
         return {
-            "deleted_projects": len(project_ids),
-            "deleted_studies": len(study_ids),
-            "deleted_artifacts": int(total_artifacts),
+            "deleted_projects": int(research.get("projects", 0)),
+            "deleted_studies": int(research.get("studies", 0)),
+            "deleted_artifacts": int(research.get("artifacts", 0)),
+            "affected": affected,
         }
-

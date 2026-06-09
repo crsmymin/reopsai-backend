@@ -137,6 +137,24 @@ class FakeBackofficeRepository:
     def delete_user(cls, session, user):
         cls.deleted_user_ids.append(user.id)
         cls.users.pop(user.id, None)
+        return {
+            "company_memberships": 1 if user.id == 20 else 0,
+            "team_memberships": 0,
+            "owned_teams_released": 0,
+            "research": {
+                "projects": 1 if user.id == 20 else 0,
+                "studies": 1 if user.id == 20 else 0,
+                "artifacts": 3 if user.id == 20 else 0,
+            },
+            "usage": {
+                "company_usage_events": 2 if user.id == 20 else 0,
+                "team_usage_events": 0,
+                "llm_usage_events": 0,
+                "llm_usage_daily_aggregates": 0,
+            },
+            "persona": {},
+            "users": 1,
+        }
 
     @classmethod
     def list_non_admin_users(cls, session):
@@ -251,12 +269,11 @@ def test_delete_user_permission_and_affected_payloads():
     result = make_service().delete_user(user_id=20, requester_id=30, requester_tier="enterprise")
     assert result.status == "ok"
     assert result.data["deleted_user"]["email"] == "member@example.com"
-    assert result.data["affected"] == {
-        "company_memberships": 1,
-        "owned_companies_released": 0,
-        "owned_projects": 1,
-        "usage_events_anonymized": 2,
-    }
+    assert result.data["affected"]["company_memberships"] == 1
+    assert result.data["affected"]["research"]["projects"] == 1
+    assert result.data["affected"]["research"]["artifacts"] == 3
+    assert result.data["affected"]["usage"]["company_usage_events"] == 2
+    assert result.data["affected"]["users"] == 1
 
 
 def test_user_tier_enterprise_stats_and_content_payloads():
