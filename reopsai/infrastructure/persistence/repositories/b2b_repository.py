@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import and_, delete, func, or_, select, update
@@ -271,7 +272,6 @@ class B2bRepository:
         member_user_id = int(member_user_id)
         company_id = int(company_id)
         deleted_by_user_id = int(deleted_by_user_id)
-        from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc)
 
