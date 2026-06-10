@@ -1213,6 +1213,12 @@ class PersonaService:
     def _error(self, status: str, error: str, status_code: int):
         return PersonaServiceResult(status=status, error=error, status_code=status_code)
 
+    @staticmethod
+    def _commit_if_available(db_session):
+        commit = getattr(db_session, "commit", None)
+        if callable(commit):
+            commit()
+
     def _require_name(self, data: dict):
         name = str(data.get("name") or "").strip()
         if not name:
@@ -5739,6 +5745,7 @@ ReOps 1:1 AI 인터뷰 목표 화면에 들어갈 질문 세트를 생성하세�
                 },
             )
             self.repository.delete_interview_results(db_session, company_id=company_id, interview_id=interview.id)
+            self._commit_if_available(db_session)
             persona_ids_to_run = [row.id for row in personas]
             persona_snapshots = {row.id: self._persona_snapshot_payload(row) for row in personas}
             interview_context = SimpleNamespace(
