@@ -14,7 +14,7 @@ ai_persona_bp = Blueprint("ai_persona", __name__, url_prefix="/api/ai-persona")
 
 @ai_persona_bp.route("/health", methods=["GET"])
 @jwt_required()
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def health():
     """B2B(엔터프라이즈) 전용 헬스체크. 라우터 동작 확인용."""
     return jsonify({"success": True, "service": "ai-persona"})

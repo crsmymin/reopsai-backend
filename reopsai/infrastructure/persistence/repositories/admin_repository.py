@@ -286,6 +286,8 @@ class AdminRepository:
             filters.append(func.lower(Company.name).like(f"%{search.lower()}%"))
         if status:
             filters.append(Company.status == status)
+        else:
+            filters.append(Company.status != "personal")
         if filters:
             query = query.where(and_(*filters))
             count_query = count_query.where(and_(*filters))

@@ -1226,6 +1226,10 @@ class PersonaService:
         data["name"] = name
         return name
 
+    def ensure_individual_persona_company(self, *, user_id: int):
+        with self.session_factory() as db_session:
+            return self.repository.ensure_individual_persona_company(db_session, user_id=user_id)
+
     def _can_modify(self, db_session, record, *, company_id: int, user_id: int):
         return self.repository.can_modify_record(db_session, record, company_id=company_id, user_id=user_id)
 

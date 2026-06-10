@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 
 from sqlalchemy import and_, func, or_, select
 
-from reopsai.infrastructure.persistence.models.core import CompanyMember
+from reopsai.infrastructure.persistence.models.core import Company, CompanyMember, User
 from reopsai.infrastructure.persistence.models.persona import (
     Persona,
     PersonaABTest,
@@ -44,6 +44,33 @@ def normalize_persona_tag(value):
 
 
 class PersonaRepository:
+    @staticmethod
+    def ensure_individual_persona_company(session, *, user_id: int):
+        user = session.execute(
+            select(User).where(User.id == int(user_id)).limit(1)
+        ).scalar_one_or_none()
+        if not user:
+            return None
+
+        company_name = f"Individual Persona Workspace {int(user.id)}"
+        company = session.execute(
+            select(Company)
+            .where(func.lower(Company.name) == company_name.lower())
+            .limit(1)
+        ).scalar_one_or_none()
+        if not company:
+            company = Company(name=company_name, status="personal")
+            session.add(company)
+            session.flush()
+
+        membership = PersonaRepository.get_membership(session, company_id=company.id, user_id=user.id)
+        if membership:
+            membership.role = "owner"
+        else:
+            session.add(CompanyMember(company_id=company.id, user_id=user.id, role="owner"))
+        session.flush()
+        return int(company.id)
+
     @staticmethod
     def _personal_record_filter(model, *, user_id: int):
         return model.created_by_user_id == int(user_id)

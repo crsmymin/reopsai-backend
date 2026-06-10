@@ -39,8 +39,10 @@ def _current_context():
         company_id = int(claims.get("company_id"))
     except Exception:
         company_id = None
-    if claims.get("account_type") != "business" or not company_id:
-        return None, (jsonify({"success": False, "error": "Business company context is required"}), 403)
+    if claims.get("account_type") != "business":
+        company_id = persona_service.ensure_individual_persona_company(user_id=user_id)
+    if not company_id:
+        return None, (jsonify({"success": False, "error": "Persona workspace context is required"}), 403)
     return {"user_id": user_id, "company_id": company_id, "claims": claims}, None
 
 
@@ -76,7 +78,7 @@ def _figma_frontend_redirect(**query):
 
 
 @persona_bp.route("/folders", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_folders():
     context, error_response = _require_context()
     if error_response:
@@ -85,7 +87,7 @@ def list_folders():
 
 
 @persona_bp.route("/folders", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def create_folder():
     context, error_response = _require_context()
     if error_response:
@@ -94,7 +96,7 @@ def create_folder():
 
 
 @persona_bp.route("/folders/<int:folder_id>", methods=["PATCH"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def update_folder(folder_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -103,7 +105,7 @@ def update_folder(folder_id: int):
 
 
 @persona_bp.route("/folders/<int:folder_id>", methods=["DELETE"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def delete_folder(folder_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -112,7 +114,7 @@ def delete_folder(folder_id: int):
 
 
 @persona_bp.route("/personas", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_personas():
     context, error_response = _require_context()
     if error_response:
@@ -134,7 +136,7 @@ def list_personas():
 
 
 @persona_bp.route("/personas", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def create_persona():
     context, error_response = _require_context()
     if error_response:
@@ -143,7 +145,7 @@ def create_persona():
 
 
 @persona_bp.route("/personas/segments", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def suggest_segments():
     context, error_response = _require_context()
     if error_response:
@@ -152,7 +154,7 @@ def suggest_segments():
 
 
 @persona_bp.route("/personas/manual", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def create_manual_persona():
     context, error_response = _require_context()
     if error_response:
@@ -164,7 +166,7 @@ def create_manual_persona():
 
 
 @persona_bp.route("/personas/save", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def save_personas():
     context, error_response = _require_context()
     if error_response:
@@ -173,7 +175,7 @@ def save_personas():
 
 
 @persona_bp.route("/personas/generate", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def generate_personas():
     context, error_response = _require_context()
     if error_response:
@@ -182,7 +184,7 @@ def generate_personas():
 
 
 @persona_bp.route("/personas/<int:persona_id>", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def get_persona(persona_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -191,7 +193,7 @@ def get_persona(persona_id: int):
 
 
 @persona_bp.route("/personas/<int:persona_id>", methods=["PATCH"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def update_persona(persona_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -200,7 +202,7 @@ def update_persona(persona_id: int):
 
 
 @persona_bp.route("/personas/<int:persona_id>", methods=["DELETE"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def delete_persona(persona_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -209,7 +211,7 @@ def delete_persona(persona_id: int):
 
 
 @persona_bp.route("/personas/<int:persona_id>/memory", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def get_persona_memory(persona_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -219,7 +221,7 @@ def get_persona_memory(persona_id: int):
 
 @persona_bp.route("/personas/<int:persona_id>/memory/settings", methods=["PATCH"])
 @persona_bp.route("/personas/<int:persona_id>/memory-settings", methods=["PATCH"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def update_persona_memory_settings(persona_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -228,7 +230,7 @@ def update_persona_memory_settings(persona_id: int):
 
 
 @persona_bp.route("/personas/<int:persona_id>/activities", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def add_persona_activity(persona_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -237,7 +239,7 @@ def add_persona_activity(persona_id: int):
 
 
 @persona_bp.route("/personas/<int:persona_id>/learned-traits", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def add_persona_trait(persona_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -246,7 +248,7 @@ def add_persona_trait(persona_id: int):
 
 
 @persona_bp.route("/personas/<int:persona_id>/learned-traits/<int:trait_id>", methods=["DELETE"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def delete_persona_trait(persona_id: int, trait_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -255,7 +257,7 @@ def delete_persona_trait(persona_id: int, trait_id: int):
 
 
 @persona_bp.route("/storage/upload", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def upload_persona_asset():
     context, error_response = _require_context()
     if error_response:
@@ -265,7 +267,7 @@ def upload_persona_asset():
 
 
 @persona_bp.route("/storage/<int:asset_id>", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def get_persona_asset(asset_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -283,7 +285,7 @@ def get_persona_asset(asset_id: int):
 
 
 @persona_bp.route("/share-links", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def create_result_share_link():
     context, error_response = _require_context()
     if error_response:
@@ -292,7 +294,7 @@ def create_result_share_link():
 
 
 @persona_bp.route("/share-links/<path:token>", methods=["DELETE"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def revoke_result_share_link(token: str):
     context, error_response = _require_context()
     if error_response:
@@ -320,7 +322,7 @@ def get_shared_result(token: str):
 
 
 @persona_bp.route("/personas/<int:persona_id>/image", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def attach_persona_image(persona_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -329,7 +331,7 @@ def attach_persona_image(persona_id: int):
 
 
 @persona_bp.route("/tests", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_ui_tests():
     context, error_response = _require_context()
     if error_response:
@@ -338,7 +340,7 @@ def list_ui_tests():
 
 
 @persona_bp.route("/tests", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def create_ui_test():
     context, error_response = _require_context()
     if error_response:
@@ -347,7 +349,7 @@ def create_ui_test():
 
 
 @persona_bp.route("/tests/<int:test_id>", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def get_ui_test(test_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -356,7 +358,7 @@ def get_ui_test(test_id: int):
 
 
 @persona_bp.route("/tests/<int:test_id>", methods=["PATCH"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def update_ui_test(test_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -365,7 +367,7 @@ def update_ui_test(test_id: int):
 
 
 @persona_bp.route("/tests/<int:test_id>", methods=["DELETE"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def delete_ui_test(test_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -374,7 +376,7 @@ def delete_ui_test(test_id: int):
 
 
 @persona_bp.route("/tests/<int:test_id>/run", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def run_ui_test(test_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -383,7 +385,7 @@ def run_ui_test(test_id: int):
 
 
 @persona_bp.route("/tests/<int:test_id>/results", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_ui_test_results(test_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -392,7 +394,7 @@ def list_ui_test_results(test_id: int):
 
 
 @persona_bp.route("/tests/capture-url", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def capture_url():
     context, error_response = _require_context()
     if error_response:
@@ -401,7 +403,7 @@ def capture_url():
 
 
 @persona_bp.route("/tests/combined", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_combined_tests():
     context, error_response = _require_context()
     if error_response:
@@ -410,7 +412,7 @@ def list_combined_tests():
 
 
 @persona_bp.route("/ab-tests", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_ab_tests():
     context, error_response = _require_context()
     if error_response:
@@ -419,7 +421,7 @@ def list_ab_tests():
 
 
 @persona_bp.route("/ab-tests", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def create_ab_test():
     context, error_response = _require_context()
     if error_response:
@@ -428,7 +430,7 @@ def create_ab_test():
 
 
 @persona_bp.route("/ab-tests/<int:ab_test_id>", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def get_ab_test(ab_test_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -437,7 +439,7 @@ def get_ab_test(ab_test_id: int):
 
 
 @persona_bp.route("/ab-tests/<int:ab_test_id>", methods=["PATCH"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def update_ab_test(ab_test_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -446,7 +448,7 @@ def update_ab_test(ab_test_id: int):
 
 
 @persona_bp.route("/ab-tests/<int:ab_test_id>", methods=["DELETE"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def delete_ab_test(ab_test_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -455,7 +457,7 @@ def delete_ab_test(ab_test_id: int):
 
 
 @persona_bp.route("/ab-tests/<int:ab_test_id>/run", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def run_ab_test(ab_test_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -464,7 +466,7 @@ def run_ab_test(ab_test_id: int):
 
 
 @persona_bp.route("/ab-tests/<int:ab_test_id>/results", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_ab_test_results(ab_test_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -473,7 +475,7 @@ def list_ab_test_results(ab_test_id: int):
 
 
 @persona_bp.route("/interviews", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_interviews():
     context, error_response = _require_context()
     if error_response:
@@ -482,7 +484,7 @@ def list_interviews():
 
 
 @persona_bp.route("/interviews", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def create_interview():
     context, error_response = _require_context()
     if error_response:
@@ -491,7 +493,7 @@ def create_interview():
 
 
 @persona_bp.route("/interviews/questions", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def generate_interview_questions():
     context, error_response = _require_context()
     if error_response:
@@ -500,7 +502,7 @@ def generate_interview_questions():
 
 
 @persona_bp.route("/interviews/personas", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_interview_personas():
     context, error_response = _require_context()
     if error_response:
@@ -509,7 +511,7 @@ def list_interview_personas():
 
 
 @persona_bp.route("/interview-sources", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_interview_sources():
     context, error_response = _require_context()
     if error_response:
@@ -524,7 +526,7 @@ def list_interview_sources():
 
 
 @persona_bp.route("/interview-sources", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def create_interview_source():
     context, error_response = _require_context()
     if error_response:
@@ -533,7 +535,7 @@ def create_interview_source():
 
 
 @persona_bp.route("/interview-sources/<int:source_id>", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def get_interview_source(source_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -542,7 +544,7 @@ def get_interview_source(source_id: int):
 
 
 @persona_bp.route("/interview-sources/<int:source_id>", methods=["PATCH"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def update_interview_source(source_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -551,7 +553,7 @@ def update_interview_source(source_id: int):
 
 
 @persona_bp.route("/interview-sources/<int:source_id>", methods=["DELETE"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def delete_interview_source(source_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -560,7 +562,7 @@ def delete_interview_source(source_id: int):
 
 
 @persona_bp.route("/interview-sources/<int:source_id>/embed", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def embed_interview_source(source_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -569,7 +571,7 @@ def embed_interview_source(source_id: int):
 
 
 @persona_bp.route("/interview-sources/import-local", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def import_local_interview_evidence():
     context, error_response = _require_context()
     if error_response:
@@ -587,7 +589,7 @@ def import_local_interview_evidence():
 
 
 @persona_bp.route("/interview-evidence/search", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def search_interview_evidence():
     context, error_response = _require_context()
     if error_response:
@@ -604,7 +606,7 @@ def search_interview_evidence():
 
 
 @persona_bp.route("/interviews/<int:interview_id>", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def get_interview(interview_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -613,7 +615,7 @@ def get_interview(interview_id: int):
 
 
 @persona_bp.route("/interviews/<int:interview_id>", methods=["DELETE"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def delete_interview(interview_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -622,7 +624,7 @@ def delete_interview(interview_id: int):
 
 
 @persona_bp.route("/interviews/<int:interview_id>/run", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def run_interview(interview_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -631,7 +633,7 @@ def run_interview(interview_id: int):
 
 
 @persona_bp.route("/figma/status", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def figma_status():
     context, error_response = _require_context()
     if error_response:
@@ -640,7 +642,7 @@ def figma_status():
 
 
 @persona_bp.route("/figma/connect", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def figma_connect():
     context, error_response = _require_context()
     if error_response:
@@ -649,7 +651,7 @@ def figma_connect():
 
 
 @persona_bp.route("/figma/callback", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def figma_callback():
     context, error_response = _require_context()
     if error_response:
@@ -664,7 +666,7 @@ def figma_callback():
 
 
 @persona_bp.route("/figma/disconnect", methods=["DELETE"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def figma_disconnect():
     context, error_response = _require_context()
     if error_response:
@@ -673,7 +675,7 @@ def figma_disconnect():
 
 
 @persona_bp.route("/figma/files", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_figma_files():
     context, error_response = _require_context()
     if error_response:
@@ -682,7 +684,7 @@ def list_figma_files():
 
 
 @persona_bp.route("/figma/files/sync", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def sync_figma_file():
     context, error_response = _require_context()
     if error_response:
@@ -691,7 +693,7 @@ def sync_figma_file():
 
 
 @persona_bp.route("/figma/files/<int:file_id>/sync", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def refresh_figma_file(file_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -700,7 +702,7 @@ def refresh_figma_file(file_id: int):
 
 
 @persona_bp.route("/figma/files/<int:file_id>", methods=["DELETE"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def delete_figma_file(file_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -709,7 +711,7 @@ def delete_figma_file(file_id: int):
 
 
 @persona_bp.route("/figma/files/<int:file_id>/flows", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def list_figma_flows(file_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -718,7 +720,7 @@ def list_figma_flows(file_id: int):
 
 
 @persona_bp.route("/figma/files/<int:file_id>/flows/<int:flow_id>/preview", methods=["GET"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def preview_figma_flow(file_id: int, flow_id: int):
     context, error_response = _require_context()
     if error_response:
@@ -727,7 +729,7 @@ def preview_figma_flow(file_id: int, flow_id: int):
 
 
 @persona_bp.route("/figma/files/<int:file_id>/flows/sync", methods=["POST"])
-@tier_required(["enterprise"])
+@tier_required(["free"])
 def sync_figma_flows(file_id: int):
     context, error_response = _require_context()
     if error_response:

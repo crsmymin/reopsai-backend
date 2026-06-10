@@ -12,6 +12,9 @@ from reopsai.infrastructure.persona_figma_client import FIGMA_OAUTH_SCOPE, Perso
 
 
 class FakePersonaService:
+    def ensure_individual_persona_company(self, *, user_id):
+        return int(user_id) + 1000
+
     def list_folders(self, *, company_id, user_id):
         return PersonaServiceResult(status="ok", data={"data": [{"id": 1, "company_id": company_id, "name": "Default"}]})
 
@@ -158,16 +161,16 @@ def _make_client(monkeypatch, *, claims):
     return app.test_client(), {"Authorization": f"Bearer {token}"}
 
 
-def test_persona_routes_require_business_company_context(monkeypatch):
+def test_persona_routes_allow_individual_context(monkeypatch):
     client, headers = _make_client(
         monkeypatch,
-        claims={"tier": "enterprise", "account_type": "individual"},
+        claims={"tier": "free", "account_type": "individual"},
     )
 
     response = client.get("/api/persona/folders", headers=headers)
 
-    assert response.status_code == 403
-    assert response.get_json()["error"] == "Business company context is required"
+    assert response.status_code == 200
+    assert response.get_json() == {"success": True, "data": [{"id": 1, "company_id": 1010, "name": "Default"}]}
 
 
 def test_persona_routes_preserve_success_shape(monkeypatch):
